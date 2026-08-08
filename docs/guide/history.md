@@ -21,17 +21,21 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
   "step": "login",              // ステップ名
   "startedAt": "2026-08-08T…",  // ISO 8601
   "durationMs": 6,
-  "request": {
+  "status": "passed",           // "passed" | "failed" | "skipped"(旧エントリには無い場合がある。運用上の注意を参照)
+  "request": {                  // skipped ステップでは省略される
     "method": "POST",
-    "url": "http://…",          // テンプレート解決済み
-    "headers": { … },           // テンプレート解決済み
+    "url": "http://…",          // テンプレート解決済み(シークレットはマスク後)
+    "headers": { … },           // テンプレート解決済み(シークレットはマスク後)
     "body": { … }
   },
-  "response": {
+  "response": {                 // skipped ステップでは省略される
     "status": 200,
     "headers": { … },
     "body": { … }               // JSON ならパース済みの値、それ以外はテキスト
   },
+  "events": [                   // SSE ステップでのみ設定(受信イベント一覧)
+    { "event": "message", "id": "1", "data": "…" }
+  ],
   "assertions": [
     { "ok": true, "kind": "status", "expected": 200, "actual": 200, "message": "…" }
   ]
@@ -40,13 +44,16 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
 
 ### ステップ種別ごとの内容
 
-| 種別 | request | response |
-|---|---|---|
-| HTTP / GraphQL | method / url / headers / body | status / headers / body |
-| SSE | 通常どおり | status / headers、**body は undefined**(受信イベントは履歴に永続化されない — 既知の制限) |
-| WebSocket | method は `"WS"`、body は送信メッセージ配列 | status は `101` 固定、body は受信メッセージ(data 文字列)の配列 |
+| 種別 | request | response | events |
+|---|---|---|---|
+| HTTP / GraphQL | method / url / headers / body | status / headers / body | — |
+| SSE | 通常どおり | status / headers、**body は undefined** | 受信イベント一覧(`{event?, id?, data}`) |
+| WebSocket | method は `"WS"`、body は送信メッセージ配列 | status は `101` 固定、body は受信メッセージ(data 文字列)の配列 | — |
+| skipped | 省略 | 省略 | — |
 
-**skipped ステップは記録されない**(実行されていないため)。runtime エラーになったステップはエラー内容とともに記録される。
+**skipped ステップも記録される**(`status: "skipped"`、request/response なし、assertions は空)。runtime エラーになったステップはエラー内容とともに記録される。
+
+新規に書き込まれるエントリには常に `status` が設定される。`status` フィールドが無い旧エントリは、従来どおり `assertions` の内容から成否を導出して読み込める(後方互換)。
 
 ## バージョニング契約
 
@@ -57,5 +64,6 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
 
 ## 運用上の注意
 
-- **テンプレート解決済みの値がそのまま記録される**。<code v-pre>{{env.TEST_PASSWORD}}</code> で参照したシークレットも解決後の生の値で残るため、シークレットを扱うプロジェクトでは `.klaus/` を `.gitignore` に入れること(このリポジトリの scaffolding では最初から ignore 済み)
-- テキストファイルなので、あえて git 管理して実行記録をチームで共有する運用も可能(シークレットが含まれない場合に限る)
+- **テンプレート解決済みの値が記録される**。ただし <code v-pre>{{env.X}}</code> で OS 環境変数から解決した値(長さ 4 文字以上)は、書き込み直前に request の url/headers/body・response の headers/body・assertions(expected/actual/message)・events(event/id/data)内で `***` にマスクされる。マスクされるのはこの経路で解決した値のみで、`environments/*.yaml` 由来の値やライブ実行結果(実行中 UI・StepResult)はマスク対象外。詳細は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) を参照
+- マスクされない値(4文字未満のシークレットや environments ファイル由来の値など)を扱うプロジェクトでは、引き続き `.klaus/` を `.gitignore` に入れること(このリポジトリの scaffolding では最初から ignore 済み)
+- テキストファイルなので、あえて git 管理して実行記録をチームで共有する運用も可能(マスクされない値が含まれないことを確認したうえで)

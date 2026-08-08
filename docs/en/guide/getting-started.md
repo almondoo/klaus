@@ -11,6 +11,22 @@ npm install -g @almondoo/klaus
 
 `package.json`'s `engines` field requires Node.js `>=22.19.0` (`bin` points the `klaus` command at `dist/cli.js`).
 
+## Scaffolding with klaus init
+
+After installing, run this in your project directory to generate a minimal starting point:
+
+```bash
+klaus init
+```
+
+This creates `flows/example.yaml` (a sample flow that issues a single GET to `https://example.com` and asserts a 200 status) and `environments/local.yaml` (a minimal environment file with a `baseUrl`) in the current directory. It takes no options. Existing files are never overwritten — they're skipped instead — and any needed directories are created automatically. Once done, it prints a hint for the next command:
+
+```bash
+klaus run flows/example.yaml -e local
+```
+
+The sections below walk through writing a flow definition by hand, to explain what's inside this scaffold.
+
 ## Creating a Minimal Flow
 
 A klaus flow definition follows a "1 YAML file = 1 flow (a sequence of steps run in order)" structure. Place the YAML file anywhere you like in your project (by convention it's often placed under `api/`, but since `klaus run` takes the file path directly as an argument, it can live anywhere).
@@ -89,7 +105,7 @@ steps:
 
 ## Creating an environments/ File
 
-`env: local` resolves and loads `environments/local.yaml` relative to klaus's current working directory at run time (the cwd from which `klaus run` was invoked, not the location of the flow file itself).
+`env: local` resolves `environments/local.yaml` by searching upward starting from klaus's current working directory at run time (the cwd from which `klaus run` was invoked, not the location of the flow file itself). Starting at the cwd, klaus walks up through each parent directory, checking for `environments/local.yaml` directly under it. The search stops (inclusively checking that directory first) at the first ancestor directory containing a `.git` entry, or at the filesystem root — whichever comes first. This means running `klaus run` from a subdirectory of your project still finds the project root's `environments/` (the search never crosses into another repository).
 
 ```yaml
 # environments/local.yaml
@@ -99,10 +115,10 @@ testEmail: test@example.com
 
 All environment file values are strings, and can be referenced as template variables (<code v-pre>{{...}}</code>) such as <code v-pre>{{baseUrl}}</code>. Secrets (passwords, etc.) should not be hard-coded into environment files — reference an OS environment variable instead with <code v-pre>{{env.TEST_PASSWORD}}</code> (passed in as, e.g., `TEST_PASSWORD=xxx klaus run ...`).
 
-Behavior when `env:` is not specified, or `environments/<name>.yaml` does not exist:
+Behavior when `env:` is not specified, or `environments/<name>.yaml` isn't found in any ancestor directory:
 
 - If the flow definition has no `env:` and `--env` is not passed either, the flow runs with no environment variables (an empty object)
-- If a name is given via `env:` or `--env` but the corresponding file can't be read, this is a parse error (exit code 2)
+- If a name is given via `env:` or `--env` but the corresponding file can't be found, this is a parse error (exit code 2)
 
 `--env <name>` on the CLI overrides the flow definition's `env:`.
 

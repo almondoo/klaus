@@ -24,7 +24,7 @@ However, this alone creates **a separate risk**: when entries are removed or ren
 
 Verified: (1) `dist/ui/index.html` survives a standalone `pnpm build` and `pnpm test` (which calls build internally); (2) planting stale files in `dist/` and running `build:all` removes them and correctly regenerates `dist/ui`. Removed the workaround warnings in `VERIFICATION.md` and `docs/dev/architecture.md`.
 
-### A-2. Received SSE events don't end up in history — Recommended (cost: small)
+### A-2. Received SSE events don't end up in history — Implemented (2026-08-08)
 
 **Basis**: the SSE branch in `src/core/runner.ts` sets `responseSnapshot.body = undefined`, and `events` only ever lands in `StepResult`. WebSocket, on the other hand, records received messages as an array in `response.body`. **The same "stream reception" concept is persisted asymmetrically**, so the UI's history browser shows nothing at all of what an SSE step received.
 
@@ -32,7 +32,9 @@ The history schema's contract is that additive changes can stay at `v: 1`, so ad
 
 **Cost**: roughly 1 hour (runner recording, types, UI display, tests). **Verdict: recommended** — SSE verification is positioned in the requirements as "a differentiating feature no off-the-shelf tool has," so it's an incomplete feature if the result doesn't survive into history.
 
-### A-3. Skipped steps don't end up in history — Conditional (cost: medium)
+**Resolution**: added `events?: SseEvent[]` to `HistoryEntry`, so SSE steps now record their received events in history (`response.body` still stays undefined, as before). The UI's history browser also renders the events expanded. See [history.md](../guide/history.md) for details.
+
+### A-3. Skipped steps don't end up in history — Implemented (2026-08-08)
 
 **Basis**: the skip branch in `runner.ts` never calls `historySink`, so skipped rows never appear in the history JSONL. You can't trace from the UI's history "where it stopped and what didn't run downstream" (though you can infer it, since the failed step itself does get recorded).
 
@@ -40,7 +42,9 @@ This also implies a design change: `HistoryEntry` has no `status` field today (s
 
 **Cost**: 2-3 hours (schema extension + fixing the UI's grouping display logic + tests). **Verdict: conditional** — worth it once the history UI actually sees heavy use. Since the failing row is still recorded, the missing information is limited.
 
-### A-4. Secrets persist in history in plaintext — Conditional (cost: medium)
+**Resolution**: added `status?: "passed" | "failed" | "skipped"` to `HistoryEntry`, so skipped steps are now recorded as a row with `status: "skipped"`, no request/response, and empty assertions. Older entries without `status` still fall back to being derived from assertions, preserving read compatibility. See [history.md](../guide/history.md) for details.
+
+### A-4. Secrets persist in history in plaintext — Implemented (2026-08-08)
 
 **Basis**: history records **already-resolved template values**, so a value passed via <code v-pre>{{env.TEST_PASSWORD}}</code> ends up in plaintext in `.klaus/history/*.jsonl`. There's a warning in `docs/guide/history.md` and it's in `.gitignore`, but **`klaus ui`'s history browser displays that same content in the browser**.
 
@@ -48,7 +52,9 @@ This also implies a design change: `HistoryEntry` has no `status` field today (s
 
 **Cost**: 3-4 hours (designing the masking layer, wiring it into core, UI display, tests). **Verdict: conditional** — as long as this stays personal, local verification, the existing warning is enough. It becomes necessary once history gets shared across a team.
 
-### A-5. `environments/` resolution is cwd-only — Recommended (cost: small-to-medium)
+**Resolution**: took a different approach than the candidate fixes above. Values resolved from OS environment variables via <code v-pre>{{env.X}}</code> (length 4 or more) are now automatically replaced with `***` right before a history entry is written (`maskHistoryEntry`), covering the request's url/headers/body, the response's headers/body, and the `data` field of SSE events. It applies to both the default file sink and custom sinks; live run output (the UI's execution view) and values sourced from environment files are not covered. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) and [history.md](../guide/history.md) for the precise boundary.
+
+### A-5. `environments/` resolution is cwd-only — Implemented (2026-08-08)
 
 **Basis**: `resolveEnvironmentPath(cwd, name)` is based on the runtime current directory. Even in this session, running the samples required `cd examples` first. Running `klaus run api/foo.yaml` from a project subdirectory fails to find the environment file.
 
@@ -56,11 +62,15 @@ This also implies a design change: `HistoryEntry` has no `status` field today (s
 
 **Cost**: 1-2 hours. **Verdict: recommended** — directly affects the CLI's first-run experience. Just make sure the search behavior is documented clearly.
 
-### A-6. No `klaus init` — Conditional (cost: small)
+**Resolution**: went with the former (upward search). `resolveEnvironmentPath` now walks from cwd up through parent directories, stopping at the first ancestor directory containing `.git` (that directory itself is still checked) or the filesystem root. Each candidate directory is boundary-checked for path traversal before it's ever touched on the filesystem.
+
+### A-6. No `klaus init` — Implemented (2026-08-08)
 
 **Basis**: starting a new project requires hand-creating `environments/local.yaml` and a sample flow. Even in this session I created `examples/` by hand. A `klaus init` that scaffolds a template would shorten the first-run experience.
 
 **Cost**: 1-2 hours. **Verdict: conditional** — pays off once this is distributed to others (published on npm). While it's just for personal use, copying `examples/` is enough.
+
+**Resolution**: added a `klaus init` subcommand (`src/cli/init.ts`).
 
 ### A-8. Mobile drawer focus management — Deferred (for now)
 

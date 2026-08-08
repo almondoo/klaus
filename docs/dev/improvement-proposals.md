@@ -8,7 +8,7 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 ## A. 製品（klaus 本体）の改善
 
-### A-1. `pnpm build` が `dist/ui` を破壊する — ✅ 対応済み（2026-08-08）
+### A-1. `pnpm build` が `dist/ui` を破壊する — 対応済み（2026-08-08）
 
 **根拠**: このセッションで**2回**踏んだ。`tsup.config.ts` の1つ目のエントリが `clean: true` で `dist/` 全体を消すため、`pnpm build`（および内部で build を呼ぶ `pnpm test`）を実行すると Vite が出力した `dist/ui` が消える。結果 `klaus ui` が 503「静的ファイルが見つかりません」になる。
 
@@ -24,7 +24,7 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 検証済み: (1) `pnpm build` 単体・`pnpm test`（内部で build を呼ぶ）の後でも `dist/ui/index.html` が生存すること、(2) `dist/` に古いファイルを仕込んで `build:all` を実行すると除去され、かつ `dist/ui` が正しく再生成されること。`VERIFICATION.md` と `docs/dev/architecture.md` の回避用注意書きは削除した。
 
-### A-2. SSE の受信イベントが履歴に残らない — 推奨（コスト: 小）
+### A-2. SSE の受信イベントが履歴に残らない — 対応済み(2026-08-08)
 
 **根拠**: `src/core/runner.ts` の SSE 分岐は `responseSnapshot.body = undefined` とし、`events` は `StepResult` にしか入らない。一方 WebSocket は受信メッセージを `response.body` に配列で記録している。**同じ「ストリーム受信」なのに永続化の扱いが非対称**で、UI の履歴ブラウザからは SSE の受信内容が一切見えない。
 
@@ -32,7 +32,9 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 **コスト**: 1時間程度（runner の記録・型・UI 表示・テスト）。**判定: 推奨** — SSE 検証は要件で「既製ツールに無い差別化機能」と位置づけているのに、その結果が履歴に残らないのは機能として不完全。
 
-### A-3. skipped ステップが履歴に残らない — 条件付き（コスト: 中）
+**対応**: `HistoryEntry` に `events?: SseEvent[]` を追加し、SSE ステップで受信したイベントを履歴に記録するようにした(`response.body` は従来どおり undefined のまま)。UI の履歴ブラウザでも events を展開表示する。詳細は [history.md](../guide/history.md)。
+
+### A-3. skipped ステップが履歴に残らない — 対応済み(2026-08-08)
 
 **根拠**: `runner.ts` の skip 分岐は `historySink` を呼ばないため、履歴 JSONL に skipped 行が存在しない。UI の履歴から「どこで止まって、以降が流れなかったか」が追えない（失敗ステップは残るので推測はできる）。
 
@@ -40,7 +42,9 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 **コスト**: 2〜3時間（スキーマ拡張 + UI のグルーピング表示ロジック修正 + テスト）。**判定: 条件付き** — 履歴 UI を実際に多用するようになってから。失敗行が残る以上、情報の欠落は限定的。
 
-### A-4. シークレットが履歴に平文で残る — 条件付き（コスト: 中）
+**対応**: `HistoryEntry` に `status?: "passed" | "failed" | "skipped"` を追加し、skipped ステップも `status: "skipped"`・request/response なし・assertions 空の行として履歴に記録するようにした。`status` を持たない旧エントリは従来どおり assertions から導出するフォールバックで読み込み互換を保つ。詳細は [history.md](../guide/history.md)。
+
+### A-4. シークレットが履歴に平文で残る — 対応済み(2026-08-08)
 
 **根拠**: 履歴は**テンプレート解決済みの値**を記録するため、<code v-pre>{{env.TEST_PASSWORD}}</code> で渡した値が `.klaus/history/*.jsonl` に平文で残る。`docs/guide/history.md` に注意書きを書き、`.gitignore` にも入れてあるが、**`klaus ui` の履歴ブラウザは同じ内容をブラウザに表示する**。
 
@@ -48,7 +52,9 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 **コスト**: 3〜4時間（マスク層の設計・core への組み込み・UI 表示・テスト）。**判定: 条件付き** — 個人のローカル検証に留める限りは現状の注意書きで足りる。チームで履歴を共有する運用に入るなら必須。
 
-### A-5. `environments/` の解決が cwd 基準のみ — 推奨（コスト: 小〜中）
+**対応**: 修正案とは異なる方式を採用。<code v-pre>{{env.X}}</code> で OS 環境変数から解決した値(長さ 4 文字以上)を履歴エントリへの書き込み直前に `***` へ自動置換する(`maskHistoryEntry`)。request の url/headers/body、response の headers/body、SSE events の data が対象。デフォルトのファイル sink・カスタム sink の両方に適用され、ライブ実行結果(UI の実行ビュー)や environments ファイル由来の値はマスク対象外。境界の詳細は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) と [history.md](../guide/history.md) を参照。
+
+### A-5. `environments/` の解決が cwd 基準のみ — 対応済み(2026-08-08)
 
 **根拠**: `resolveEnvironmentPath(cwd, name)` は実行時カレントディレクトリ基準。このセッションでも、サンプルを動かすのに `cd examples` が必須になった。プロジェクトのサブディレクトリから `klaus run api/foo.yaml` を叩くと環境ファイルが見つからない。
 
@@ -56,11 +62,15 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 **コスト**: 1〜2時間。**判定: 推奨** — CLI の初回体験に直接効く。ただし探索仕様は明文化すること。
 
-### A-6. `klaus init` が無い — 条件付き（コスト: 小）
+**対応**: 前者(上方探索)を採用。`resolveEnvironmentPath` が cwd から親ディレクトリへ順に辿り、`.git` を含む祖先ディレクトリ(そのディレクトリ自身は含めて調べる)またはファイルシステムルートで打ち切る。各候補ディレクトリで path traversal の境界チェックを行ってからファイルシステムへアクセスする。
+
+### A-6. `klaus init` が無い — 対応済み(2026-08-08)
 
 **根拠**: 新規プロジェクトで使い始めるとき、`environments/local.yaml` とサンプルフローを手で作る必要がある。このセッションでも `examples/` を人手で作成した。`klaus init` で雛形を吐けば初回体験が短縮される。
 
 **コスト**: 1〜2時間。**判定: 条件付き** — 他人に配布する（npm 公開する）段階で価値が出る。自分だけで使う間は `examples/` をコピーすれば足りる。
+
+**対応**: `klaus init` サブコマンドを追加した(`src/cli/init.ts`)。
 
 ### A-8. モバイルドロワーのフォーカス管理 — 見送り（現時点）
 

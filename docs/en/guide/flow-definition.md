@@ -15,7 +15,7 @@ steps:                 # Required: at least one. name must be unique within the 
     assert: { ... }    # Optional: assertions
 ```
 
-- Environment files are resolved as `environments/<name>.yaml` **relative to the cwd**. `klaus run --env <name>` overrides the flow's `env:`
+- Environment files are resolved as `environments/<name>.yaml` by searching upward from the cwd (stopping at the first ancestor directory containing `.git`, or at the filesystem root). See [Getting Started](getting-started.md) for details. `klaus run --env <name>` overrides the flow's `env:`
 - Environment files are a flat map of `key: string value`. Values can use templates (such as <code v-pre>{{env.X}}</code>)
 
 ## request (HTTP step)

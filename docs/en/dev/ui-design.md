@@ -43,7 +43,7 @@ Base path `/api`. All responses are JSON. Returns core's types as-is (the type c
 | `GET /api/history?flow=&limit=&before=` | Read out history JSONL (newest first, paginated) |
 
 - To stream execution progress over SSE, core's `runner` must **expose a per-step-completion callback (or AsyncIterator)** (a requirement for the M1-M3 implementation; this can also be used for the CLI's progress display)
-- Secret protection: API responses and history reads return the resolved value of <code v-pre>{{env.X}}</code> as-is (equivalent to what is recorded in the history JSONL). Masking values that should not be kept in history is left as a future concern and is not handled by the UI
+- Secret protection: API responses and history reads return the same content as what is recorded in the history JSONL. Values resolved from an OS environment variable via <code v-pre>{{env.X}}</code> (length 4 or more) are masked to `***` before being written to history (`maskHistoryEntry` in `src/core/history.ts`), so masked history rows are what the UI reads and displays as-is — the UI does no masking of its own. Live run output (the in-progress execution view) is not masked, since it is not sourced from history
 
 ## Security (concretization of the requirements' constraints)
 

@@ -1,6 +1,21 @@
 # CLI Reference
 
-klaus has two commands: `run` (executes flows) and `ui` (launches the localhost web UI).
+klaus has three commands: `init` (scaffolds a starting point), `run` (executes flows), and `ui` (launches the localhost web UI).
+
+## klaus init
+
+```
+klaus init
+```
+
+Takes no options. Generates a minimal starting point in the current directory.
+
+| Generated file | Contents |
+|---|---|
+| `flows/example.yaml` | A single GET to `https://example.com` with a status-200 assertion (with Japanese comments) |
+| `environments/local.yaml` | A minimal environment file with a `baseUrl` |
+
+Existing files are never overwritten — they're skipped, with a message printed to stdout. Any needed directories are created automatically. Always exits 0. If at least one file was generated, a hint for the next command is printed at the end: `klaus run flows/example.yaml -e local`
 
 ## klaus run
 
