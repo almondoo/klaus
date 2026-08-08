@@ -45,7 +45,7 @@ jobs:
           # メジャー指定 (11) だと実行時に最新 11.x を取得してしまうため正確に固定する
           version: 11.5.1
 
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
 
@@ -99,7 +99,7 @@ jobs:
     steps:
       # このジョブでは checkout も依存インストールも行わず、
       # サードパーティのコードが OIDC トークンと同居しないようにする
-      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           # Node 24 の同梱 npm (>= 11.5.1) が Trusted Publishing の最低要件を満たす。
           # registry-url は指定しない: 指定すると NODE_AUTH_TOKEN のプレースホルダが
