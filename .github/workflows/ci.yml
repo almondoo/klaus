@@ -1,0 +1,57 @@
+# PR と develop への push で lint / 型チェック / テスト / ビルドを検証する CI。
+# ジョブ名 `ci` は main の ruleset (require-pr-and-ci-main) の必須ステータス
+# チェック名と一致させている。変更する場合は ruleset 側も更新すること。
+#
+# fork からの pull_request は read-only トークン + Secrets なしで実行される
+# (さらにリポジトリ設定で全外部コントリビューターの実行承認を必須にしている)。
+# pull_request_target は checkout と組み合わせると危険なため使用しない。
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - develop
+
+# 既定では何の権限も与えない。必要な権限は各ジョブで最小付与する
+permissions: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # GITHUB_TOKEN の git 資格情報を後続ステップに残さない
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          # publish.yml と同じく正確なバージョンに固定する
+          version: 11.5.1
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+
+      - name: 依存関係をインストール
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint / 型チェック
+        run: |
+          pnpm lint
+          pnpm typecheck
+
+      - name: テスト
+        run: |
+          pnpm test
+          pnpm --filter @almondoo/klaus-ui test
+
+      - name: フルビルド
+        run: pnpm build:all
