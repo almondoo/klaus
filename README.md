@@ -192,7 +192,7 @@ pnpm lint       # biome
 
 ## ロードマップ
 
-- npm 公開(GitHub Actions + Trusted Publishing)
+npm 公開(GitHub Actions + Trusted Publishing)は v0.1.1 で完了。今後の予定は [GitHub Issues](https://github.com/almondoo/klaus/issues) を参照。
 
 ## License
 
