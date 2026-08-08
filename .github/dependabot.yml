@@ -1,0 +1,35 @@
+# Dependabot のバージョン更新設定。
+# cooldown は新リリース直後の侵害版を掴まないための猶予期間
+# (pnpm 側の minimumReleaseAge=1日 の既定と併せた多層防御)。
+# セキュリティ更新(Dependabot security updates)はこの設定とは独立に動く。
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
+    groups:
+      dev-dependencies:
+        dependency-type: "development"
+        patterns:
+          - "*"
+      prod-dependencies:
+        dependency-type: "production"
+        update-types:
+          - "minor"
+          - "patch"
+
+  # SHA ピン留めした action の更新(コミット SHA と末尾のバージョンコメントを
+  # 併せて更新する。まれにコメントが古いまま残る事例が報告されているため、
+  # Dependabot の PR では SHA が指すタグを目視確認すること)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
