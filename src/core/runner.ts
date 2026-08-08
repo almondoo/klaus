@@ -4,7 +4,7 @@ import { evaluateAssertions } from "./assert.js";
 import { loadEnvironment } from "./env.js";
 import { KlausError, RuntimeError } from "./errors.js";
 import type { HistoryEntry } from "./history.js";
-import { appendHistory } from "./history.js";
+import { appendHistory, maskHistoryEntry } from "./history.js";
 import { sendRequest } from "./http.js";
 import { loadFlow } from "./loader.js";
 import type { Flow, RequestDef, Step } from "./schema.js";
@@ -201,6 +201,7 @@ async function executeStep(
           step: step.name,
           startedAt,
           durationMs: wsResult.durationMs,
+          status: ok ? "passed" : "failed",
           request: requestSnapshot,
           // response 相当として受信メッセージを body に格納する(status は HTTP の 101 Switching Protocols 相当)
           response: {
@@ -272,8 +273,11 @@ async function executeStep(
           step: step.name,
           startedAt,
           durationMs: sseResult.durationMs,
+          status: ok ? "passed" : "failed",
           request: requestSnapshot,
           response: responseSnapshot,
+          // 受信イベントは response.body に二重保持せず events に格納する(StepResult と同じ方針)
+          events: sseResult.events,
           assertions,
         },
       };
@@ -323,6 +327,7 @@ async function executeStep(
         step: step.name,
         startedAt,
         durationMs: response.durationMs,
+        status: ok ? "passed" : "failed",
         request: requestSnapshot,
         response: responseSnapshot,
         assertions,
@@ -382,6 +387,8 @@ export async function executeFlow(
   const historySink = resolveHistorySink(cwd, options.history);
 
   const captures: Record<string, unknown> = {};
+  // {{env.X}} で解決した値をフロー実行全体で蓄積する(履歴に書き込む前のマスクに使う)
+  const secrets = new Set<string>();
   const steps: StepResult[] = [];
   const flowStartedAt = performance.now();
   let skipRest = false;
@@ -391,33 +398,49 @@ export async function executeFlow(
 
     let result: StepResult;
     let captured: Record<string, unknown> = {};
+    let historyEntry: HistoryEntry | undefined;
 
     if (skipRest) {
+      const skippedStartedAt = new Date().toISOString();
       result = {
         name: step.name,
         status: "skipped",
-        startedAt: new Date().toISOString(),
+        startedAt: skippedStartedAt,
         durationMs: 0,
         assertions: [],
         error: "skipped because a previous step failed",
       };
+      // skipped ステップはリクエストを送っていないため request/response を持たない
+      historyEntry = {
+        v: 1,
+        runId,
+        flow: flow.name,
+        step: step.name,
+        startedAt: skippedStartedAt,
+        durationMs: 0,
+        status: "skipped",
+        assertions: [],
+      };
     } else {
-      const templateContext: TemplateContext = { captures, env: environment };
+      const templateContext: TemplateContext = { captures, env: environment, secrets };
       const outcome = await executeStep(step, templateContext, runId, flow.name);
       result = outcome.result;
       captured = outcome.captured;
+      historyEntry = outcome.historyEntry;
+    }
 
-      // 履歴書き込みはステップ結果確定後・主 try/catch の外で行う。
-      // 失敗してもステップの status は変えず、onWarning で通知するだけに留める。
-      if (historySink && outcome.historyEntry) {
-        try {
-          await historySink(outcome.historyEntry);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          options.onWarning?.(
-            `履歴の書き込みに失敗しました (flow "${flow.name}", step "${step.name}"): ${message}`,
-          );
-        }
+    // 履歴書き込みはステップ結果確定後・主 try/catch の外で行う。
+    // 失敗してもステップの status は変えず、onWarning で通知するだけに留める。
+    if (historySink && historyEntry) {
+      // デフォルトシンク・カスタムシンクのいずれにも、必ずマスク済みのエントリを渡す
+      const maskedEntry = maskHistoryEntry(historyEntry, [...secrets]);
+      try {
+        await historySink(maskedEntry);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        options.onWarning?.(
+          `履歴の書き込みに失敗しました (flow "${flow.name}", step "${step.name}"): ${message}`,
+        );
       }
     }
 

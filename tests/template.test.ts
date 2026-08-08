@@ -49,6 +49,16 @@ describe("renderString", () => {
         renderString("{{env.KLAUS_TEST_UNDEFINED_VAR}}", { captures: {}, env: {} }),
       ).toThrow(RuntimeError);
     });
+
+    it("secrets コレクターを渡すと env.X で解決した値が追加される(履歴マスク用)", () => {
+      const secrets = new Set<string>();
+      renderString(`{{env.${KEY}}}`, { captures: {}, env: {}, secrets });
+      expect(secrets.has("secret-value")).toBe(true);
+    });
+
+    it("secrets コレクター未指定時は何も収集せず、従来通り動作する", () => {
+      expect(() => renderString(`{{env.${KEY}}}`, { captures: {}, env: {} })).not.toThrow();
+    });
   });
 
   describe("テンプレート関数", () => {

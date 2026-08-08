@@ -2,8 +2,9 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
+import type { HistoryEntry } from "../src/core/history.js";
 import { historyFilePath } from "../src/core/history.js";
 import { executeFlow, runFlows } from "../src/core/runner.js";
 import { flowSchema } from "../src/core/schema.js";
@@ -172,6 +173,46 @@ describe("executeFlow", () => {
     expect(result.steps[1]?.error).toContain("skipped");
   });
 
+  it("失敗により後続ステップが skip されると、履歴にも status: skipped のエントリが記録される(request/response 省略、assertions は空)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+    const flow = flowSchema.parse({
+      name: "failing flow",
+      steps: [
+        {
+          name: "login-wrong-password",
+          request: {
+            method: "POST",
+            url: `${ctx.baseUrl}/login`,
+            body: { email: "user@example.com", password: "wrong" },
+          },
+          assert: { status: 200 },
+        },
+        {
+          name: "get-me",
+          request: { method: "GET", url: `${ctx.baseUrl}/me` },
+        },
+      ],
+    });
+
+    await executeFlow(flow, "failing-flow.yaml", { cwd });
+
+    const filePath = historyFilePath(cwd);
+    const content = await readFile(filePath, "utf-8");
+    const lines = content.trim().split("\n");
+    expect(lines).toHaveLength(2);
+
+    const failedEntry = JSON.parse(lines[0] as string);
+    expect(failedEntry.step).toBe("login-wrong-password");
+    expect(failedEntry.status).toBe("failed");
+
+    const skippedEntry = JSON.parse(lines[1] as string);
+    expect(skippedEntry.step).toBe("get-me");
+    expect(skippedEntry.status).toBe("skipped");
+    expect(skippedEntry.request).toBeUndefined();
+    expect(skippedEntry.response).toBeUndefined();
+    expect(skippedEntry.assertions).toEqual([]);
+  });
+
   it("onStepStart / onStepComplete がステップごとに正しい順序で呼ばれる(skipped も含む)", async () => {
     cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
     const flow = flowSchema.parse({
@@ -220,6 +261,7 @@ describe("executeFlow", () => {
     const first = JSON.parse(lines[0] as string);
     expect(first.flow).toBe("auth flow");
     expect(first.step).toBe("login");
+    expect(first.status).toBe("passed");
   });
 
   it("history に関数を渡すとカスタムシンクへ渡され、ディスクには書かれない", async () => {
@@ -357,6 +399,272 @@ describe("executeFlow", () => {
     } finally {
       await new Promise<void>((resolve) => sseServer.close(() => resolve()));
     }
+  });
+
+  it("SSE ステップの履歴エントリには events が記録され、response.body は undefined のままになる", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+
+    const sseServer = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write('event: message\ndata: {"foo":"bar"}\n\n');
+      res.end();
+    });
+    await new Promise<void>((resolve) => sseServer.listen(0, "127.0.0.1", resolve));
+    const ssePort = (sseServer.address() as AddressInfo).port;
+
+    try {
+      const flow = flowSchema.parse({
+        name: "sse history flow",
+        steps: [
+          {
+            name: "stream",
+            request: {
+              method: "GET",
+              url: `http://127.0.0.1:${ssePort}/`,
+              headers: { Accept: "text/event-stream" },
+            },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const captured: HistoryEntry[] = [];
+      await executeFlow(flow, "sse-history-flow.yaml", {
+        cwd,
+        history: (entry) => {
+          captured.push(entry);
+        },
+      });
+
+      expect(captured).toHaveLength(1);
+      expect(captured[0]?.status).toBe("passed");
+      expect(captured[0]?.events).toEqual([
+        { event: "message", id: undefined, data: '{"foo":"bar"}' },
+      ]);
+      expect(captured[0]?.response?.body).toBeUndefined();
+    } finally {
+      await new Promise<void>((resolve) => sseServer.close(() => resolve()));
+    }
+  });
+
+  describe("履歴のシークレットマスク", () => {
+    const SECRET_KEY = "KLAUS_TEST_MASK_SECRET";
+    const SHORT_KEY = "KLAUS_TEST_MASK_SHORT";
+    const SECRET_VALUE = "supersecret-value-123";
+    const SHORT_VALUE = "abc"; // 4文字未満 -> マスク対象外
+
+    beforeEach(() => {
+      process.env[SECRET_KEY] = SECRET_VALUE;
+      process.env[SHORT_KEY] = SHORT_VALUE;
+    });
+
+    afterEach(() => {
+      delete process.env[SECRET_KEY];
+      delete process.env[SHORT_KEY];
+    });
+
+    /** リクエストヘッダー/ボディをそのまま JSON で返す echo サーバーと、受信ヘッダーを SSE イベントとして送り返すサーバー */
+    async function startEchoAndSseServer() {
+      const server = createServer((req, res) => {
+        const chunks: Buffer[] = [];
+        req.on("data", (chunk) => chunks.push(chunk));
+        req.on("end", () => {
+          if (req.url === "/echo" && req.method === "POST") {
+            const bodyText = Buffer.concat(chunks).toString("utf-8");
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(
+              JSON.stringify({
+                receivedSecret: req.headers["x-secret"],
+                receivedShort: req.headers["x-short"],
+                body: bodyText ? JSON.parse(bodyText) : null,
+              }),
+            );
+            return;
+          }
+          if (req.url === "/sse" && req.method === "GET") {
+            res.writeHead(200, { "Content-Type": "text/event-stream" });
+            res.write(
+              `event: message\ndata: ${JSON.stringify({ echoed: req.headers["x-secret"] })}\n\n`,
+            );
+            res.end();
+            return;
+          }
+          res.writeHead(404);
+          res.end();
+        });
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const port = (server.address() as AddressInfo).port;
+      return { server, baseUrl: `http://127.0.0.1:${port}` };
+    }
+
+    it("{{env.X}} で解決した値は request/response/SSE events から *** にマスクされ、4文字未満の値はマスクされない。カスタムシンクにもマスク済みで渡る(一方、実行結果 (FlowResult) はライブ値のまま保持される)", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+      const { server, baseUrl } = await startEchoAndSseServer();
+
+      try {
+        const flow = flowSchema.parse({
+          name: "masking flow",
+          steps: [
+            {
+              name: "echo",
+              request: {
+                method: "POST",
+                url: `${baseUrl}/echo`,
+                headers: {
+                  "X-Secret": `{{env.${SECRET_KEY}}}`,
+                  "X-Short": `{{env.${SHORT_KEY}}}`,
+                },
+                body: { secret: `{{env.${SECRET_KEY}}}`, short: `{{env.${SHORT_KEY}}}` },
+              },
+              // bodyText.contains は response の生テキストに対する assert なので、
+              // レスポンスに秘密情報がそのまま含まれる状況(= 実運用で起こりうる状況)を再現する
+              assert: { status: 200, bodyText: { contains: `{{env.${SECRET_KEY}}}` } },
+            },
+            {
+              name: "stream",
+              request: {
+                method: "GET",
+                url: `${baseUrl}/sse`,
+                headers: {
+                  Accept: "text/event-stream",
+                  "X-Secret": `{{env.${SECRET_KEY}}}`,
+                },
+              },
+              assert: { status: 200 },
+            },
+          ],
+        });
+
+        const captured: HistoryEntry[] = [];
+        const flowResult = await executeFlow(flow, "masking-flow.yaml", {
+          cwd,
+          history: (entry) => {
+            captured.push(entry);
+          },
+        });
+
+        expect(captured).toHaveLength(2);
+
+        const echoEntry = captured[0];
+        expect(echoEntry?.request?.headers["X-Secret"]).toBe("***");
+        expect(echoEntry?.request?.headers["X-Short"]).toBe(SHORT_VALUE);
+        expect(echoEntry?.request?.body).toEqual({ secret: "***", short: SHORT_VALUE });
+        expect(echoEntry?.response?.body).toEqual({
+          receivedSecret: "***",
+          receivedShort: SHORT_VALUE,
+          body: { secret: "***", short: SHORT_VALUE },
+        });
+        // sink 側の assertions もマスクされている(expected に秘密情報のテンプレート解決値が入るため)
+        const echoSinkAssertion = echoEntry?.assertions.find((a) => a.kind === "bodyText.contains");
+        expect(echoSinkAssertion?.expected).toBe("***");
+        expect(echoSinkAssertion?.message).not.toContain(SECRET_VALUE);
+
+        const sseEntry = captured[1];
+        expect(sseEntry?.request?.headers["X-Secret"]).toBe("***");
+        expect(sseEntry?.events?.[0]?.data).toBe(JSON.stringify({ echoed: "***" }));
+
+        // 実行結果 (FlowResult) は履歴書き込み用にマスクした別オブジェクトとは独立しており、
+        // ライブの StepResult 側は秘密情報を含んだ生の値のまま保持される
+        const echoStep = flowResult.steps[0];
+        expect(echoStep?.request?.headers["X-Secret"]).toBe(SECRET_VALUE);
+        expect(echoStep?.request?.body).toEqual({ secret: SECRET_VALUE, short: SHORT_VALUE });
+        expect(echoStep?.response?.body).toEqual({
+          receivedSecret: SECRET_VALUE,
+          receivedShort: SHORT_VALUE,
+          body: { secret: SECRET_VALUE, short: SHORT_VALUE },
+        });
+        const echoLiveAssertion = echoStep?.assertions.find((a) => a.kind === "bodyText.contains");
+        expect(echoLiveAssertion?.expected).toBe(SECRET_VALUE);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+
+    it("assert 内の {{env.X}} で解決した値も sink エントリでは *** にマスクされ、実行結果 (FlowResult) では生の値のまま保持される", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+      const { server, baseUrl } = await startEchoAndSseServer();
+
+      try {
+        const flow = flowSchema.parse({
+          name: "masking flow (assert block)",
+          steps: [
+            {
+              name: "echo",
+              request: {
+                method: "POST",
+                url: `${baseUrl}/echo`,
+                headers: { "X-Secret": `{{env.${SECRET_KEY}}}` },
+              },
+              // assert 定義自体にテンプレートで秘密情報を埋め込むケース
+              // (例: `headers: [{ name: X, equals: "{{env.X}}" }]` のような認証トークン検証)
+              assert: {
+                status: 200,
+                headers: [{ name: "X-Secret-Echo-Missing", equals: `{{env.${SECRET_KEY}}}` }],
+              },
+            },
+          ],
+        });
+
+        const captured: HistoryEntry[] = [];
+        const flowResult = await executeFlow(flow, "masking-flow-assert.yaml", {
+          cwd,
+          history: (entry) => {
+            captured.push(entry);
+          },
+        });
+
+        expect(captured).toHaveLength(1);
+
+        const sinkAssertion = captured[0]?.assertions.find((a) => a.kind === "header.equals");
+        expect(sinkAssertion?.expected).toBe("***");
+        expect(sinkAssertion?.message).not.toContain(SECRET_VALUE);
+        expect(JSON.stringify(captured[0])).not.toContain(SECRET_VALUE);
+
+        const liveAssertion = flowResult.steps[0]?.assertions.find(
+          (a) => a.kind === "header.equals",
+        );
+        expect(liveAssertion?.expected).toBe(SECRET_VALUE);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
+
+    it("ディスクに書く既定シンク(appendHistory)にもマスク済みエントリが渡る", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+      const { server, baseUrl } = await startEchoAndSseServer();
+
+      try {
+        const flow = flowSchema.parse({
+          name: "masking flow (default sink)",
+          steps: [
+            {
+              name: "echo",
+              request: {
+                method: "POST",
+                url: `${baseUrl}/echo`,
+                headers: { "X-Secret": `{{env.${SECRET_KEY}}}` },
+                body: { secret: `{{env.${SECRET_KEY}}}` },
+              },
+              assert: { status: 200 },
+            },
+          ],
+        });
+
+        // history 未指定 = 既定のファイルシンク(appendHistory)を使う
+        await executeFlow(flow, "masking-flow-default.yaml", { cwd });
+
+        const filePath = historyFilePath(cwd);
+        const content = await readFile(filePath, "utf-8");
+        expect(content).not.toContain(SECRET_VALUE);
+        const entry = JSON.parse(content.trim());
+        expect(entry.request.headers["X-Secret"]).toBe("***");
+        expect(entry.response.body.receivedSecret).toBe("***");
+        expect(entry.response.body.body).toEqual({ secret: "***" });
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
   });
 });
 

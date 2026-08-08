@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { HistoryEntry } from "../api/client";
-import { groupHistoryByRun } from "./history";
+import { groupHistoryByRun, resolveStepStatus } from "./history";
 
 function entry(
   overrides: Partial<HistoryEntry> & Pick<HistoryEntry, "runId" | "step" | "startedAt">,
@@ -62,5 +62,88 @@ describe("groupHistoryByRun", () => {
     ];
     const groups = groupHistoryByRun(entries);
     expect(groups[0]?.status).toBe("passed");
+  });
+
+  it("uses the status field when present, taking priority over assertions", () => {
+    const entries: HistoryEntry[] = [
+      // status: "failed" だが assertions は全て ok -> status を優先して failed
+      entry({
+        runId: "run-1",
+        step: "a",
+        startedAt: "2026-08-07T00:00:00.000Z",
+        status: "failed",
+      }),
+    ];
+    const groups = groupHistoryByRun(entries);
+    expect(groups[0]?.status).toBe("failed");
+  });
+
+  it("does not flip a group to failed because of a skipped step", () => {
+    const entries: HistoryEntry[] = [
+      entry({
+        runId: "run-1",
+        step: "a",
+        startedAt: "2026-08-07T00:00:00.000Z",
+        status: "skipped",
+        request: undefined,
+        response: undefined,
+        assertions: [],
+      }),
+      entry({
+        runId: "run-1",
+        step: "b",
+        startedAt: "2026-08-07T00:00:01.000Z",
+        status: "passed",
+      }),
+    ];
+    const groups = groupHistoryByRun(entries);
+    expect(groups[0]?.status).toBe("passed");
+  });
+
+  it("labels a group as skipped when every step in it is skipped", () => {
+    const entries: HistoryEntry[] = [
+      entry({
+        runId: "run-1",
+        step: "a",
+        startedAt: "2026-08-07T00:00:00.000Z",
+        status: "skipped",
+        request: undefined,
+        response: undefined,
+        assertions: [],
+      }),
+      entry({
+        runId: "run-1",
+        step: "b",
+        startedAt: "2026-08-07T00:00:01.000Z",
+        status: "skipped",
+        request: undefined,
+        response: undefined,
+        assertions: [],
+      }),
+    ];
+    const groups = groupHistoryByRun(entries);
+    expect(groups[0]?.status).toBe("skipped");
+  });
+});
+
+describe("resolveStepStatus", () => {
+  it("returns the status field as-is when present", () => {
+    expect(
+      resolveStepStatus(entry({ runId: "r", step: "a", startedAt: "t", status: "skipped" })),
+    ).toBe("skipped");
+  });
+
+  it("falls back to assertion-derived status for legacy entries without status", () => {
+    expect(resolveStepStatus(entry({ runId: "r", step: "a", startedAt: "t" }))).toBe("passed");
+    expect(
+      resolveStepStatus(
+        entry({
+          runId: "r",
+          step: "a",
+          startedAt: "t",
+          assertions: [{ ok: false, kind: "status", expected: 200, actual: 500, message: "fail" }],
+        }),
+      ),
+    ).toBe("failed");
   });
 });
