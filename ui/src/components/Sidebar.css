@@ -1,0 +1,150 @@
+.klaus-sidebar {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  height: 100vh;
+  background: var(--color-primary);
+  border-right: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+.klaus-sidebar__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-xl);
+  font-weight: 600;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.klaus-sidebar__close {
+  display: none;
+  background: transparent;
+  border: none;
+  color: var(--color-foreground);
+  width: 44px;
+  height: 44px;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--transition-fast);
+}
+
+.klaus-sidebar__close:hover {
+  background: var(--color-secondary);
+}
+
+.klaus-sidebar__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  padding: var(--space-xl);
+  color: var(--color-muted-foreground);
+  font-size: var(--font-size-table);
+}
+
+.klaus-sidebar__status--error {
+  color: var(--color-fail);
+}
+
+.klaus-sidebar__list {
+  list-style: none;
+  margin: 0;
+  padding: var(--space-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.klaus-sidebar__item {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: var(--space-md) var(--space-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-height: 44px;
+  transition: background-color var(--transition-fast);
+}
+
+.klaus-sidebar__item:hover:not(:disabled) {
+  background: var(--color-secondary);
+}
+
+.klaus-sidebar__item--active {
+  background: var(--color-secondary);
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.klaus-sidebar__item-main {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.klaus-sidebar__item-name {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  font-family: var(--font-sans);
+  font-weight: 500;
+  color: var(--color-foreground);
+}
+
+.klaus-sidebar__item-error-icon {
+  color: var(--color-destructive);
+  flex-shrink: 0;
+}
+
+.klaus-sidebar__item-path {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.klaus-sidebar__item-error-text {
+  font-size: 12px;
+  color: var(--color-destructive);
+  white-space: normal;
+}
+
+.klaus-sidebar-overlay {
+  display: none;
+}
+
+/* 仕様「768px 未満でドロワー化」に合わせ、768px ちょうどは固定サイドバー側に含める */
+@media (max-width: 767px) {
+  .klaus-sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 30;
+    transform: translateX(-100%);
+    transition: transform var(--transition-base);
+    box-shadow: var(--shadow-lg, 0 10px 15px rgba(0, 0, 0, 0.3));
+  }
+
+  .klaus-sidebar--open {
+    transform: translateX(0);
+  }
+
+  .klaus-sidebar__close {
+    display: inline-flex;
+  }
+
+  .klaus-sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 20;
+    background: rgba(0, 0, 0, 0.5);
+    border: none;
+    padding: 0;
+  }
+}

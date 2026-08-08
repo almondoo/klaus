@@ -1,0 +1,32 @@
+.klaus-json {
+  margin: 0;
+  padding: var(--space-lg);
+  background: var(--color-primary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-table);
+  line-height: 1.5;
+  white-space: pre;
+  overflow: auto;
+}
+
+.klaus-json__key {
+  color: #7dd3fc;
+}
+
+.klaus-json__string {
+  color: var(--color-pass);
+}
+
+.klaus-json__number {
+  color: #f0abfc;
+}
+
+.klaus-json__boolean {
+  color: var(--color-skipped);
+}
+
+.klaus-json__null {
+  color: var(--color-muted-foreground);
+}

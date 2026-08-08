@@ -1,0 +1,50 @@
+{
+  "name": "@almondoo/klaus",
+  "version": "0.1.0",
+  "description": "API 検証 CLI: YAML でリクエストフローを定義し、実行・アサーション・履歴管理を行う",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.18.1"
+  },
+  "bin": {
+    "klaus": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "build:ui": "pnpm --filter @almondoo/klaus-ui build",
+    "build:all": "pnpm build && pnpm build:ui",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check ."
+  },
+  "dependencies": {
+    "commander": "^14",
+    "eventsource-parser": "^3.1.0",
+    "hono": "^4.13.0",
+    "jsonpath-plus": "^10.4.0",
+    "undici": "^7",
+    "yaml": "^2.9.0",
+    "zod": "^4"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2",
+    "@types/node": "^20.19.43",
+    "@types/ws": "^8.18.1",
+    "tsup": "^8.5",
+    "typescript": "^5.9",
+    "vitest": "^4",
+    "ws": "^8.21.2"
+  }
+}

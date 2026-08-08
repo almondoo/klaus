@@ -1,0 +1,74 @@
+/**
+ * デザイントークン(docs/design-system/klaus/MASTER.md / docs/ui-ux-design.md より)。
+ * ダークモードのみ。CSS variables として定義する。
+ */
+:root {
+  color-scheme: dark;
+
+  /* カラー */
+  --color-background: #020617;
+  --color-foreground: #f8fafc;
+  --color-primary: #0f172a;
+  --color-secondary: #1e293b;
+  --color-muted: #1a1e2f;
+  --color-muted-foreground: #94a3b8;
+  --color-border: #334155;
+  --color-accent: #22c55e;
+  --color-destructive: #ef4444;
+
+  /* ステータス色 */
+  --color-pass: #22c55e;
+  --color-fail: #ef4444;
+  --color-running: #38bdf8;
+  --color-skipped: #f59e0b;
+
+  --color-ring: #38bdf8;
+
+  /* タイポグラフィ */
+  --font-mono: "Fira Code", ui-monospace, "SFMono-Regular", Menlo, monospace;
+  --font-sans: "Fira Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-size-base: 16px;
+  --font-size-table: 14px;
+
+  /* スペーシング(density 8/10) */
+  --space-xs: 2px;
+  --space-sm: 4px;
+  --space-md: 8px;
+  --space-lg: 12px;
+  --space-xl: 16px;
+  --space-2xl: 24px;
+  --space-3xl: 32px;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+
+  --transition-fast: 150ms ease;
+  --transition-base: 250ms ease;
+
+  --sidebar-width: 260px;
+  --row-height: 34px;
+}
+
+/*
+ * スピナー以外のアニメーション/トランジションを止める([data-spinner] は除外)。
+ * ここはユニバーサルセレクタ(`*`)による全要素への横断的な上書きであり、
+ * 各コンポーネントのクラスセレクタ(`.klaus-btn` 等)は詳細度で `*` を上回るため、
+ * 詳細度だけでは prefers-reduced-motion を確実に効かせられない。
+ * a11y(WCAG 2.3.3)上の意図的な !important 使用として容認する。
+ */
+@media (prefers-reduced-motion: reduce) {
+  *:not([data-spinner]) {
+    /* biome-ignore lint/complexity/noImportantStyles: 全コンポーネントの詳細度を上回って必ずアニメーションを止めるための意図的な a11y 対応 */
+    animation-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: 全コンポーネントの詳細度を上回って必ずアニメーションを止めるための意図的な a11y 対応 */
+    animation-iteration-count: 1 !important;
+  }
+  *,
+  *::before,
+  *::after {
+    /* biome-ignore lint/complexity/noImportantStyles: 全コンポーネントの詳細度を上回って必ずトランジションを止めるための意図的な a11y 対応 */
+    transition-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: 全コンポーネントの詳細度を上回って必ずスクロールアニメーションを止めるための意図的な a11y 対応 */
+    scroll-behavior: auto !important;
+  }
+}

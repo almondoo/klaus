@@ -1,0 +1,80 @@
+.klaus-run-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xl);
+  padding: var(--space-2xl);
+  max-width: 960px;
+}
+
+.klaus-run-view__placeholder {
+  padding: var(--space-3xl);
+  color: var(--color-muted-foreground);
+  text-align: center;
+}
+
+.klaus-run-view__placeholder--error {
+  color: var(--color-fail);
+}
+
+.klaus-run-view__hint {
+  color: var(--color-muted-foreground);
+  font-size: var(--font-size-table);
+  margin: 0;
+}
+
+.klaus-run-view__progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-lg);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-table);
+  color: var(--color-foreground);
+}
+
+.klaus-run-view__progress-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--color-secondary);
+  overflow: hidden;
+}
+
+.klaus-run-view__progress-fill {
+  height: 100%;
+  background: var(--color-accent);
+  transition: width var(--transition-base);
+}
+
+.klaus-run-view__error {
+  color: var(--color-fail);
+  font-size: var(--font-size-table);
+  margin: 0;
+}
+
+.klaus-run-view__steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+
+.klaus-run-view__summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-lg);
+  border-radius: var(--radius-md);
+  font-weight: 600;
+}
+
+.klaus-run-view__summary--passed {
+  background: rgba(34, 197, 94, 0.12);
+  color: var(--color-pass);
+}
+
+.klaus-run-view__summary--failed {
+  background: rgba(239, 68, 68, 0.12);
+  color: var(--color-fail);
+}

@@ -1,0 +1,30 @@
+{
+  "name": "@almondoo/klaus-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "klaus localhost UI (SPA)。klaus server がビルド成果物 (dist/ui) を配信する",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fontsource/fira-code": "^5.3.0",
+    "@fontsource/fira-sans": "^5.3.0",
+    "@phosphor-icons/react": "^2.1.10",
+    "eventsource-parser": "^3.0.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^4.7.0",
+    "jsdom": "^30.0.1",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.3",
+    "vitest": "^2.1.9"
+  }
+}

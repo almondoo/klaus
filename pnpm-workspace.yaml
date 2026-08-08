@@ -1,0 +1,6 @@
+packages:
+  - "ui"
+
+allowBuilds:
+  '@biomejs/biome': true
+  esbuild: true
