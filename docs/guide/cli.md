@@ -1,6 +1,21 @@
 # CLI リファレンス
 
-klaus のコマンドは `run`(フロー実行)と `ui`(localhost Web UI 起動)の2つ。
+klaus のコマンドは `init`(雛形生成)・`run`(フロー実行)・`ui`(localhost Web UI 起動)の3つ。
+
+## klaus init
+
+```
+klaus init
+```
+
+オプションはない。カレントディレクトリに最小構成を生成する。
+
+| 生成されるファイル | 内容 |
+|---|---|
+| `flows/example.yaml` | `https://example.com` への GET 1件、ステータス200のアサーション(日本語コメント付き) |
+| `environments/local.yaml` | `baseUrl` を持つ最小の環境ファイル |
+
+既存ファイルは上書きせずスキップし、その旨を stdout に表示する。必要なディレクトリは自動で作成される。常に exit 0。1件以上生成した場合、最後に次のコマンドのヒントを表示する: `klaus run flows/example.yaml -e local`
 
 ## klaus run
 

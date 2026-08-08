@@ -37,7 +37,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "THIRD_PARTY_LICENSES.md"
   ],
   "publishConfig": {
     "access": "public"
@@ -55,22 +56,22 @@
     "docs:preview": "vitepress preview docs"
   },
   "dependencies": {
-    "commander": "^15",
-    "eventsource-parser": "^3.1.0",
-    "hono": "^4.13.1",
-    "jsonpath-plus": "^10.4.0",
-    "undici": "^8",
-    "yaml": "^2.9.0",
     "zod": "^4"
   },
   "devDependencies": {
     "@biomejs/biome": "^2",
     "@types/node": "^26.1.1",
     "@types/ws": "^8.18.1",
+    "commander": "^15",
+    "eventsource-parser": "^3.1.0",
+    "hono": "^4.13.1",
+    "jsonpath-plus": "^10.4.0",
     "tsup": "^8.5",
     "typescript": "^5.9",
+    "undici": "^8",
     "vitepress": "^1.6.4",
     "vitest": "^4",
-    "ws": "^8.21.3"
+    "ws": "^8.21.3",
+    "yaml": "^2.9.0"
   }
 }

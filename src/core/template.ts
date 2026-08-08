@@ -11,6 +11,12 @@ export interface TemplateContext {
   captures: Record<string, unknown>;
   /** 環境ファイル(environments/<name>.yaml)の変数 */
   env: Environment;
+  /**
+   * {{env.X}} で解決した値を収集する先(履歴に書き込む前のシークレットマスクに使う)。
+   * 呼び出し元(runner)がフロー実行単位で1つ生成し、全ステップの TemplateContext に共有して渡す想定。
+   * 未指定の場合は収集しない(単体テスト等で不要な場合に省略できる)。
+   */
+  secrets?: Set<string>;
 }
 
 const TEMPLATE_PATTERN = /\{\{\s*([^}]+?)\s*\}\}/g;
@@ -38,6 +44,8 @@ function resolveVariable(name: string, context: TemplateContext): string {
     if (value === undefined) {
       throw new RuntimeError(`OS environment variable "${envKey}" is not defined`);
     }
+    // OS 環境変数はシークレットとして扱い、履歴マスク用に収集する
+    context.secrets?.add(value);
     return value;
   }
 

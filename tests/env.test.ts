@@ -15,6 +15,65 @@ describe("resolveEnvironmentPath", () => {
     expect(() => resolveEnvironmentPath("/repo", "../../etc/secrets/prod")).toThrow(ParseError);
     expect(() => resolveEnvironmentPath("/repo", "../secret")).toThrow(ParseError);
   });
+
+  describe("上方探索", () => {
+    const tmpRoot = join(process.cwd(), "tmp");
+    let root: string;
+
+    beforeEach(async () => {
+      await mkdir(tmpRoot, { recursive: true });
+      root = await mkdtemp(join(tmpRoot, "klaus-env-search-"));
+    });
+
+    afterEach(async () => {
+      await rm(root, { recursive: true, force: true });
+    });
+
+    it("cwd の親ディレクトリの environments/<name>.yaml を発見する", async () => {
+      await mkdir(join(root, "environments"), { recursive: true });
+      await writeFile(join(root, "environments", "local.yaml"), "baseUrl: http://localhost:3000\n");
+      const subDir = join(root, "sub", "nested");
+      await mkdir(subDir, { recursive: true });
+
+      expect(resolveEnvironmentPath(subDir, "local")).toBe(
+        join(root, "environments", "local.yaml"),
+      );
+    });
+
+    it(".git を含む祖先ディレクトリで探索を打ち切り、それより上の environments/ は見つけない", async () => {
+      await mkdir(join(root, "environments"), { recursive: true });
+      await writeFile(join(root, "environments", "local.yaml"), "baseUrl: http://localhost:3000\n");
+      const repoDir = join(root, "repo");
+      await mkdir(join(repoDir, ".git"), { recursive: true });
+      const subDir = join(repoDir, "sub");
+      await mkdir(subDir, { recursive: true });
+
+      expect(resolveEnvironmentPath(subDir, "local")).toBe(
+        join(subDir, "environments", "local.yaml"),
+      );
+    });
+
+    it("不正な env 名は探索を開始する前に ParseError で拒否する", async () => {
+      const subDir = join(root, "sub", "nested");
+      await mkdir(subDir, { recursive: true });
+
+      expect(() => resolveEnvironmentPath(subDir, "../../etc/secrets/prod")).toThrow(ParseError);
+    });
+
+    it("どの祖先にも見つからない場合は cwd 基準のパスを返す", async () => {
+      // root 自体に .git を置き、探索が実リポジトリ側まで及ばないようにする(hermetic にするため)。
+      // これが無いと root(tmp/ 配下)からの上方探索が実リポジトリのルートまで届いてしまい、
+      // 「実リポジトリの環境ファイル配置に environments/local.yaml が無い」という
+      // 偶然の前提でしかテストが成立しなくなる
+      await mkdir(join(root, ".git"), { recursive: true });
+      const subDir = join(root, "sub", "nested");
+      await mkdir(subDir, { recursive: true });
+
+      expect(resolveEnvironmentPath(subDir, "local")).toBe(
+        join(subDir, "environments", "local.yaml"),
+      );
+    });
+  });
 });
 
 describe("loadEnvironment", () => {

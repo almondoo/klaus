@@ -11,6 +11,22 @@ npm install -g @almondoo/klaus
 
 `package.json` の `engines` で Node.js `>=22.19.0` が要求される(`bin` は `klaus` コマンドとして `dist/cli.js` を指す)。
 
+## klaus init で雛形を作る
+
+インストール後、プロジェクトのディレクトリで次を実行すると最小構成が生成される。
+
+```bash
+klaus init
+```
+
+カレントディレクトリに `flows/example.yaml`(`https://example.com` への GET 1件を検証するサンプルフロー)と `environments/local.yaml`(`baseUrl` を持つ最小の環境ファイル)を生成する。オプションはない。既存ファイルは上書きせずスキップし、必要なディレクトリは自動で作成される。生成後は次のコマンドのヒントが表示される。
+
+```bash
+klaus run flows/example.yaml -e local
+```
+
+以降のセクションでは、この雛形の中身を理解するためにフロー定義を手動で書く手順を説明する。
+
 ## 最小のフローを作る
 
 klaus のフロー定義は「1 YAML ファイル = 1 フロー(複数ステップの順次実行)」という構造を持つ。プロジェクトの好きな場所に YAML ファイルを置く(慣習として `api/` 配下に置くことが多いが、`klaus run` はファイルパスを直接引数に取るのでどこに置いてもよい)。
@@ -89,7 +105,7 @@ steps:
 
 ## environments/ ファイルを作る
 
-`env: local` は、klaus の実行時カレントディレクトリ(`klaus run` を実行した cwd。フローファイル自身の場所ではない)を基準に `environments/local.yaml` を探して読み込む。
+`env: local` は、klaus の実行時カレントディレクトリ(`klaus run` を実行した cwd。フローファイル自身の場所ではない)を起点に `environments/local.yaml` を上方探索して読み込む。cwd から親ディレクトリへ順に辿り、各ディレクトリ直下の `environments/local.yaml` の存在を確認する。探索は `.git` を含む最初の祖先ディレクトリ(そのディレクトリ自身は調べたうえで打ち切る)、またはファイルシステムのルートに到達した時点で止まる。そのため、プロジェクトのサブディレクトリで `klaus run` を実行しても、プロジェクトルート直下の `environments/` が見つかる(リポジトリを跨いで探索することはない)。
 
 ```yaml
 # environments/local.yaml
@@ -99,10 +115,10 @@ testEmail: test@example.com
 
 環境ファイルの値はすべて文字列で、テンプレート変数(<code v-pre>{{...}}</code>)として <code v-pre>{{baseUrl}}</code> のように参照できる。シークレット(パスワードなど)は環境ファイルに直書きせず、<code v-pre>{{env.TEST_PASSWORD}}</code> の形で OS 環境変数を参照する(`TEST_PASSWORD=xxx klaus run ...` のように渡す)。
 
-`env:` を指定しない、または `environments/<name>.yaml` が存在しない場合の挙動は次の通り:
+`env:` を指定しない、またはどの祖先ディレクトリにも `environments/<name>.yaml` が見つからない場合の挙動は次の通り:
 
 - フロー定義に `env:` が無く `--env` も指定しなければ、環境変数なし(空オブジェクト)として実行される
-- `env:` または `--env` で名前を指定したのに該当ファイルが読めない場合はパースエラー(exit code 2)になる
+- `env:` または `--env` で名前を指定したのに該当ファイルが見つからない場合はパースエラー(exit code 2)になる
 
 `--env <name>` で CLI からフロー定義の `env:` を上書きできる。
 

@@ -1,0 +1,68 @@
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { initCommand } from "../../src/cli/init.js";
+import { loadFlow } from "../../src/core/index.js";
+
+const projectRoot = join(__dirname, "..", "..");
+const tmpRoot = join(projectRoot, "tmp");
+
+describe("initCommand", () => {
+  let workDir: string;
+  let stdoutSpy: string[];
+  let writeSpy: typeof process.stdout.write;
+
+  beforeEach(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    workDir = await mkdtemp(join(tmpRoot, "klaus-init-"));
+    stdoutSpy = [];
+    writeSpy = process.stdout.write;
+    process.stdout.write = ((chunk: string) => {
+      stdoutSpy.push(chunk.toString());
+      return true;
+    }) as typeof process.stdout.write;
+  });
+
+  afterEach(async () => {
+    process.stdout.write = writeSpy;
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  it("空のディレクトリに flows/example.yaml と environments/local.yaml を生成する", async () => {
+    const exitCode = await initCommand(workDir);
+
+    expect(exitCode).toBe(0);
+    const flowContent = await readFile(join(workDir, "flows", "example.yaml"), "utf-8");
+    const envContent = await readFile(join(workDir, "environments", "local.yaml"), "utf-8");
+    expect(flowContent).toContain("name: example flow");
+    expect(envContent).toContain("baseUrl:");
+    expect(stdoutSpy.join("")).toContain("作成しました: flows/example.yaml");
+    expect(stdoutSpy.join("")).toContain("作成しました: environments/local.yaml");
+  });
+
+  it("生成した flows/example.yaml は klaus のローダー(loadFlow)を通る", async () => {
+    await initCommand(workDir);
+
+    const flow = await loadFlow(join(workDir, "flows", "example.yaml"));
+
+    expect(flow.name).toBe("example flow");
+    expect(flow.steps).toHaveLength(1);
+    expect(flow.steps[0]?.request?.method).toBe("GET");
+    expect(flow.steps[0]?.request?.url).toBe("https://example.com");
+    expect(flow.steps[0]?.assert?.status).toBe(200);
+  });
+
+  it("既存ファイルは上書きせず、スキップとして報告する", async () => {
+    await mkdir(join(workDir, "flows"), { recursive: true });
+    await writeFile(join(workDir, "flows", "example.yaml"), "name: keep me\nsteps: []\n", "utf-8");
+
+    const exitCode = await initCommand(workDir);
+
+    expect(exitCode).toBe(0);
+    const preserved = await readFile(join(workDir, "flows", "example.yaml"), "utf-8");
+    expect(preserved).toBe("name: keep me\nsteps: []\n");
+    expect(stdoutSpy.join("")).toContain("スキップしました(既に存在します): flows/example.yaml");
+    // environments/local.yaml は既存ファイルが無いので通常どおり作成される
+    await readFile(join(workDir, "environments", "local.yaml"), "utf-8");
+  });
+});

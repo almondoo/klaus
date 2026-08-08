@@ -2,6 +2,10 @@
 
 ローカル HTTP API を CLI から検証するツール。リクエスト定義を素の YAML で git 管理し、実行・アサーション・履歴管理を行う。人間と AI エージェント(Claude Code 等)の両方が使うことを前提に設計している。
 
+ドキュメントサイト: https://almondoo.github.io/klaus/
+
+[English](./README.en.md)
+
 - **1ファイル = 1フロー**: 複数ステップの順次実行、レスポンスからの変数キャプチャと後続ステップへのチェーン
 - **アサーション内包**: status / header / body(JSONPath)/ 所要時間を定義ファイルに記述
 - **エージェント向け出力**: exit code だけで故障箇所を判別可能。非 TTY では JSON 出力がデフォルト

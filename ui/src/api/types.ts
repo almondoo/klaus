@@ -52,6 +52,13 @@ export interface HistoryPage {
   nextBefore?: string;
 }
 
+/** SSE で受信した1イベント。src/core/types.ts の SseEvent と同一契約 */
+export interface SseEvent {
+  event?: string;
+  id?: string;
+  data: string;
+}
+
 /** 履歴 JSONL 1行分(v1)。src/core/history.ts の HistoryEntry と同一契約 */
 export interface HistoryEntry {
   v: 1;
@@ -60,17 +67,24 @@ export interface HistoryEntry {
   step: string;
   startedAt: string;
   durationMs: number;
-  request: {
+  /** 旧エントリには無い。省略時は従来通り assertions から導出する(groupHistoryByRun 参照) */
+  status?: "passed" | "failed" | "skipped";
+  /** skipped では省略 */
+  request?: {
     method: string;
     url: string;
     headers: Record<string, string>;
     body?: unknown;
   };
-  response: {
+  /** skipped では省略 */
+  response?: {
     status: number;
     headers: Record<string, string>;
     body: unknown;
   };
+  /** SSE ステップのみ入る */
+  events?: SseEvent[];
+  /** skipped では [] */
   assertions: AssertionResult[];
 }
 

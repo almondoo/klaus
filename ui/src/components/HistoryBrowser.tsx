@@ -20,7 +20,7 @@ import {
 import { useHistory } from "@/hooks/useHistory";
 import { cn } from "@/lib/utils";
 import { formatDateTime, formatDuration } from "@/utils/format";
-import { groupHistoryByRun } from "@/utils/history";
+import { groupHistoryByRun, resolveStepStatus } from "@/utils/history";
 import { JsonBlock } from "./JsonBlock";
 import { Spinner } from "./Spinner";
 import { StatusBadge } from "./StatusBadge";
@@ -139,7 +139,13 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                       group.steps.map((step) => {
                         const stepKey = `${group.runId}:${step.step}`;
                         const stepExpanded = expandedStep === stepKey;
-                        const stepStatus = step.assertions.some((a) => !a.ok) ? "failed" : "passed";
+                        const stepStatus = resolveStepStatus(step);
+                        // skipped では request/response が省略されるため、詳細表示用に存在するものだけ集める
+                        const stepDetail: Record<string, unknown> = {};
+                        if (step.request) stepDetail.request = step.request;
+                        if (step.response) stepDetail.response = step.response;
+                        if (step.events) stepDetail.events = step.events;
+                        const hasStepDetail = Object.keys(stepDetail).length > 0;
                         return (
                           <Fragment key={stepKey}>
                             <TableRow
@@ -165,15 +171,20 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                                 {formatDuration(step.durationMs)}
                               </TableCell>
                               <TableCell className="font-mono text-muted-foreground">
-                                {step.response.status}
+                                {/* skipped は HTTP レスポンスを持たないため、ステータスコードの代わりにその旨を表示する */}
+                                {step.response ? step.response.status : "スキップ"}
                               </TableCell>
                             </TableRow>
                             {stepExpanded && (
                               <TableRow className="bg-popover hover:bg-popover">
                                 <TableCell colSpan={5} className="whitespace-normal py-3">
-                                  <JsonBlock
-                                    value={{ request: step.request, response: step.response }}
-                                  />
+                                  {hasStepDetail ? (
+                                    <JsonBlock value={stepDetail} />
+                                  ) : (
+                                    <p className="text-sm text-muted-foreground">
+                                      スキップされたステップのため詳細はありません
+                                    </p>
+                                  )}
                                 </TableCell>
                               </TableRow>
                             )}

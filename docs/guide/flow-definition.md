@@ -15,7 +15,7 @@ steps:                 # 必須: 1件以上。name はフロー内で一意
     assert: { ... }    # 任意: アサーション
 ```
 
-- 環境ファイルは **cwd 基準**で `environments/<name>.yaml` を解決する。`klaus run --env <name>` でフローの `env:` を上書きできる
+- 環境ファイルは cwd から上方探索(`.git` を含む祖先ディレクトリ、またはファイルシステムルートで打ち切り)で `environments/<name>.yaml` を解決する。詳細は [Getting Started](getting-started.md) を参照。`klaus run --env <name>` でフローの `env:` を上書きできる
 - 環境ファイルは `キー: 文字列値` のフラットなマップ。値にはテンプレート(<code v-pre>{{env.X}}</code> 等)を使える
 
 ## request(HTTP ステップ)

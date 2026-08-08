@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
+import { initCommand } from "./init.js";
 import { type RunCommandOptions, runCommand } from "./run.js";
 import { type UiCommandOptions, uiCommand } from "./ui.js";
 
@@ -64,6 +65,19 @@ program
   .action(async (options: UiCommandOptions) => {
     try {
       await uiCommand(options);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`klaus: unexpected error: ${message}\n`);
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("init")
+  .description("flows/environments の最小雛形をカレントディレクトリに生成する")
+  .action(async () => {
+    try {
+      process.exitCode = await initCommand();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`klaus: unexpected error: ${message}\n`);
