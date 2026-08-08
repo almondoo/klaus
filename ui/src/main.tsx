@@ -13,8 +13,7 @@ import "@fontsource/fira-sans/latin-600.css";
 import "@fontsource/fira-sans/latin-ext-400.css";
 import "@fontsource/fira-sans/latin-ext-500.css";
 import "@fontsource/fira-sans/latin-ext-600.css";
-import "./styles/tokens.css";
-import "./styles/global.css";
+import "./styles/globals.css";
 
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";

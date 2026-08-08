@@ -10,7 +10,11 @@ source: ui-ux-pro-max skill (design-system + product/ux/icons/react 検索)
 # klaus UI ビジュアル / UX 設計(M4)
 
 > [!summary] この文書の役割
-> [[ui-design]](docs/ui-design.md)がアーキテクチャ(server / API / セキュリティ)を定めるのに対し、本書はビジュアルデザインと UX ルールを定める。デザイントークンの原本は `docs/design-system/klaus/MASTER.md`(ui-ux-pro-max により生成)。本書は klaus の実態(データ密度の高いランナー + ビューア)に合わせた適用ルールを記す。
+> [[ui-design]](docs/ui-design.md)がアーキテクチャ(server / API / セキュリティ)を定めるのに対し、本書はビジュアルデザインと UX の**方針**を定める。
+>
+> **実装の詳細(トークンの実値・コンポーネント構成)は [`ui/docs/design-system.md`](../ui/docs/design-system.md) と [`ui/docs/components.md`](../ui/docs/components.md) が正**。UI は shadcn/ui + Tailwind CSS v4 で実装されており、CSS 変数の実体は `ui/src/styles/globals.css` にある。本書と実装が食い違う場合は実装側が正しい(下記「実装との差分」を参照)。
+>
+> `docs/design-system/klaus/MASTER.md` は ui-ux-pro-max が生成した出発点であり、現在の実装はそこから意図的に逸脱している箇所がある。
 
 ## デザイン方針
 
@@ -20,29 +24,39 @@ ui-ux-pro-max の product 検索で「Developer Tool / IDE」にマッチ: **Dar
 - ターミナル的な情報密度: density 8/10(spacing scale 8–32px)。余白で飾らず、実行結果を一覧性高く見せる
 - モーションは subtle(2/10)。GSAP は導入せず CSS transition(150–300ms)で足りる範囲に留める(グローバル CLI の依存を増やさない。MASTER.md の GSAP スニペットは不使用)。`prefers-reduced-motion` を尊重する
 
-## カラートークン(MASTER.md より)
+## カラー方針
 
-| Role | Hex | 用途 |
+配色は「コードエディタ的なダーク + ステータス色」。実際の CSS 変数名と値は `ui/src/styles/globals.css` が正で、対応表は [`ui/docs/design-system.md`](../ui/docs/design-system.md) にある。方針としての基準色:
+
+| 役割 | Hex | 用途 |
 |------|-----|------|
-| Background | `#020617` | アプリ背景 |
-| Foreground | `#F8FAFC` | 基本テキスト |
-| Primary | `#0F172A` | ヘッダー・サイドバー面 |
-| Secondary | `#1E293B` | カード・パネル面 |
-| Muted | `#1A1E2F` | 行の縞・非活性領域 |
-| Border | `#334155` | 罫線 |
-| Accent | `#22C55E` | 実行ボタン・PASS |
-| Destructive | `#EF4444` | FAIL・エラー |
+| 背景 | `#020617` | アプリ背景 |
+| 前景 | `#F8FAFC` | 基本テキスト |
+| 面(濃) | `#0F172A` | ヘッダー・サイドバー |
+| 面(淡) | `#1E293B` | カード・パネル |
+| 罫線 | `#334155` | 境界 |
 
-ステータス色の拡張(DB に該当が無いため独自定義。既存トークンとの整合で選定):
+ステータス色(実装では `--pass` / `--fail` / `--running` / `--skipped` / `--pending`):
 
 | 状態 | Hex | 備考 |
 |------|-----|------|
-| pass | `#22C55E` | Accent と共通 |
-| fail | `#EF4444` | Destructive と共通 |
-| running | `#38BDF8` | sky。スピナー・進行中ステップ |
+| pass | `#22C55E` | 実行ボタン(`--primary`)とも共通 |
+| fail | `#EF4444` | `--destructive` と共通 |
+| running | `#38BDF8` | sky。スピナー・進行中。フォーカスリング(`--ring`)にも使用 |
 | skipped | `#F59E0B` | amber。フロー中断後のスキップステップ |
+| pending | `#94A3B8` | 未実行。`--muted-foreground` と共通 |
 
 **色だけに意味を担わせない**(アクセシビリティ必須ルール): pass/fail/skipped は必ずアイコン + テキストラベルを併記する。コントラストは 4.5:1 以上を維持。
+
+### 実装との差分(実装が正)
+
+shadcn/ui 移行にあたり、以下は本書・MASTER.md の初期案から意図的に変更されている:
+
+- **アイコンは lucide-react**(shadcn 標準)。当初案の Phosphor Icons は不採用
+- **色の役割名は shadcn のセマンティクスに再マップ**。`#0F172A` は面の色なので `--popover`、実際のアクション色である `#22C55E` が `--primary`
+- **`--ring` は `#38BDF8`(sky)**。MASTER.md は `--ring` に紺(`#0F172A`)を割り当てていたが、背景 `#020617` に対してフォーカスリングがほぼ見えないため修正
+- **余白は Tailwind 標準スケール**を使う。MASTER.md の `--space-xs`…`--space-3xl` は実装していない
+- **ライトモードは未実装**。`:root` と `.dark` は同値で、`<html class="dark">` 固定
 
 ## タイポグラフィ
 
@@ -71,9 +85,9 @@ ui-ux-pro-max の product 検索で「Developer Tool / IDE」にマッチ: **Dar
 
 ## アイコン
 
-- **Phosphor Icons(@phosphor-icons/react)、Outline スタイルで統一**。絵文字をアイコンとして使わない(必須ルール)
-- 主要マッピング: 実行 = Play、pass = CheckCircle、fail = XCircle、skipped = MinusCircle、running = CircleNotch(回転)、履歴 = ClockCounterClockwise、環境 = Gear、戻る = ArrowLeft
-- アイコンのみのボタンには必ず `aria-label` を付与。サイズ 20px、クリック領域は 44×44px 以上を確保
+- **lucide-react で統一**(shadcn 標準のアイコンライブラリ)。絵文字をアイコンとして使わない(必須ルール)
+- 主要マッピング: 実行 = Play、pass = CheckCircle、fail = XCircle、skipped = MinusCircle、running = Loader2(回転)、履歴 = History、戻る = ArrowLeft。実際に使用しているアイコンは [`ui/docs/components.md`](../ui/docs/components.md) を参照
+- アイコンのみのボタンには必ず `aria-label` を付与。クリック領域は 44×44px 以上を確保
 
 ## React 実装ルール(stack 検索より)
 

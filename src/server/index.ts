@@ -12,8 +12,9 @@ import { createApp } from "./app.js";
 import { bridgeHonoApp } from "./node-bridge.js";
 
 export interface StartServerOptions {
+  // 呼び出し元(CLI の --port 未指定時など)から明示的に undefined が渡ることがあるため許容する
   /** 未指定ならエフェメラルポート(OS が空きポートを自動選択)を使う */
-  port?: number;
+  port?: number | undefined;
   /** フロー探索・実行の基準ディレクトリ。既定は process.cwd() */
   cwd?: string;
 }

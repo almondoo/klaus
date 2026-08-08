@@ -1,3 +1,5 @@
+import { fileURLToPath } from "node:url";
+import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
 
@@ -5,7 +7,13 @@ import { defineConfig } from "vitest/config";
 const serverPort = process.env.KLAUS_SERVER_PORT ?? "4001";
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      // shadcn/ui の慣習に合わせた src/ 直下へのエイリアス
+      "@": fileURLToPath(new URL("./src", import.meta.url)),
+    },
+  },
   server: {
     proxy: {
       "/api": {

@@ -31,21 +31,25 @@ interface DataItem {
   data: string;
 }
 
+// 以下2つの型は Zod スキーマ(schema.ts)由来のオブジェクトをそのまま受け取る。
+// Zod の .optional() フィールドは値が明示的に undefined になり得るため、
+// exactOptionalPropertyTypes 対応として "| undefined" を明示する。
+
 /** 個別要素アサーション(SSE の event / WS の message)に共通のフィールド形状 */
 interface ItemAssertionDef {
-  index?: number;
-  path?: string;
-  exists?: boolean;
+  index?: number | undefined;
+  path?: string | undefined;
+  exists?: boolean | undefined;
   equals?: unknown;
-  contains?: string;
-  regex?: string;
+  contains?: string | undefined;
+  regex?: string | undefined;
 }
 
 interface MatchOptions {
   equals?: unknown;
-  contains?: string;
-  regex?: string;
-  exists?: boolean;
+  contains?: string | undefined;
+  regex?: string | undefined;
+  exists?: boolean | undefined;
 }
 
 /** 構造的な等価比較(JSON 値用) */
@@ -231,7 +235,9 @@ export function assertDuration(
  * assertEventCount / assertMessageCount はこれの薄いラッパー。
  */
 function assertItemCount(
-  def: { min?: number; max?: number; equals?: number } | undefined,
+  def:
+    | { min?: number | undefined; max?: number | undefined; equals?: number | undefined }
+    | undefined,
   items: DataItem[],
   kindPrefix: string,
   subject: string,

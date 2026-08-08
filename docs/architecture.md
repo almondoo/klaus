@@ -75,7 +75,8 @@ interface RunFlowOptions {
 
 - **tsup で3エントリ**: `dist/index.js`(ライブラリ、d.ts 付き)/ `dist/cli.js`(shebang 付き bin)/ `dist/server.js`(`klaus ui` 時に dynamic import される)
 - **ui は Vite** で `dist/ui/` に出力(`ui/vite.config.ts` の outDir)
-- `pnpm build:all` = `pnpm build`(tsup)→ `pnpm build:ui`(Vite)。**この順序が必須**: tsup の clean が dist/ を空にするため、逆順だと dist/ui が消える
+- `pnpm build:all` = `pnpm clean` → `pnpm build`(tsup)→ `pnpm build:ui`(Vite)
+- **clean の役割分担**: tsup 側は `clean: false` にしてある。tsup の clean は outDir 全体を消すため、有効にすると Vite が出力した `dist/ui` まで巻き添えで消え、`pnpm build` / `pnpm test` の後に `klaus ui` が 503 になるからである。その代わり、エントリを削除・リネームした際に古い成果物が `dist/` に残り `files: ["dist"]` 経由で publish に同梱される危険があるため、**リリース用のフルビルド `build:all` では `scripts/clean.mjs` で `dist/` を空にしてから**ビルドし直す。開発時の `pnpm build` 単体は clean せず、`dist/ui` を保持する
 - `src/cli/ui.ts` は server モジュールを実行時パス組み立てで dynamic import しており、`klaus run` の起動時間に server / Hono のロードコストが乗らない
 
 ## テスト構成

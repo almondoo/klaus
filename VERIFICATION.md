@@ -95,8 +95,6 @@ cat .klaus/history/*.jsonl                          # v:1 の行が1ステップ
 
 ## 3. localhost UI の確認
 
-> **注意**: `pnpm build`(tsup)と `pnpm test`(内部で build を実行)は dist/ を clean するため **dist/ui が消える**。セクション2以降でどちらかを実行した場合は、UI 確認の前に `pnpm build:ui` を再実行すること(503「静的ファイルが見つかりません」が出たらこれが原因)。
-
 ```bash
 node dist/cli.js ui        # トークン付き URL が表示されブラウザが開く
 ```

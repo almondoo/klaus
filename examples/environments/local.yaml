@@ -1,0 +1,4 @@
+# ローカル環境の変数。値はすべて文字列。
+# フロー内では {{baseUrl}} のように参照する。
+baseUrl: http://127.0.0.1:3000
+testEmail: test@example.com

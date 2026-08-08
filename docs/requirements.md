@@ -32,7 +32,7 @@ Go / Node で実装したローカル HTTP API を、Claude Code（AI エージ�
 
 | レイヤー | 選定 |
 |---|---|
-| 言語 / ランタイム | TypeScript + Node.js ≥20、npm -g 配布 |
+| 言語 / ランタイム | TypeScript + Node.js ≥22.19、npm -g 配布 |
 | HTTP エンジン | undici |
 | 定義フォーマット | YAML（zod でスキーマ検証） |
 | アサーション | jsonpath-plus + 自前マッチャー |

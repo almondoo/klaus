@@ -8,8 +8,10 @@ export type HttpMethod = string;
 
 /** SSE で受信した1イベント */
 export interface SseEvent {
-  event?: string;
-  id?: string;
+  // eventsource-parser の onEvent から渡る値がそのまま入るため、
+  // 「省略」と「明示的な undefined」を区別しない(exactOptionalPropertyTypes 対応)
+  event?: string | undefined;
+  id?: string | undefined;
   data: string;
 }
 
@@ -54,7 +56,8 @@ export interface StepResult {
   status: "passed" | "failed" | "skipped" | "error";
   startedAt: string;
   durationMs: number;
-  request?: RequestSnapshot;
+  // runtime エラー時は requestSnapshot が undefined のまま渡ることがあるため明示的に許容する
+  request?: RequestSnapshot | undefined;
   /** WS ステップの場合、HTTP レスポンスに相当するものが無いため常に undefined(受信メッセージは wsMessages に格納) */
   response?: ResponseSnapshot;
   /** SSE モードで受信したイベント一覧 */

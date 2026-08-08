@@ -31,7 +31,11 @@ export async function connectWebSocket(options: WsConnectOptions): Promise<WsCon
   const maxDurationMs = options.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
   const startedAt = performance.now();
 
-  const socket = new WebSocket(options.url, { headers: options.headers });
+  // undici の WebSocketInit.headers は undefined を受け付けないため、
+  // headers が無い場合は init 自体を渡さない(exactOptionalPropertyTypes 対応)
+  const socket = options.headers
+    ? new WebSocket(options.url, { headers: options.headers })
+    : new WebSocket(options.url);
   const messages: WsMessage[] = [];
 
   return await new Promise<WsConnectResult>((resolve, reject) => {

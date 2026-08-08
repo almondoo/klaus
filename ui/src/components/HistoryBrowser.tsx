@@ -1,16 +1,40 @@
 import { Fragment, useMemo, useState } from "react";
-import type { FlowListEntry } from "../api/client";
-import { useHistory } from "../hooks/useHistory";
-import { formatDateTime, formatDuration } from "../utils/format";
-import { groupHistoryByRun } from "../utils/history";
+import type { FlowListEntry } from "@/api/client";
+import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { useHistory } from "@/hooks/useHistory";
+import { cn } from "@/lib/utils";
+import { formatDateTime, formatDuration } from "@/utils/format";
+import { groupHistoryByRun } from "@/utils/history";
 import { JsonBlock } from "./JsonBlock";
 import { Spinner } from "./Spinner";
 import { StatusBadge } from "./StatusBadge";
-import "./HistoryBrowser.css";
 
 export interface HistoryBrowserProps {
   flows: FlowListEntry[];
 }
+
+// Radix Select の Item value には空文字列を使えない(未選択状態を表す予約値のため)ので、
+// 「すべて」を表す番兵値を用意し、実際のフィルタ値("" = 絞り込みなし)とマッピングする
+const ALL_FLOWS = "__all__";
+
+// 初回読み込み中に表示するスケルトン行の数(固定長の文字列配列を key に使う。理由は Sidebar.tsx 参照)
+const SKELETON_ROWS = ["row-1", "row-2", "row-3", "row-4", "row-5"];
 
 /** 履歴ブラウザ: 新しい順テーブル(run 単位グルーピング → ステップ詳細ドリルダウン) */
 export function HistoryBrowser({ flows }: HistoryBrowserProps) {
@@ -26,47 +50,66 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
   );
 
   return (
-    <div className="klaus-history">
-      <div className="klaus-history__toolbar">
-        <label className="klaus-history__filter">
-          <span>フロー</span>
-          <select value={flowFilter} onChange={(e) => setFlowFilter(e.target.value)}>
-            <option value="">すべて</option>
-            {flowNames.map((name) => (
-              <option key={name} value={name}>
-                {name}
-              </option>
-            ))}
-          </select>
-        </label>
+    <div className="flex flex-col gap-3 p-6">
+      <div className="flex gap-3">
+        {/* Select は独自コンポーネントで <label> の暗黙的な関連付けを静的解析で検証できないため、
+            aria-labelledby で明示的に紐付ける(biome の lint/a11y/noLabelWithoutControl 対策) */}
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <span id="history-flow-label">フロー</span>
+          <Select
+            value={flowFilter || ALL_FLOWS}
+            onValueChange={(v) => setFlowFilter(v === ALL_FLOWS ? "" : v)}
+          >
+            <SelectTrigger size="sm" className="font-mono" aria-labelledby="history-flow-label">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={ALL_FLOWS}>すべて</SelectItem>
+              {flowNames.map((name) => (
+                <SelectItem key={name} value={name}>
+                  {name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
-      {history.error && <p className="klaus-history__error">{history.error}</p>}
+      {history.error && <p className="text-sm text-fail">{history.error}</p>}
 
       {!history.error && groups.length === 0 && !history.loading && (
-        <p className="klaus-history__empty">履歴がありません</p>
+        <p className="text-sm text-muted-foreground">履歴がありません</p>
+      )}
+
+      {history.loading && groups.length === 0 && (
+        // 初回読み込みは content-shaped なスケルトンで示す(role="status" で AT に通知)
+        <div role="status" aria-label="履歴を読み込み中" className="flex flex-col gap-1.5">
+          {SKELETON_ROWS.map((key) => (
+            <Skeleton key={key} className="h-9 w-full" />
+          ))}
+        </div>
       )}
 
       {groups.length > 0 && (
-        <div className="klaus-history__table-wrap">
-          <table className="klaus-history__table">
-            <thead>
-              <tr>
-                <th>状態</th>
-                <th>フロー</th>
-                <th>開始時刻</th>
-                <th>所要時間</th>
-                <th>ステップ数</th>
-              </tr>
-            </thead>
-            <tbody>
+        <div className="overflow-hidden rounded-md border border-border">
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-popover hover:bg-popover">
+                <TableHead>状態</TableHead>
+                <TableHead>フロー</TableHead>
+                <TableHead>開始時刻</TableHead>
+                <TableHead>所要時間</TableHead>
+                <TableHead>ステップ数</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
               {groups.map((group, i) => {
                 const runExpanded = expandedRun === group.runId;
                 return (
                   <Fragment key={group.runId}>
                     {/* <tr> はテーブル構造上 <button> にできないため、tabIndex + onKeyDown + aria-expanded でキーボード操作性を担保する */}
-                    <tr
-                      className={`klaus-history__row ${i % 2 === 1 ? "is-odd" : ""}`}
+                    <TableRow
+                      className={cn("h-9 cursor-pointer hover:bg-muted", i % 2 === 1 && "bg-muted")}
                       tabIndex={0}
                       aria-expanded={runExpanded}
                       onClick={() => setExpandedRun(runExpanded ? null : group.runId)}
@@ -77,14 +120,20 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                         }
                       }}
                     >
-                      <td>
+                      <TableCell>
                         <StatusBadge status={group.status} />
-                      </td>
-                      <td className="klaus-history__flow">{group.flow}</td>
-                      <td className="klaus-history__mono">{formatDateTime(group.startedAt)}</td>
-                      <td className="klaus-history__mono">{formatDuration(group.durationMs)}</td>
-                      <td className="klaus-history__mono">{group.steps.length}</td>
-                    </tr>
+                      </TableCell>
+                      <TableCell className="font-medium">{group.flow}</TableCell>
+                      <TableCell className="font-mono text-muted-foreground">
+                        {formatDateTime(group.startedAt)}
+                      </TableCell>
+                      <TableCell className="font-mono text-muted-foreground">
+                        {formatDuration(group.durationMs)}
+                      </TableCell>
+                      <TableCell className="font-mono text-muted-foreground">
+                        {group.steps.length}
+                      </TableCell>
+                    </TableRow>
 
                     {runExpanded &&
                       group.steps.map((step) => {
@@ -93,8 +142,8 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                         const stepStatus = step.assertions.some((a) => !a.ok) ? "failed" : "passed";
                         return (
                           <Fragment key={stepKey}>
-                            <tr
-                              className="klaus-history__step-row"
+                            <TableRow
+                              className="h-9 cursor-pointer bg-card hover:bg-muted"
                               tabIndex={0}
                               aria-expanded={stepExpanded}
                               onClick={() => setExpandedStep(stepExpanded ? null : stepKey)}
@@ -105,26 +154,28 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                                 }
                               }}
                             >
-                              <td>
+                              <TableCell>
                                 <StatusBadge status={stepStatus} />
-                              </td>
-                              <td className="klaus-history__step-name">{step.step}</td>
-                              <td className="klaus-history__mono">
+                              </TableCell>
+                              <TableCell className="pl-8 font-mono">{step.step}</TableCell>
+                              <TableCell className="font-mono text-muted-foreground">
                                 {formatDateTime(step.startedAt)}
-                              </td>
-                              <td className="klaus-history__mono">
+                              </TableCell>
+                              <TableCell className="font-mono text-muted-foreground">
                                 {formatDuration(step.durationMs)}
-                              </td>
-                              <td className="klaus-history__mono">{step.response.status}</td>
-                            </tr>
+                              </TableCell>
+                              <TableCell className="font-mono text-muted-foreground">
+                                {step.response.status}
+                              </TableCell>
+                            </TableRow>
                             {stepExpanded && (
-                              <tr className="klaus-history__detail-row">
-                                <td colSpan={5}>
+                              <TableRow className="bg-popover hover:bg-popover">
+                                <TableCell colSpan={5} className="whitespace-normal py-3">
                                   <JsonBlock
                                     value={{ request: step.request, response: step.response }}
                                   />
-                                </td>
-                              </tr>
+                                </TableCell>
+                              </TableRow>
                             )}
                           </Fragment>
                         );
@@ -132,26 +183,28 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                   </Fragment>
                 );
               })}
-            </tbody>
-          </table>
+            </TableBody>
+          </Table>
         </div>
       )}
 
-      {history.loading && (
-        <div className="klaus-history__loading">
+      {history.loading && groups.length > 0 && (
+        // 追加読み込み(さらに読み込む)は既存行を維持したままスピナーで示す
+        <div className="flex items-center gap-2 text-muted-foreground">
           <Spinner label="履歴を読み込み中" />
           <span>読み込み中…</span>
         </div>
       )}
 
       {history.hasMore && !history.loading && (
-        <button
+        <Button
           type="button"
-          className="klaus-btn klaus-history__load-more"
+          variant="secondary"
+          className="self-center"
           onClick={history.loadMore}
         >
           さらに読み込む
-        </button>
+        </Button>
       )}
     </div>
   );

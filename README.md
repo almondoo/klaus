@@ -12,7 +12,7 @@
 
 ```bash
 npm install -g @almondoo/klaus
-# 要 Node.js >= 20.18.1
+# 要 Node.js >= 22.19.0
 ```
 
 ## クイックスタート
@@ -77,7 +77,7 @@ klaus run <files...> [options]
 
 klaus ui [options]      # localhost Web UI(ランナー + 履歴ビューア)を起動
 
-  --port <n>            ポート指定(デフォルト: 空きポート自動選択)
+  -p, --port <n>        ポート指定(デフォルト: 空きポート自動選択)
   --no-open             ブラウザの自動起動を抑止
 ```
 
@@ -180,9 +180,9 @@ klaus ui [options]      # localhost Web UI(ランナー + 履歴ビューア)を
 
 ```bash
 pnpm install
-pnpm build      # tsup(core / cli / server)
+pnpm build      # tsup(core / cli / server)。dist/ui は保持される
 pnpm build:ui   # Vite(ui/ → dist/ui)
-pnpm build:all  # build + build:ui(dist/ui を残す正しい順序)
+pnpm build:all  # clean + build + build:ui(リリース用のフルビルド)
 pnpm test       # vitest
 pnpm typecheck  # tsc --noEmit
 pnpm lint       # biome

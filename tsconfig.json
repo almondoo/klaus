@@ -1,6 +1,13 @@
 {
+  // devDependencies の typescript は 5.9 系に留めている(意図的な例外)。
+  // TypeScript 6/7 は Compiler API への依存が大きい tsup の d.ts バンドル生成が
+  // 未対応で、typescript-eslint 等のエコシステムも 6/7 系に追従できていないため、
+  // 他の全パッケージを最新化する今回の更新でもこの1点だけは見送る。
   "compilerOptions": {
     "target": "ES2022",
+    // module は ESNext のまま維持する。NodeNext だと import 文の拡張子省略が
+    // 許されず(相対 import に ".js" を強制される)、tsup バンドル前提の現行コードとは
+    // 相性が悪くなるため、moduleResolution: Bundler と組み合わせて ESNext を採用する。
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "lib": ["ES2022"],
@@ -13,8 +20,15 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noUncheckedIndexedAccess": true,
+    // 追加した厳格フラグ群
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "verbatimModuleSyntax": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "exactOptionalPropertyTypes": true,
     "outDir": "dist"
   },
   "include": ["src", "tests"],
-  "exclude": ["node_modules", "dist"]
+  "exclude": ["node_modules", "dist", "ui"]
 }

@@ -111,12 +111,12 @@ SSE / WebSocket ステップでは `response.body` は undefined になり、受
 ## klaus ui
 
 ```
-klaus ui [--port <n>] [--no-open]
+klaus ui [-p <n>] [--no-open]
 ```
 
 | オプション | 説明 | デフォルト |
 |---|---|---|
-| `--port <n>` | 待ち受けポート | 空きポート自動選択 |
+| `-p`, `--port <n>` | 待ち受けポート | 空きポート自動選択 |
 | `--no-open` | ブラウザの自動起動を抑止 | 自動起動する |
 
 起動するとトークン付き URL(`http://127.0.0.1:<port>/?token=…`)を stdout に表示し、デフォルトブラウザで開く。Ctrl+C で終了。サーバーの機能・セキュリティモデル・HTTP API は [localhost UI](ui.md) を参照。

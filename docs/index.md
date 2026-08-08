@@ -21,6 +21,9 @@ API 検証 CLI「klaus」のドキュメント目次。
 ## 開発者向け
 
 - [アーキテクチャ](architecture.md) — core / cli / server / ui の構成と責務、公開 API、ビルド・テスト構成
+- [UI デザインシステム](../ui/docs/design-system.md) — shadcn/ui + Tailwind v4 のトークン実装(実値の正)
+- [UI コンポーネント設計](../ui/docs/components.md) — プリミティブ構成・状態管理・a11y ルール
+- [改善提案](improvement-proposals.md) — 実装・検証を通じて見えた改善点と優先順位
 
 ## 設計資料(実装の背景)
 

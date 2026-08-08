@@ -1,6 +1,13 @@
-import { ArrowLeft, ClockCounterClockwise, List, Play } from "@phosphor-icons/react";
-import type { EnvironmentListEntry } from "../api/client";
-import "./TopBar.css";
+import { ArrowLeft, History, Menu, Play } from "lucide-react";
+import type { EnvironmentListEntry } from "@/api/client";
+import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 export interface TopBarProps {
   mode: "runner" | "history";
@@ -31,65 +38,65 @@ export function TopBar({
   onBackToRunner,
 }: TopBarProps) {
   return (
-    <header className="klaus-topbar">
-      <div className="klaus-topbar__left">
-        <button
+    <header className="sticky top-0 z-10 flex flex-wrap items-center justify-between gap-3 border-b border-border bg-popover px-4 py-3">
+      <div className="flex items-center gap-3">
+        <Button
           type="button"
-          className="klaus-topbar__menu-btn"
+          variant="ghost"
+          size="icon"
+          className="md:hidden"
           aria-label="フロー一覧を開く"
           onClick={onOpenSidebar}
         >
-          <List size={20} weight="regular" />
-        </button>
+          <Menu className="size-5" />
+        </Button>
 
         {mode === "history" ? (
-          <button type="button" className="klaus-topbar__back-btn" onClick={onBackToRunner}>
-            <ArrowLeft size={20} weight="regular" />
-            <span>実行ビューに戻る</span>
-          </button>
+          <Button type="button" variant="outline" onClick={onBackToRunner}>
+            <ArrowLeft className="size-4" />
+            <span className="hidden sm:inline">実行ビューに戻る</span>
+          </Button>
         ) : (
-          <h1 className="klaus-topbar__title">{flowName ?? "フローを選択してください"}</h1>
+          <h1 className="font-sans text-base font-semibold">
+            {flowName ?? "フローを選択してください"}
+          </h1>
         )}
       </div>
 
-      <div className="klaus-topbar__right">
+      <div className="flex items-center gap-3">
         {mode === "runner" && (
           <>
-            <label className="klaus-topbar__env">
-              <span>環境</span>
-              <select
+            {/* Select は独自コンポーネントで <label> の暗黙的な関連付けを静的解析で検証できないため、
+                aria-labelledby で明示的に紐付ける(biome の lint/a11y/noLabelWithoutControl 対策) */}
+            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+              <span id="topbar-env-label">環境</span>
+              <Select
                 value={selectedEnv}
-                onChange={(e) => onEnvChange(e.target.value)}
+                onValueChange={onEnvChange}
                 disabled={environments.length === 0}
               >
-                {environments.length === 0 && <option value="">(なし)</option>}
-                {environments.map((env) => (
-                  <option key={env.name} value={env.name}>
-                    {env.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+                <SelectTrigger size="sm" className="font-mono" aria-labelledby="topbar-env-label">
+                  <SelectValue placeholder="(なし)" />
+                </SelectTrigger>
+                <SelectContent>
+                  {environments.map((env) => (
+                    <SelectItem key={env.name} value={env.name}>
+                      {env.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
 
-            <button
-              type="button"
-              className="klaus-btn klaus-btn--primary"
-              onClick={onRun}
-              disabled={!canRun || running}
-            >
-              <Play size={18} weight="regular" />
+            <Button type="button" onClick={onRun} disabled={!canRun || running}>
+              <Play className="size-4" />
               <span>{running ? "実行中…" : "実行"}</span>
-            </button>
+            </Button>
 
-            <button
-              type="button"
-              className="klaus-topbar__history-btn"
-              onClick={onShowHistory}
-              aria-label="履歴を表示"
-            >
-              <ClockCounterClockwise size={20} weight="regular" />
-              <span>履歴</span>
-            </button>
+            <Button type="button" variant="outline" onClick={onShowHistory} aria-label="履歴を表示">
+              <History className="size-4" />
+              <span className="hidden sm:inline">履歴</span>
+            </Button>
           </>
         )}
       </div>

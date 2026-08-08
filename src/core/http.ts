@@ -83,11 +83,13 @@ export async function sendRequest(options: HttpRequestOptions): Promise<HttpResp
 
   const startedAt = performance.now();
   try {
+    // undici の RequestOptions.body は undefined を受け付けないため、
+    // body が無い場合はキー自体を省略する(exactOptionalPropertyTypes 対応)
     const response = await request(options.url, {
       method: options.method as Dispatcher.HttpMethod,
       headers,
-      body: requestBody,
       signal: controller.signal,
+      ...(requestBody !== undefined ? { body: requestBody } : {}),
     });
 
     const bodyText = await response.body.text();
@@ -132,11 +134,13 @@ export async function sendRawRequest(options: HttpRequestOptions): Promise<RawHt
 
   const startedAt = performance.now();
   try {
+    // undici の RequestOptions.body は undefined を受け付けないため、
+    // body が無い場合はキー自体を省略する(exactOptionalPropertyTypes 対応)
     const response = await request(options.url, {
       method: options.method as Dispatcher.HttpMethod,
       headers,
-      body: requestBody,
       signal: controller.signal,
+      ...(requestBody !== undefined ? { body: requestBody } : {}),
     });
     const durationMs = performance.now() - startedAt;
     clearTimeout(timer);

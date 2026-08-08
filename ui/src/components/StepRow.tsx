@@ -1,10 +1,11 @@
-import { CaretDown, CaretRight, CheckCircle, XCircle } from "@phosphor-icons/react";
+import { CheckCircle2, ChevronDown, ChevronRight, XCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { RunStepView } from "../hooks/useRun";
-import { formatDuration } from "../utils/format";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import type { RunStepView } from "@/hooks/useRun";
+import { cn } from "@/lib/utils";
+import { formatDuration } from "@/utils/format";
 import { JsonBlock } from "./JsonBlock";
 import { StatusBadge } from "./StatusBadge";
-import "./StepRow.css";
 
 export interface StepRowProps {
   step: RunStepView;
@@ -30,71 +31,90 @@ export function StepRow({ step }: StepRowProps) {
   const canExpand = Boolean(result);
 
   return (
-    <li className="klaus-step-row">
-      <button
-        type="button"
-        className="klaus-step-row__header"
-        onClick={() => canExpand && setExpanded((v) => !v)}
-        disabled={!canExpand}
-        aria-expanded={expanded}
-      >
-        <span className="klaus-step-row__toggle" aria-hidden="true">
-          {canExpand ? (
-            expanded ? (
-              <CaretDown size={14} weight="regular" />
-            ) : (
-              <CaretRight size={14} weight="regular" />
-            )
-          ) : null}
-        </span>
-        <span className="klaus-step-row__name">{step.name}</span>
-        <span className="klaus-step-row__meta">
-          {result && (
-            <span className="klaus-step-row__duration">{formatDuration(result.durationMs)}</span>
-          )}
-          <StatusBadge status={step.status} />
-        </span>
-      </button>
+    <Collapsible
+      asChild
+      disabled={!canExpand}
+      open={expanded && canExpand}
+      onOpenChange={setExpanded}
+    >
+      <li className="overflow-hidden rounded-md border border-border bg-card">
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              "flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left transition-colors duration-150 enabled:hover:bg-muted focus-visible:-outline-offset-2",
+              !canExpand && "cursor-default",
+            )}
+          >
+            <span aria-hidden="true" className="flex w-4 shrink-0 text-muted-foreground">
+              {canExpand ? (
+                expanded ? (
+                  <ChevronDown className="size-3.5" />
+                ) : (
+                  <ChevronRight className="size-3.5" />
+                )
+              ) : null}
+            </span>
+            <span className="flex-1 font-sans font-medium">{step.name}</span>
+            <span className="flex items-center gap-3">
+              {result && (
+                <span className="font-mono text-sm text-muted-foreground">
+                  {formatDuration(result.durationMs)}
+                </span>
+              )}
+              <StatusBadge status={step.status} />
+            </span>
+          </button>
+        </CollapsibleTrigger>
 
-      {expanded && result && (
-        <div className="klaus-step-row__detail">
-          {result.error && <p className="klaus-step-row__error">{result.error}</p>}
+        <CollapsibleContent className="flex flex-col gap-3 border-t border-border px-3 pb-3">
+          {result?.error && <p className="mt-2 text-sm text-fail">{result.error}</p>}
 
-          {result.assertions.length > 0 && (
-            <ul className="klaus-step-row__assertions">
-              {result.assertions.map((assertion, i) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: assertions は実行結果の静的リストで並び替え・挿入が発生せず、kind + message も重複定義があり得るため一意性を保証できない
-                <li key={`${assertion.kind}-${i}`} className={assertion.ok ? "is-ok" : "is-fail"}>
-                  {assertion.ok ? (
-                    <CheckCircle size={14} weight="regular" />
-                  ) : (
-                    <XCircle size={14} weight="regular" />
-                  )}
-                  <span>{assertion.message}</span>
-                </li>
-              ))}
+          {result && result.assertions.length > 0 && (
+            <ul className="mt-2 flex flex-col gap-1 text-sm">
+              {result.assertions.map((assertion, i) => {
+                const itemClass = cn(
+                  "flex items-center gap-1.5",
+                  assertion.ok ? "text-pass" : "text-fail",
+                );
+                return (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: assertions は実行結果の静的リストで並び替え・挿入が発生せず、kind + message も重複定義があり得るため一意性を保証できない
+                  <li key={`${assertion.kind}-${i}`} className={itemClass}>
+                    {assertion.ok ? (
+                      <CheckCircle2 className="size-3.5" aria-hidden="true" />
+                    ) : (
+                      <XCircle className="size-3.5" aria-hidden="true" />
+                    )}
+                    <span>{assertion.message}</span>
+                  </li>
+                );
+              })}
             </ul>
           )}
 
-          {result.request && (
-            <div className="klaus-step-row__section">
-              <h3>リクエスト</h3>
-              <p className="klaus-step-row__request-line">
-                <span className="klaus-step-row__method">{result.request.method}</span>
-                <span className="klaus-step-row__url">{result.request.url}</span>
+          {result?.request && (
+            <div>
+              <h3 className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                リクエスト
+              </h3>
+              <p className="mb-1 flex gap-2 font-mono text-sm break-all">
+                <span className="shrink-0 font-bold text-running">{result.request.method}</span>
+                <span>{result.request.url}</span>
               </p>
               <JsonBlock value={result.request} />
             </div>
           )}
 
-          {result.response && (
-            <div className="klaus-step-row__section">
-              <h3>レスポンス({result.response.status})</h3>
+          {result?.response && (
+            <div>
+              <h3 className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+                レスポンス({result.response.status})
+              </h3>
               <JsonBlock value={result.response} />
             </div>
           )}
-        </div>
-      )}
-    </li>
+        </CollapsibleContent>
+      </li>
+    </Collapsible>
   );
 }

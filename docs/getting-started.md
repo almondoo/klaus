@@ -19,7 +19,7 @@ source:
 npm install -g @almondoo/klaus
 ```
 
-`package.json` の `engines` で Node.js `>=20.18.1` が要求される(`bin` は `klaus` コマンドとして `dist/cli.js` を指す)。
+`package.json` の `engines` で Node.js `>=22.19.0` が要求される(`bin` は `klaus` コマンドとして `dist/cli.js` を指す)。
 
 ## 最小のフローを作る
 

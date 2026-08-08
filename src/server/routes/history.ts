@@ -46,9 +46,10 @@ async function readAllHistoryEntries(cwd: string): Promise<HistoryEntry[]> {
 }
 
 export interface GetHistoryQuery {
-  flow?: string;
-  limit?: number;
-  before?: string;
+  // 呼び出し元(app.ts)がクエリパラメータ未指定時に明示的に undefined を渡すため許容する
+  flow?: string | undefined;
+  limit?: number | undefined;
+  before?: string | undefined;
 }
 
 /** GET /api/history: flow フィルタ・limit・before カーソルでページングした履歴を返す */

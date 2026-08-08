@@ -13,8 +13,8 @@ export class KlausError extends Error {
 }
 
 export class ParseError extends KlausError {
-  /** パース対象のファイルパス(判明していれば) */
-  readonly filePath?: string;
+  /** パース対象のファイルパス(判明していれば)。コンストラクタ引数をそのまま代入するため undefined も許容する */
+  readonly filePath?: string | undefined;
 
   constructor(message: string, filePath?: string) {
     super(filePath ? `${filePath}: ${message}` : message);

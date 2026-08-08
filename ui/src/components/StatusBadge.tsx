@@ -1,6 +1,7 @@
-import { CheckCircle, Circle, CircleNotch, MinusCircle, XCircle } from "@phosphor-icons/react";
-import type { RunStepStatus } from "../hooks/useRun";
-import "./StatusBadge.css";
+import { CheckCircle2, Circle, Loader2, MinusCircle, XCircle } from "lucide-react";
+import { Badge, type BadgeProps } from "@/components/ui/badge";
+import type { RunStepStatus } from "@/hooks/useRun";
+import { cn } from "@/lib/utils";
 
 const LABELS: Record<RunStepStatus, string> = {
   pending: "待機中",
@@ -11,36 +12,45 @@ const LABELS: Record<RunStepStatus, string> = {
   skipped: "スキップ",
 };
 
+const VARIANTS: Record<RunStepStatus, NonNullable<BadgeProps["variant"]>> = {
+  pending: "pending",
+  running: "running",
+  passed: "pass",
+  failed: "fail",
+  error: "fail",
+  skipped: "skipped",
+};
+
+export interface StatusBadgeProps {
+  status: RunStepStatus;
+  className?: string;
+}
+
 /**
  * ステータスを色 + アイコン + テキストの3重表現で示す(色だけに意味を持たせないアクセシビリティ要件)。
  */
-export function StatusBadge({ status }: { status: RunStepStatus }) {
-  const label = LABELS[status];
-
+export function StatusBadge({ status, className }: StatusBadgeProps) {
   return (
-    <span className={`klaus-status-badge klaus-status-badge--${status}`}>
+    <Badge variant={VARIANTS[status]} className={cn(className)}>
       <StatusIcon status={status} />
-      <span>{label}</span>
-    </span>
+      <span>{LABELS[status]}</span>
+    </Badge>
   );
 }
 
 function StatusIcon({ status }: { status: RunStepStatus }) {
   switch (status) {
     case "passed":
-      return <CheckCircle size={16} weight="regular" />;
+      return <CheckCircle2 aria-hidden="true" />;
     case "failed":
     case "error":
-      return <XCircle size={16} weight="regular" />;
+      return <XCircle aria-hidden="true" />;
     case "skipped":
-      return <MinusCircle size={16} weight="regular" />;
+      return <MinusCircle aria-hidden="true" />;
     case "running":
-      return (
-        <span data-spinner className="klaus-status-badge__spin">
-          <CircleNotch size={16} weight="regular" />
-        </span>
-      );
+      // data-spinner: prefers-reduced-motion の一括停止から除外し、回転だけは維持する
+      return <Loader2 aria-hidden="true" data-spinner className="animate-spin" />;
     default:
-      return <Circle size={16} weight="regular" />;
+      return <Circle aria-hidden="true" />;
   }
 }

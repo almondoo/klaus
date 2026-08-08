@@ -21,7 +21,8 @@ export interface FlowListEntry {
 export interface FlowDetail {
   path: string;
   name: string;
-  env?: string;
+  // Flow.env(zod の .optional())をそのまま渡すため undefined を明示的に許容する
+  env?: string | undefined;
   steps: Array<{
     name: string;
     method: string;
@@ -38,7 +39,7 @@ export interface EnvironmentListEntry {
 export interface HistoryPage {
   entries: HistoryEntry[];
   /** さらに古い履歴がある場合、次回 before に渡すカーソル(ISO 日時) */
-  nextBefore?: string;
+  nextBefore?: string | undefined;
 }
 
 /** POST /api/runs のリクエストボディ */

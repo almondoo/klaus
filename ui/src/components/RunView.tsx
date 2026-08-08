@@ -1,9 +1,10 @@
-import { CheckCircle, XCircle } from "@phosphor-icons/react";
-import type { FlowDetail } from "../api/client";
-import type { UseRunResult } from "../hooks/useRun";
-import { formatDuration } from "../utils/format";
+import { CheckCircle2, XCircle } from "lucide-react";
+import type { FlowDetail } from "@/api/client";
+import { Progress } from "@/components/ui/progress";
+import type { UseRunResult } from "@/hooks/useRun";
+import { cn } from "@/lib/utils";
+import { formatDuration } from "@/utils/format";
 import { StepRow } from "./StepRow";
-import "./RunView.css";
 
 export interface RunViewProps {
   flowDetail: FlowDetail | null;
@@ -15,56 +16,46 @@ export interface RunViewProps {
 /** 実行ビュー: ステップ縦リスト + 全体進捗 + 完了サマリー */
 export function RunView({ flowDetail, flowDetailLoading, flowDetailError, run }: RunViewProps) {
   if (flowDetailLoading) {
-    return <div className="klaus-run-view__placeholder">フロー定義を読み込み中…</div>;
+    return <div className="p-8 text-center text-muted-foreground">フロー定義を読み込み中…</div>;
   }
 
   if (flowDetailError) {
-    return (
-      <div className="klaus-run-view__placeholder klaus-run-view__placeholder--error">
-        {flowDetailError}
-      </div>
-    );
+    return <div className="p-8 text-center text-fail">{flowDetailError}</div>;
   }
 
   if (!flowDetail) {
     return (
-      <div className="klaus-run-view__placeholder">
+      <div className="p-8 text-center text-muted-foreground">
         左のサイドバーからフローを選択してください。
       </div>
     );
   }
 
   const hasStarted = run.steps.length > 0;
+  const progressValue = run.totalCount ? (run.completedCount / run.totalCount) * 100 : 0;
 
   return (
-    <div className="klaus-run-view">
+    <div className="flex max-w-3xl flex-col gap-4 p-6">
       {hasStarted && (
         // <output> は role="status" が暗黙に付与される(全体進捗 "Step n / m" のライブ通知)
-        <output className="klaus-run-view__progress">
+        <output className="flex items-center gap-3 font-mono text-sm">
           <span>
             Step {Math.min(run.completedCount + (run.running ? 1 : 0), run.totalCount)} /{" "}
             {run.totalCount}
           </span>
-          <div className="klaus-run-view__progress-bar">
-            <div
-              className="klaus-run-view__progress-fill"
-              style={{
-                width: `${run.totalCount ? (run.completedCount / run.totalCount) * 100 : 0}%`,
-              }}
-            />
-          </div>
+          <Progress value={progressValue} className="flex-1" />
         </output>
       )}
 
-      {run.error && <p className="klaus-run-view__error">{run.error}</p>}
+      {run.error && <p className="text-sm text-fail">{run.error}</p>}
 
       {!hasStarted && (
-        <p className="klaus-run-view__hint">
+        <p className="text-sm text-muted-foreground">
           右上の「実行」ボタンでこのフローを実行します({flowDetail.steps.length} ステップ)。
         </p>
       )}
 
-      <ul className="klaus-run-view__steps">
+      <ul className="flex flex-col gap-2">
         {run.steps.map((step) => (
           <StepRow key={step.name} step={step} />
         ))}
@@ -72,12 +63,15 @@ export function RunView({ flowDetail, flowDetailLoading, flowDetailError, run }:
 
       {run.runResult && (
         <output
-          className={`klaus-run-view__summary klaus-run-view__summary--${run.runResult.status}`}
+          className={cn(
+            "flex items-center gap-2 rounded-md p-3 font-semibold",
+            run.runResult.status === "passed" ? "bg-pass/12 text-pass" : "bg-fail/12 text-fail",
+          )}
         >
           {run.runResult.status === "passed" ? (
-            <CheckCircle size={20} weight="regular" />
+            <CheckCircle2 className="size-5" aria-hidden="true" />
           ) : (
-            <XCircle size={20} weight="regular" />
+            <XCircle className="size-5" aria-hidden="true" />
           )}
           <span>
             {run.runResult.status === "passed" ? "全ステップ成功" : "失敗したステップがあります"}(

@@ -6,8 +6,14 @@ export default defineConfig([
     format: ["esm"],
     dts: true,
     sourcemap: true,
-    clean: true,
-    target: "node20",
+    // clean は無効にする。tsup の clean は(配列でグロブを指定しても)outDir 全体を消すため、
+    // Vite が出力した dist/ui まで巻き添えで消え、`pnpm build` / `pnpm test` の後に
+    // `klaus ui` が 503(静的ファイルなし)になる事故が起きる。
+    // tsup の出力(index.js / cli.js / server.js とそのマップ・型定義)は毎回上書きされるので
+    // clean 無しでも成果物は正しく更新される。
+    clean: false,
+    // engines.node を >=22.19.0 に引き上げたのに合わせてビルドターゲットも node22 にする
+    target: "node22",
     outDir: "dist",
   },
   {
@@ -16,7 +22,7 @@ export default defineConfig([
     dts: false,
     sourcemap: true,
     clean: false,
-    target: "node20",
+    target: "node22",
     outDir: "dist",
     banner: {
       js: "#!/usr/bin/env node",
@@ -30,7 +36,7 @@ export default defineConfig([
     dts: false,
     sourcemap: true,
     clean: false,
-    target: "node20",
+    target: "node22",
     outDir: "dist",
   },
 ]);

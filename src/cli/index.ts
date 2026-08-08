@@ -53,7 +53,7 @@ program
 program
   .command("ui")
   .description("localhost Web UI を起動する(ランナー + ビューア)")
-  .option("--port <n>", "待ち受けポート(未指定時はエフェメラルポート)", (value) => {
+  .option("-p, --port <n>", "待ち受けポート(未指定時はエフェメラルポート)", (value) => {
     const parsed = Number.parseInt(value, 10);
     if (Number.isNaN(parsed)) {
       throw new Error(`invalid --port value: ${value}`);

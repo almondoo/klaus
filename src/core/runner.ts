@@ -40,8 +40,8 @@ export interface StepCompleteContext {
  */
 export interface RunFlowOptions {
   cwd?: string;
-  /** フロー定義の env を上書きする環境名 */
-  envNameOverride?: string;
+  /** フロー定義の env を上書きする環境名。呼び出し元(CLI オプション等)から明示的に undefined が渡ることがある */
+  envNameOverride?: string | undefined;
   /** 複数フローをまとめて runId で紐付けたい場合に指定する */
   runId?: string;
   history?: boolean | ((entry: HistoryEntry) => void | Promise<void>);
@@ -50,8 +50,9 @@ export interface RunFlowOptions {
    * CLI の逐次出力や、将来の localhost UI が SSE でライブ配信する際のフックとして使う想定。
    * skipped ステップに対しても呼ばれる。
    */
-  onStepStart?: (context: StepStartContext) => void | Promise<void>;
-  onStepComplete?: (context: StepCompleteContext) => void | Promise<void>;
+  // 呼び出し元(CLI 等)がレポーター有無に応じて undefined を明示的に渡すため許容する
+  onStepStart?: ((context: StepStartContext) => void | Promise<void>) | undefined;
+  onStepComplete?: ((context: StepCompleteContext) => void | Promise<void>) | undefined;
   /**
    * ステップ本体の成否には影響しない警告(履歴書き込み失敗など)の通知先。
    * 未指定の場合は何もしない(core 側では警告を蓄積せず、通知のみ行う)。
