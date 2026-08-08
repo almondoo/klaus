@@ -7,8 +7,8 @@ klaus localhost UI(`ui/` — Vite + React SPA、shadcn/ui 移行後)の設計書
 
 ## 上位ドキュメント
 
-- アーキテクチャ・API 契約: [docs/ui-design.md](../../docs/ui-design.md)
-- プロダクト全体の UX 方針: [docs/ui-ux-design.md](../../docs/ui-ux-design.md)
-- デザイントークンの原本(生成資料): [docs/design-system/klaus/MASTER.md](../../docs/design-system/klaus/MASTER.md)
+- アーキテクチャ・API 契約: [docs/dev/ui-design.md](../../docs/dev/ui-design.md)
+- プロダクト全体の UX 方針: [docs/dev/ui-ux-design.md](../../docs/dev/ui-ux-design.md)
+- デザイントークンの原本(生成資料): [docs/dev/design-system/klaus/MASTER.md](../../docs/dev/design-system/klaus/MASTER.md)
 
 本書内で上記と実装の食い違いを見つけた箇所は、各ファイル内に「ドキュメントとの差分」として明記している。実装側の事実を優先する。

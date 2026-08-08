@@ -115,7 +115,7 @@ node dist/cli.js ui        # トークン付き URL が表示されブラウザ�
 pnpm exec vitest run tests/sse.test.ts tests/ws.test.ts tests/graphql.test.ts
 ```
 
-手動で確認したい場合は `docs/flow-definition.md` の各セクションの YAML 例を使う。
+手動で確認したい場合は `docs/guide/flow-definition.md` の各セクションの YAML 例を使う。
 
 ## 5. 片付け
 

@@ -40,7 +40,7 @@
 
 ## 状態管理の方針
 
-React 標準(`useState` / `useReducer` + カスタム hooks)のみで実装している。Redux / Zustand / TanStack Query 等の外部状態管理ライブラリは `package.json` の dependencies に存在せず、未導入。`docs/ui-design.md` の「状態管理はまず React 標準で開始し、複雑化した時点で外部ライブラリを検討する」という方針どおり、現時点でも標準のままで足りている。
+React 標準(`useState` / `useReducer` + カスタム hooks)のみで実装している。Redux / Zustand / TanStack Query 等の外部状態管理ライブラリは `package.json` の dependencies に存在せず、未導入。`docs/dev/ui-design.md` の「状態管理はまず React 標準で開始し、複雑化した時点で外部ライブラリを検討する」という方針どおり、現時点でも標準のままで足りている。
 
 `ui/src/hooks/` の一覧:
 

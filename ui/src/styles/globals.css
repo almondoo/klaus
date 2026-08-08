@@ -1,6 +1,6 @@
 /**
  * グローバルスタイル(Tailwind CSS v4 + shadcn/ui のトークン定義)。
- * デザイントークンの原本: docs/design-system/klaus/MASTER.md / docs/ui-ux-design.md
+ * デザイントークンの原本: docs/dev/design-system/klaus/MASTER.md / docs/dev/ui-ux-design.md
  * 現行 UI の hex トークン(#020617 等)を HSL 三つ組に変換し、shadcn 標準の変数名にマッピングする。
  * ダークモードのみを実装する(ライトモードは将来対応)。html 要素に固定で class="dark" を
  * 付与しているため .dark が常に適用されるが、:root にも同じダーク値を用意しておき、
