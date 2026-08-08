@@ -31,7 +31,7 @@ jobs:
           # GITHUB_TOKEN の git 資格情報を後続ステップに残さない
           persist-credentials: false
 
-      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
           # publish.yml と同じく正確なバージョンに固定する
           version: 11.5.1
