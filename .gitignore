@@ -1,0 +1,7 @@
+node_modules/
+dist/
+tmp/
+.klaus/
+.playwright-mcp/
+*.log
+.DS_Store

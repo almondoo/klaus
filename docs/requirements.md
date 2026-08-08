@@ -1,13 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - claude-code
-  - cli
-  - requirements
-created: 2026-08-07
-source:
----
-
 # API 検証 CLI「klaus」実装要件
 
 > [!summary] この文書の役割
@@ -32,7 +22,7 @@ Go / Node で実装したローカル HTTP API を、Claude Code（AI エージ�
 
 | レイヤー | 選定 |
 |---|---|
-| 言語 / ランタイム | TypeScript + Node.js ≥20、npm -g 配布 |
+| 言語 / ランタイム | TypeScript + Node.js ≥22.19、npm -g 配布 |
 | HTTP エンジン | undici |
 | 定義フォーマット | YAML（zod でスキーマ検証） |
 | アサーション | jsonpath-plus + 自前マッチャー |

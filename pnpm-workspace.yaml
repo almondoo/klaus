@@ -1,0 +1,16 @@
+packages:
+  - "ui"
+
+allowBuilds:
+  '@biomejs/biome': true
+  esbuild: true
+
+minimumReleaseAgeExclude:
+  - lucide-react@1.30.0
+  - ws@8.21.3
+  - esbuild@0.28.1
+
+# tsup / vitest が推移的に依存する esbuild を脆弱性修正版(GHSA-g7r4-m6w7-qqqr、
+# 0.28.1 で修正)に固定する。開発時のみの依存で配布物には含まれないが、audit をクリーンに保つ。
+overrides:
+  esbuild: 0.28.1

@@ -1,0 +1,102 @@
+import { randomUUID } from "node:crypto";
+import { RuntimeError } from "./errors.js";
+import type { Environment } from "./schema.js";
+
+/**
+ * テンプレート変数解決に使うコンテキスト。
+ * 解決順: ①ステップキャプチャ変数 ②環境ファイル変数。
+ */
+export interface TemplateContext {
+  /** これまでのステップで capture した変数 */
+  captures: Record<string, unknown>;
+  /** 環境ファイル(environments/<name>.yaml)の変数 */
+  env: Environment;
+}
+
+const TEMPLATE_PATTERN = /\{\{\s*([^}]+?)\s*\}\}/g;
+
+/** テンプレート関数(引数なし)。値は評価のたびに再計算する */
+const templateFunctions: Record<string, () => string> = {
+  newUuid: () => randomUUID(),
+  newDate: () => new Date().toISOString(),
+  newTimestamp: () => String(Date.now()),
+};
+
+/** 値を文字列に変換する(オブジェクト・配列は JSON 文字列化) */
+function stringifyValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === null || value === undefined) return String(value);
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+/** 単一の変数名(env.X / newUuid 等を含む)を解決する。未解決は RuntimeError */
+function resolveVariable(name: string, context: TemplateContext): string {
+  if (name.startsWith("env.")) {
+    const envKey = name.slice("env.".length);
+    const value = process.env[envKey];
+    if (value === undefined) {
+      throw new RuntimeError(`OS environment variable "${envKey}" is not defined`);
+    }
+    return value;
+  }
+
+  const fn = templateFunctions[name];
+  if (fn) {
+    return fn();
+  }
+
+  if (Object.hasOwn(context.captures, name)) {
+    return stringifyValue(context.captures[name]);
+  }
+
+  if (Object.hasOwn(context.env, name)) {
+    return stringifyValue(context.env[name]);
+  }
+
+  throw new RuntimeError(`template variable "${name}" could not be resolved`);
+}
+
+/**
+ * 文字列内の {{...}} をすべて展開する。
+ * 値全体が単一の {{x}} の場合でも文字列に統一して返す(型保持はしない)。
+ */
+export function renderString(input: string, context: TemplateContext): string {
+  return input.replace(TEMPLATE_PATTERN, (_match, rawName: string) => {
+    return resolveVariable(rawName.trim(), context);
+  });
+}
+
+/**
+ * 任意の JSON 互換値(body など)を深く辿り、文字列だけをテンプレート展開する。
+ * オブジェクト・配列はそのまま再帰し、数値・真偽値・null はそのまま返す。
+ */
+export function renderDeep<T>(value: T, context: TemplateContext): T {
+  if (typeof value === "string") {
+    return renderString(value, context) as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => renderDeep(item, context)) as unknown as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value)) {
+      result[key] = renderDeep(v, context);
+    }
+    return result as unknown as T;
+  }
+  return value;
+}
+
+/** Record<string,string>(headers 等)をテンプレート展開する */
+export function renderHeaders(
+  headers: Record<string, string> | undefined,
+  context: TemplateContext,
+): Record<string, string> {
+  if (!headers) return {};
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    result[key] = renderString(value, context);
+  }
+  return result;
+}

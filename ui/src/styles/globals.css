@@ -1,0 +1,201 @@
+/**
+ * グローバルスタイル(Tailwind CSS v4 + shadcn/ui のトークン定義)。
+ * デザイントークンの原本: docs/design-system/klaus/MASTER.md / docs/ui-ux-design.md
+ * 現行 UI の hex トークン(#020617 等)を HSL 三つ組に変換し、shadcn 標準の変数名にマッピングする。
+ * ダークモードのみを実装する(ライトモードは将来対応)。html 要素に固定で class="dark" を
+ * 付与しているため .dark が常に適用されるが、:root にも同じダーク値を用意しておき、
+ * 将来ライトモードを追加する際は :root 側だけを差し替えれば済むようにしておく。
+ */
+@import "tailwindcss";
+@import "tw-animate-css";
+
+/* Tailwind v4 は既定で prefers-color-scheme ベースの dark: バリアントになるため、
+   .dark クラスによる明示的な切り替えにするにはカスタムバリアントの登録が必要 */
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  color-scheme: dark;
+
+  --background: 229 84% 5%; /* #020617 アプリ背景 */
+  --foreground: 210 40% 98%; /* #F8FAFC 基本テキスト */
+
+  --card: 217 33% 17%; /* #1E293B カード・パネル面 */
+  --card-foreground: 210 40% 98%;
+
+  --popover: 222 47% 11%; /* #0F172A ヘッダー・サイドバー面 */
+  --popover-foreground: 210 40% 98%;
+
+  --primary: 142 71% 45%; /* #22C55E 実行ボタン・PASS(Accent/CTA) */
+  --primary-foreground: 139 70% 5%; /* #04170A 緑背景上の濃色テキスト */
+
+  --secondary: 217 33% 17%; /* #1E293B */
+  --secondary-foreground: 210 40% 98%;
+
+  --muted: 229 29% 14%; /* #1A1E2F 行の縞・非活性領域 */
+  --muted-foreground: 215 20% 65%; /* #94A3B8 */
+
+  --accent: 217 33% 17%; /* ホバー背景(secondary と共通) */
+  --accent-foreground: 210 40% 98%;
+
+  --destructive: 0 84% 60%; /* #EF4444 */
+  --destructive-foreground: 0 0% 100%;
+
+  --border: 215 25% 27%; /* #334155 */
+  --input: 215 25% 27%;
+  --ring: 198 93% 60%; /* #38BDF8 フォーカスリング */
+
+  /* ステータス色(shadcn 標準トークンに無いため独自追加) */
+  --pass: 142 71% 45%; /* #22C55E */
+  --fail: 0 84% 60%; /* #EF4444 */
+  --running: 198 93% 60%; /* #38BDF8 */
+  --skipped: 38 92% 50%; /* #F59E0B */
+  --pending: 215 20% 65%; /* muted-foreground と共通 */
+
+  --font-sans: "Fira Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "Fira Code", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  --radius: 0.625rem;
+
+  --sidebar-width: 16.25rem; /* 260px */
+}
+
+.dark {
+  color-scheme: dark;
+
+  --background: 229 84% 5%;
+  --foreground: 210 40% 98%;
+  --card: 217 33% 17%;
+  --card-foreground: 210 40% 98%;
+  --popover: 222 47% 11%;
+  --popover-foreground: 210 40% 98%;
+  --primary: 142 71% 45%;
+  --primary-foreground: 139 70% 5%;
+  --secondary: 217 33% 17%;
+  --secondary-foreground: 210 40% 98%;
+  --muted: 229 29% 14%;
+  --muted-foreground: 215 20% 65%;
+  --accent: 217 33% 17%;
+  --accent-foreground: 210 40% 98%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 215 25% 27%;
+  --input: 215 25% 27%;
+  --ring: 198 93% 60%;
+  --pass: 142 71% 45%;
+  --fail: 0 84% 60%;
+  --running: 198 93% 60%;
+  --skipped: 38 92% 50%;
+  --pending: 215 20% 65%;
+}
+
+/* Tailwind の色/半径/フォントユーティリティ(bg-background, text-pass, rounded-md, font-mono 等)を
+   上記の実行時 CSS 変数にマッピングする。@theme inline は「値をビルド時に解決せず var() 参照のまま
+   emit する」指定で、.dark クラスの切り替えに追従させるために必須 */
+@theme inline {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  /* ステータス色: pass/fail/running/skipped/pending */
+  --color-pass: hsl(var(--pass));
+  --color-fail: hsl(var(--fail));
+  --color-running: hsl(var(--running));
+  --color-skipped: hsl(var(--skipped));
+  --color-pending: hsl(var(--pending));
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Sidebar.tsx の w-sidebar / min-w-sidebar 用 */
+  --spacing-sidebar: var(--sidebar-width);
+}
+
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-size: 16px;
+    line-height: 1.5;
+    overflow-x: hidden;
+  }
+
+  #root {
+    height: 100%;
+    min-height: 100vh;
+  }
+
+  code,
+  pre {
+    @apply font-mono;
+  }
+
+  /* フォーカスリングは絶対に消さない(アクセシビリティ必須要件) */
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 2px;
+  }
+
+  /* クリック可能要素は必ずポインターカーソルにする(MASTER.md の Forbidden Patterns 要件) */
+  button,
+  [role="button"],
+  a,
+  select,
+  summary {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  [aria-disabled="true"] {
+    cursor: not-allowed;
+    opacity: 0.6;
+  }
+}
+
+/*
+ * スピナー以外のアニメーション/トランジションを止める([data-spinner] は除外)。
+ * @layer の外(unlayered)に置くことで、CSS カスケードレイヤーの優先順位に関わらず
+ * Tailwind のユーティリティ層(コンポーネントの transition- 系 / animate- 系クラス等)より
+ * 必ず優先されるようにする(unlayered なスタイルは全レイヤーより優先される)。
+ * a11y(WCAG 2.3.3)上の意図的な !important 使用として容認する。
+ */
+@media (prefers-reduced-motion: reduce) {
+  *:not([data-spinner]) {
+    /* biome-ignore lint/complexity/noImportantStyles: 全コンポーネントの詳細度を上回って必ずアニメーションを止めるための意図的な a11y 対応 */
+    animation-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: 全コンポーネントの詳細度を上回って必ずアニメーションを止めるための意図的な a11y 対応 */
+    animation-iteration-count: 1 !important;
+  }
+  *,
+  *::before,
+  *::after {
+    /* biome-ignore lint/complexity/noImportantStyles: 全コンポーネントの詳細度を上回って必ずトランジションを止めるための意図的な a11y 対応 */
+    transition-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: 全コンポーネントの詳細度を上回って必ずスクロールアニメーションを止めるための意図的な a11y 対応 */
+    scroll-behavior: auto !important;
+  }
+}
