@@ -3,7 +3,24 @@
   "version": "0.1.0",
   "description": "API 検証 CLI: YAML でリクエストフローを定義し、実行・アサーション・履歴管理を行う",
   "type": "module",
-  "license": "MIT",
+  "license": "Elastic-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/almondoo/klaus.git"
+  },
+  "homepage": "https://github.com/almondoo/klaus#readme",
+  "bugs": {
+    "url": "https://github.com/almondoo/klaus/issues"
+  },
+  "keywords": [
+    "api",
+    "testing",
+    "cli",
+    "http",
+    "yaml",
+    "sse",
+    "websocket"
+  ],
   "engines": {
     "node": ">=22.19.0"
   },

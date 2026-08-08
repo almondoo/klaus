@@ -196,4 +196,4 @@ pnpm lint       # biome
 
 ## License
 
-MIT
+[Elastic License 2.0](LICENSE) — 利用・改変・再配布は自由ですが、本ソフトウェアをホスティング/マネージドサービスとして第三者に提供することはできません。
