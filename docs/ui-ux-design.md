@@ -1,12 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - design
-  - ui-ux
-created: 2026-08-07
-source: ui-ux-pro-max skill (design-system + product/ux/icons/react 検索)
----
-
 # klaus UI ビジュアル / UX 設計(M4)
 
 > [!summary] この文書の役割

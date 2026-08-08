@@ -1,13 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - claude-code
-  - cli
-  - requirements
-created: 2026-08-07
-source:
----
-
 # API 検証 CLI「klaus」実装要件
 
 > [!summary] この文書の役割

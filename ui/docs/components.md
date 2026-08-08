@@ -1,13 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - design
-  - frontend
-  - ui-ux
-created: 2026-08-08
-source:
----
-
 # klaus UI コンポーネント設計
 
 > [!summary] この文書の役割

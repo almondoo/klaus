@@ -1,12 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - documentation
-  - reference
-created: 2026-08-08
-source:
----
-
 # フロー定義リファレンス
 
 klaus のリクエスト定義は素の YAML。**1ファイル = 1フロー(複数ステップ)**で、キャプチャとアサーションを定義に内包する。スキーマは zod で検証され、違反は exit 2(ParseError)になる。

@@ -1,12 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - claude-code
-  - design
-created: 2026-08-07
-source:
----
-
 # klaus localhost UI(M4)設計
 
 > [!summary] この文書の役割

@@ -1,12 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - documentation
-  - cli
-created: 2026-08-08
-source:
----
-
 # CLI リファレンス
 
 klaus のコマンドは `run`(フロー実行)と `ui`(localhost Web UI 起動)の2つ。

@@ -1,13 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - claude-code
-  - cli
-  - getting-started
-created: 2026-08-07
-source:
----
-
 # klaus 入門
 
 > [!summary] この文書の役割

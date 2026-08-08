@@ -1,13 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - design
-  - design-system
-  - ui-ux
-created: 2026-08-08
-source:
----
-
 # klaus UI デザインシステム
 
 > [!summary] この文書の役割

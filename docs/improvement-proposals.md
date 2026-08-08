@@ -1,12 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - retrospective
-  - proposal
-created: 2026-08-08
-source:
----
-
 # klaus 改善提案
 
 klaus を実装・検証したセッションを踏まえた改善提案。**このセッション中に実際に起きた事象**を根拠にしている（推測ベースの一般論は含めない）。各項目に「やる価値があるか」の判定と概算コストを付ける。

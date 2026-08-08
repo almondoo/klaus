@@ -1,12 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - documentation
-  - architecture
-created: 2026-08-08
-source:
----
-
 # アーキテクチャ
 
 開発者向けの構成ガイド。設計の背景は [requirements.md](requirements.md)、UI の設計意図は [ui-design.md](ui-design.md) を参照。
@@ -83,7 +74,7 @@ interface RunFlowOptions {
 
 「テストは過不足なく」(仕様のふるまい単位でカバーし、実装詳細への張り付き・重複・水増しをしない)が方針。
 
-**root(vitest、tests/、118件)**
+**root(vitest、tests/、121件)**
 
 | 種類 | 対象 |
 |---|---|

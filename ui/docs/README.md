@@ -1,12 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - documentation
-  - design
-created: 2026-08-08
-source:
----
-
 # ui/docs
 
 klaus localhost UI(`ui/` — Vite + React SPA、shadcn/ui 移行後)の設計書。実装(`ui/src/**`)から裏取りした事実のみを記載する。

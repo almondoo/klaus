@@ -1,12 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - documentation
-  - reference
-created: 2026-08-08
-source:
----
-
 # 実行履歴
 
 klaus は全リクエスト / レスポンス / 所要時間をローカルの JSONL に追記する。CLI の text 出力が成功時1行要約に留まるのは、フル詳細をこちらに逃がしているため。localhost UI の履歴ブラウザもこのファイルを読む。

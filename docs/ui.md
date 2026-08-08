@@ -1,12 +1,3 @@
----
-tags:
-  - dev-tools/api-testing
-  - documentation
-  - ui
-created: 2026-08-08
-source:
----
-
 # localhost UI
 
 `klaus ui` で起動する Web UI。フローの実行(ライブ進捗付き)と履歴の閲覧ができる**ランナー + ビューア**であり、フロー定義の編集はエディタで行う(git-native 思想)。実行・アサーション・履歴のロジックはすべて CLI と同じ `src/core` を使う。
