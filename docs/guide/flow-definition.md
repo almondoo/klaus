@@ -98,13 +98,13 @@ ws:
 
 | 記法 | 解決先 |
 |---|---|
-| `{{var}}` | ①それまでのステップのキャプチャ変数 → ②環境ファイルの値(キャプチャ優先) |
-| `{{env.X}}` | OS 環境変数 `X`。シークレットは定義ファイルに直書きせずこれを使う |
-| `{{newUuid}}` | `crypto.randomUUID()` の UUID |
-| `{{newDate}}` | 現在時刻の ISO 8601 文字列 |
-| `{{newTimestamp}}` | 現在時刻の epoch ミリ秒 |
+| <code v-pre>{{var}}</code> | ①それまでのステップのキャプチャ変数 → ②環境ファイルの値(キャプチャ優先) |
+| <code v-pre>{{env.X}}</code> | OS 環境変数 `X`。シークレットは定義ファイルに直書きせずこれを使う |
+| <code v-pre>{{newUuid}}</code> | `crypto.randomUUID()` の UUID |
+| <code v-pre>{{newDate}}</code> | 現在時刻の ISO 8601 文字列 |
+| <code v-pre>{{newTimestamp}}</code> | 現在時刻の epoch ミリ秒 |
 
-展開が適用される場所: `request.url` / `request.headers` の値 / `request.body`(文字列値の深い展開)/ `graphql.query` / `graphql.variables` / `ws.url` / `ws.headers` / `ws.send` / アサーションの期待値(`equals: "{{testEmail}}"` 等)。
+展開が適用される場所: `request.url` / `request.headers` の値 / `request.body`(文字列値の深い展開)/ `graphql.query` / `graphql.variables` / `ws.url` / `ws.headers` / `ws.send` / アサーションの期待値(<code v-pre>equals: "{{testEmail}}"</code> 等)。
 
 ## capture(変数キャプチャ)
 
