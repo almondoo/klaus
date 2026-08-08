@@ -1,7 +1,7 @@
 # klaus localhost UI(M4)設計
 
 > [!summary] この文書の役割
-> `klaus ui` コマンドで起動する localhost Web UI の先行設計。M4 実装セッションへの引き継ぎ用。M1〜M3(core / CLI)の実装が本設計の前提を壊さないようにするための「守るべき契約」も含む。要件は [[requirements]](docs/requirements.md)を参照。
+> `klaus ui` コマンドで起動する localhost Web UI の先行設計。M4 実装セッションへの引き継ぎ用。M1〜M3(core / CLI)の実装が本設計の前提を壊さないようにするための「守るべき契約」も含む。要件は [[requirements]](requirements.md)を参照。
 
 ## 目的とスコープ
 

@@ -27,8 +27,8 @@ ui/         # Vite + React SPA(private ワークスペース)。core への runt
 |---|---|---|
 | `schema.ts` | zod スキーマ(フロー / 環境ファイル)、排他ルール検証 | 純粋 |
 | `loader.ts` | YAML 読み込み → zod 検証 → ParseError | I/O |
-| `env.ts` | environments/<name>.yaml の解決 | I/O |
-| `template.ts` | `{{...}}` 展開・テンプレート関数 | 純粋 |
+| `env.ts` | `environments/<name>.yaml` の解決 | I/O |
+| `template.ts` | <code v-pre>{{...}}</code> 展開・テンプレート関数 | 純粋 |
 | `http.ts` | undici ラッパー(計測・JSON 判定・タイムアウト) | I/O |
 | `sse.ts` | SSE 受信と上限打ち切り(eventsource-parser) | I/O |
 | `ws.ts` | WebSocket 接続・送受信・上限打ち切り(undici WebSocket) | I/O |

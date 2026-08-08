@@ -12,7 +12,7 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 **根拠**: このセッションで**2回**踏んだ。`tsup.config.ts` の1つ目のエントリが `clean: true` で `dist/` 全体を消すため、`pnpm build`（および内部で build を呼ぶ `pnpm test`）を実行すると Vite が出力した `dist/ui` が消える。結果 `klaus ui` が 503「静的ファイルが見つかりません」になる。
 
-利用者にも同じことが起きる：`pnpm build` は自然な操作なのに、その後 `klaus ui` が壊れる。ドキュメントの注意書き（`VERIFICATION.md`・`docs/architecture.md`）で回避しているが、**ドキュメントで回避する設計そのものが誤り**。
+利用者にも同じことが起きる：`pnpm build` は自然な操作なのに、その後 `klaus ui` が壊れる。ドキュメントの注意書き（`VERIFICATION.md`・`docs/dev/architecture.md`）で回避しているが、**ドキュメントで回避する設計そのものが誤り**。
 
 **修正案**（いずれか）:
 1. `tsup.config.ts` の `clean` を全エントリ `false` にし、`"clean": "rimraf dist"` 相当を別スクリプト化して `build:all` の先頭でのみ実行する
@@ -22,7 +22,7 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 ただしこれだけでは、エントリを削除・リネームした際に古い成果物が `dist/` に残り、`files: ["dist"]` 経由で publish に同梱される**別のリスク**が生まれる（セキュリティレビューで指摘）。そこで `scripts/clean.mjs` を追加し、**リリース用の `build:all` は clean → build → build:ui** の順で走るようにした。開発時の `pnpm build` 単体は clean しないので `dist/ui` は保持される。
 
-検証済み: (1) `pnpm build` 単体・`pnpm test`（内部で build を呼ぶ）の後でも `dist/ui/index.html` が生存すること、(2) `dist/` に古いファイルを仕込んで `build:all` を実行すると除去され、かつ `dist/ui` が正しく再生成されること。`VERIFICATION.md` と `docs/architecture.md` の回避用注意書きは削除した。
+検証済み: (1) `pnpm build` 単体・`pnpm test`（内部で build を呼ぶ）の後でも `dist/ui/index.html` が生存すること、(2) `dist/` に古いファイルを仕込んで `build:all` を実行すると除去され、かつ `dist/ui` が正しく再生成されること。`VERIFICATION.md` と `docs/dev/architecture.md` の回避用注意書きは削除した。
 
 ### A-2. SSE の受信イベントが履歴に残らない — 推奨（コスト: 小）
 
@@ -42,7 +42,7 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 ### A-4. シークレットが履歴に平文で残る — 条件付き（コスト: 中）
 
-**根拠**: 履歴は**テンプレート解決済みの値**を記録するため、`{{env.TEST_PASSWORD}}` で渡した値が `.klaus/history/*.jsonl` に平文で残る。`docs/history.md` に注意書きを書き、`.gitignore` にも入れてあるが、**`klaus ui` の履歴ブラウザは同じ内容をブラウザに表示する**。
+**根拠**: 履歴は**テンプレート解決済みの値**を記録するため、`{{env.TEST_PASSWORD}}` で渡した値が `.klaus/history/*.jsonl` に平文で残る。`docs/guide/history.md` に注意書きを書き、`.gitignore` にも入れてあるが、**`klaus ui` の履歴ブラウザは同じ内容をブラウザに表示する**。
 
 **修正案**: フロー定義でマスク対象を宣言（`request.secretFields: ["password"]`）、または `Authorization` / `*token*` / `*password*` といったヘッダー名・キー名ベースの自動マスク。
 
@@ -82,7 +82,7 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 ### B-1. 自分が書いた注意書きを、自分の手順に反映していなかった
 
-`docs/architecture.md` に「`build:all` の順序が必須（tsup の clean が dist/ui を消す）」と自分で書きながら、その後の検証で `pnpm test` を実行した後に UI を起動して 503 を出した。**しかも2回**。
+`docs/dev/architecture.md` に「`build:all` の順序が必須（tsup の clean が dist/ui を消す）」と自分で書きながら、その後の検証で `pnpm test` を実行した後に UI を起動して 503 を出した。**しかも2回**。
 
 **教訓**: ドキュメントに書いた制約は、自分の実行手順にもチェックとして組み込む。より根本的には A-1 のとおり**ドキュメントで回避している設計は直す**。
 
