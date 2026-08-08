@@ -13,10 +13,10 @@
 
 ```
 src/
-  core/      # 既存。実行・アサーション・履歴の全ロジック(変更なし)
-  cli/       # 既存。`klaus ui` サブコマンドを追加(サーバー起動+ブラウザ起動のみ)
-  server/    # 新規。HTTP API + 静的配信(core を import する薄い層)
-ui/          # 新規。Vite + React SPA(ビルド成果物を dist/ui に出力)
+  core/      # Existing. All execution/assertion/history logic (unchanged)
+  cli/       # Existing. Adds the `klaus ui` subcommand (just server startup + browser launch)
+  server/    # New. HTTP API + static serving (a thin layer that imports core)
+ui/          # New. Vite + React SPA (build output goes to dist/ui)
 ```
 
 - **The server is implemented purely as a reuse of core**. Execution logic, assertions, and history read/write must not be reimplemented in the server

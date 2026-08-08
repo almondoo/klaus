@@ -36,8 +36,8 @@ The following is the starting point for M1. The details of field names may be ad
 
 ```yaml
 # api/auth-flow.yaml
-name: 認証フロー
-env: local          # environments/local.yaml を参照
+name: auth flow
+env: local          # References environments/local.yaml
 steps:
   - name: login
     request:
@@ -47,9 +47,9 @@ steps:
         Content-Type: application/json
       body:
         email: "{{testEmail}}"
-        password: "{{env.TEST_PASSWORD}}"   # OS 環境変数の参照
+        password: "{{env.TEST_PASSWORD}}"   # References an OS environment variable
     capture:
-      token: "$.token"                      # jsonpath でキャプチャ
+      token: "$.token"                      # Captured via jsonpath
     assert:
       status: 200
       body:
@@ -61,7 +61,7 @@ steps:
       method: GET
       url: "{{baseUrl}}/me"
       headers:
-        Authorization: "Bearer {{token}}"   # 前ステップのキャプチャを参照
+        Authorization: "Bearer {{token}}"   # References the previous step's capture
     assert:
       status: 200
       body:

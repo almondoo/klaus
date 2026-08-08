@@ -5,7 +5,7 @@ klaus request definitions are plain YAML. **One file = one flow (a sequence of s
 ## File Structure
 
 ```yaml
-name: 認証フロー        # Required: flow name
+name: auth flow        # Required: flow name
 env: local             # Optional: references environments/local.yaml
 steps:                 # Required: at least one. name must be unique within the flow
   - name: login

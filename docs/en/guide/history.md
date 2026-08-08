@@ -17,7 +17,7 @@ One line = one step execution. `runId` lets you group steps from the same run.
 {
   "v": 1,                       // schema version
   "runId": "<uuid>",            // ID for the run unit (shared across all flows)
-  "flow": "認証フロー",          // flow name
+  "flow": "auth flow",          // flow name
   "step": "login",              // step name
   "startedAt": "2026-08-08T…",  // ISO 8601
   "durationMs": 6,

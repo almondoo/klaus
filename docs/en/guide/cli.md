@@ -30,11 +30,11 @@ Passing a value other than `junit` to `--report` prints an error to stderr and e
 Output is streamed incrementally as each step completes. Successes get a single-line summary; details are shown only on failure (full detail remains available in the history JSONL).
 
 ```
-認証フロー (/path/to/auth-flow.yaml)
+auth flow (/path/to/auth-flow.yaml)
   PASS login (200, 6ms)
   FAIL get-me (200, 3ms)
     body $.email: expected "a@example.com" but got "b@example.com"
-  SKIP logout (前ステップの失敗によりスキップ)
+  SKIP logout (skipped because a previous step failed)
 
 1 flow, 3 steps: 1 passed, 1 failed, 1 skipped (12ms)
 ```
@@ -55,7 +55,7 @@ After execution completes, a single JSON object (pretty-printed with 2-space ind
   "status": "passed",    // "passed" | "failed" | "error"
   "flows": [
     {
-      "name": "認証フロー",
+      "name": "auth flow",
       "file": "…",
       "status": "passed",
       "durationMs": 120,

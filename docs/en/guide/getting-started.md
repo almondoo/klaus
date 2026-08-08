@@ -17,7 +17,7 @@ A klaus flow definition follows a "1 YAML file = 1 flow (a sequence of steps run
 
 ```yaml
 # api/hello.yaml
-name: hello フロー
+name: hello flow
 steps:
   - name: get-hello
     request:
@@ -36,7 +36,7 @@ klaus run api/hello.yaml
 If stdout is a TTY (a normal terminal), you get human-readable text output.
 
 ```
-hello フロー (api/hello.yaml)
+hello flow (api/hello.yaml)
   PASS get-hello (200, 12ms)
 
 1 flow, 1 step: 1 passed (12ms)
@@ -54,7 +54,7 @@ A common real-world pattern: log in to obtain a token, then use it in the Author
 
 ```yaml
 # api/auth-flow.yaml
-name: 認証フロー
+name: auth flow
 env: local          # See environments/local.yaml
 steps:
   - name: login

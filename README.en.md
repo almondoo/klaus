@@ -23,8 +23,8 @@ npm install -g @almondoo/klaus
 
 ```yaml
 # api/auth-flow.yaml
-name: 認証フロー
-env: local          # environments/local.yaml を参照
+name: auth flow
+env: local          # References environments/local.yaml
 steps:
   - name: login
     request:
@@ -34,9 +34,9 @@ steps:
         Content-Type: application/json
       body:
         email: "{{testEmail}}"
-        password: "{{env.TEST_PASSWORD}}"   # OS 環境変数の参照
+        password: "{{env.TEST_PASSWORD}}"   # References an OS environment variable
     capture:
-      token: "$.token"                      # JSONPath でキャプチャ
+      token: "$.token"                      # Captured via JSONPath
     assert:
       status: 200
       body:
@@ -48,7 +48,7 @@ steps:
       method: GET
       url: "{{baseUrl}}/me"
       headers:
-        Authorization: "Bearer {{token}}"   # 前ステップのキャプチャを参照
+        Authorization: "Bearer {{token}}"   # References the previous step's capture
     assert:
       status: 200
       body:
@@ -73,16 +73,16 @@ klaus run api/auth-flow.yaml
 ```
 klaus run <files...> [options]
 
-  --env <name>          フローの env 指定を上書き
-  --json                TTY でも JSON 出力を強制
-  --report junit        JUnit XML レポートを生成
-  --report-file <path>  レポート出力先(デフォルト: klaus-report.xml)
-  --no-history          履歴 JSONL への書き込みを無効化
+  --env <name>          Overrides the flow's env setting
+  --json                Forces JSON output even on a TTY
+  --report junit        Generates a JUnit XML report
+  --report-file <path>  Report output path (default: klaus-report.xml)
+  --no-history          Disables writing to the history JSONL
 
-klaus ui [options]      # localhost Web UI(ランナー + 履歴ビューア)を起動
+klaus ui [options]      # Starts the localhost web UI (runner + history viewer)
 
-  -p, --port <n>        ポート指定(デフォルト: 空きポート自動選択)
-  --no-open             ブラウザの自動起動を抑止
+  -p, --port <n>        Specifies the port (default: automatically selects a free port)
+  --no-open             Suppresses automatically opening the browser
 ```
 
 `klaus ui` starts a server bound to 127.0.0.1 only, and opens a URL with a startup token in the browser (protected by token authentication, Host validation, and CSRF protection; not accessible from outside).
@@ -165,8 +165,8 @@ Specify `ws:` instead of `request` on a step. Each message in `send` is sent seq
       send:
         - "ping"
         - { type: subscribe, channel: orders }
-      maxMessages: 50        # デフォルト 100
-      maxDurationMs: 5000    # デフォルト 10000
+      maxMessages: 50        # default 100
+      maxDurationMs: 5000    # default 10000
     assert:
       messageCount: { min: 1 }
       messages:
@@ -184,9 +184,9 @@ All requests / responses / durations are appended one step per line to `.klaus/h
 
 ```bash
 pnpm install
-pnpm build      # tsup(core / cli / server)。dist/ui は保持される
-pnpm build:ui   # Vite(ui/ → dist/ui)
-pnpm build:all  # clean + build + build:ui(リリース用のフルビルド)
+pnpm build      # tsup (core / cli / server); dist/ui is preserved
+pnpm build:ui   # Vite (ui/ -> dist/ui)
+pnpm build:all  # clean + build + build:ui (full build for release)
 pnpm test       # vitest
 pnpm typecheck  # tsc --noEmit
 pnpm lint       # biome
