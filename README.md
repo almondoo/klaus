@@ -188,11 +188,11 @@ pnpm typecheck  # tsc --noEmit
 pnpm lint       # biome
 ```
 
-構成: `src/core`(CLI 非依存の実行エンジン)+ `src/cli`(薄い CLI 層)+ `src/server`(`klaus ui` の API サーバー)+ `ui/`(Vite + React の Web UI、ワークスペース)。設計資料は `docs/` を参照。
+構成: `src/core`(CLI 非依存の実行エンジン)+ `src/cli`(薄い CLI 層)+ `src/server`(`klaus ui` の API サーバー)+ `ui/`(Vite + React の Web UI、ワークスペース)。利用者向けガイドは `docs/guide/`、開発者向け資料は `docs/dev/` を参照(目次: `docs/index.md`)。
 
 ## ロードマップ
 
-- npm 公開(GitHub Actions + Trusted Publishing)
+npm 公開(GitHub Actions + Trusted Publishing)は v0.1.1 で完了。今後の予定は [GitHub Issues](https://github.com/almondoo/klaus/issues) を参照。
 
 ## License
 

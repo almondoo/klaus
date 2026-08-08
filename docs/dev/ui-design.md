@@ -1,7 +1,7 @@
 # klaus localhost UI(M4)設計
 
 > [!summary] この文書の役割
-> `klaus ui` コマンドで起動する localhost Web UI の先行設計。M4 実装セッションへの引き継ぎ用。M1〜M3(core / CLI)の実装が本設計の前提を壊さないようにするための「守るべき契約」も含む。要件は [[requirements]](docs/requirements.md)を参照。
+> `klaus ui` コマンドで起動する localhost Web UI の先行設計。M4 実装セッションへの引き継ぎ用。M1〜M3(core / CLI)の実装が本設計の前提を壊さないようにするための「守るべき契約」も含む。要件は [[requirements]](requirements.md)を参照。
 
 ## 目的とスコープ
 
@@ -43,7 +43,7 @@ ui/          # 新規。Vite + React SPA(ビルド成果物を dist/ui に出力
 | `GET /api/history?flow=&limit=&before=` | 履歴 JSONL の読み出し(新しい順・ページング) |
 
 - 実行進捗を SSE で流すため、core の `runner` は**ステップ完了ごとのコールバック(または AsyncIterator)を公開しておく**こと(M1〜M3 実装への要求。CLI のプログレス表示にも使える)
-- シークレット保護: API レスポンス・履歴読み出しで `{{env.X}}` 解決後の値をそのまま返す(履歴 JSONL の記録内容と同等)。履歴に残したくない値のマスキングは将来課題として UI では対応しない
+- シークレット保護: API レスポンス・履歴読み出しで <code v-pre>{{env.X}}</code> 解決後の値をそのまま返す(履歴 JSONL の記録内容と同等)。履歴に残したくない値のマスキングは将来課題として UI では対応しない
 
 ## セキュリティ(要件の制約の具体化)
 

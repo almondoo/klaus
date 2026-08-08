@@ -1,7 +1,7 @@
 # klaus UI デザインシステム
 
 > [!summary] この文書の役割
-> `ui/`(React SPA)が実際に採用している技術構成・デザイントークンを実装から抽出した資料。プロダクト全体の UX 方針は [docs/ui-ux-design.md](../../docs/ui-ux-design.md)、アーキテクチャ・API 契約は [docs/ui-design.md](../../docs/ui-design.md)を参照。**トークンの原本は常に `ui/src/styles/globals.css`** — 本書の値と食い違ったら globals.css を正とする。
+> `ui/`(React SPA)が実際に採用している技術構成・デザイントークンを実装から抽出した資料。プロダクト全体の UX 方針は [docs/dev/ui-ux-design.md](../../docs/dev/ui-ux-design.md)、アーキテクチャ・API 契約は [docs/dev/ui-design.md](../../docs/dev/ui-design.md)を参照。**トークンの原本は常に `ui/src/styles/globals.css`** — 本書の値と食い違ったら globals.css を正とする。
 
 ## 技術構成
 
@@ -55,7 +55,7 @@ shadcn 標準トークンには無いため独自追加(`Badge` の `pass`/`fail
 
 ### ドキュメントとの差分
 
-`docs/design-system/klaus/MASTER.md` はトークンの生成元だが、shadcn の変数意味論に合わせて実装時に再マッピングされている。
+`docs/dev/design-system/klaus/MASTER.md` はトークンの生成元だが、shadcn の変数意味論に合わせて実装時に再マッピングされている。
 
 | MASTER.md 上の役割 | MASTER.md の値 | 実装でのマッピング先 | 理由 |
 |---|---|---|---|
@@ -63,7 +63,7 @@ shadcn 標準トークンには無いため独自追加(`Badge` の `pass`/`fail
 | Accent/CTA(`#22C55E`) | アクセント色 | `--primary`(実行ボタン・PASS) | 上記の意味論に合わせ、実際のボタン主色として採用 |
 | Ring(`#0F172A`, Primary と同色) | フォーカスリング色 | `--ring`(`#38BDF8`, sky) | 背景 `#020617` に対し `#0F172A` はほぼ不可視でフォーカスリングとして機能しないため、視認性の高い sky に変更 |
 
-`docs/ui-ux-design.md` の「アイコン」節は **Phosphor Icons(@phosphor-icons/react)、Outline スタイル**を指定しているが、実装(`components.json` / `package.json` / 全コンポーネントの import)は **lucide-react** を採用している。既知の乖離であり、lucide-react が現行の事実。
+`docs/dev/ui-ux-design.md` の「アイコン」節は **Phosphor Icons(@phosphor-icons/react)、Outline スタイル**を指定しているが、実装(`components.json` / `package.json` / 全コンポーネントの import)は **lucide-react** を採用している。既知の乖離であり、lucide-react が現行の事実。
 
 ## ダークモード方針
 
@@ -86,7 +86,7 @@ shadcn 標準トークンには無いため独自追加(`Badge` の `pass`/`fail
 | 本文・ラベル | Fira Sans | `--font-sans` |
 
 - `main.tsx` で `@fontsource/fira-code` / `@fontsource/fira-sans` の 400/500/600 ウェイト、`latin` + `latin-ext` サブセットのみをバンドル
-- **CDN を使わない理由**: localhost UI はオフラインでも動作すべきという方針、および同一オリジン配信(外部ドメインへの依存を持たない)方針との整合。`docs/ui-ux-design.md` にも同旨の記載がある。MASTER.md は Google Fonts CDN の `@import url(...)` を提案しているが不採用
+- **CDN を使わない理由**: localhost UI はオフラインでも動作すべきという方針、および同一オリジン配信(外部ドメインへの依存を持たない)方針との整合。`docs/dev/ui-ux-design.md` にも同旨の記載がある。MASTER.md は Google Fonts CDN の `@import url(...)` を提案しているが不採用
 - 日本語 UI ラベルは Fira Code / Fira Sans が CJK グリフを持たないため、ブラウザのフォールバックフォント(`ui-sans-serif` / `ui-monospace` 経由のシステムフォント)で表示される。意図的な設計で、klaus の UI テキストは日本語ラベル以外は ASCII のデータ・コードが中心
 - ベース `font-size: 16px`、`line-height: 1.5`(`body`)。`code` / `pre` 要素は `font-mono` を強制適用
 
@@ -105,14 +105,14 @@ shadcn 標準トークンには無いため独自追加(`Badge` の `pass`/`fail
 
 ## 余白・密度
 
-- タッチターゲットは既定 `h-11`(44px。`Button` / `Select` の `default` サイズ)。密度が要求される一覧系(テーブル行・小型セレクタ)は `h-9`(36px。`sm` サイズ)まで圧縮を許容する — `docs/ui-ux-design.md` の density 8/10(dense / dashboard)方針の具体化
-- `--sidebar-width: 16.25rem`(260px)。`docs/ui-ux-design.md` が指定する 240–280px の範囲内
+- タッチターゲットは既定 `h-11`(44px。`Button` / `Select` の `default` サイズ)。密度が要求される一覧系(テーブル行・小型セレクタ)は `h-9`(36px。`sm` サイズ)まで圧縮を許容する — `docs/dev/ui-ux-design.md` の density 8/10(dense / dashboard)方針の具体化
+- `--sidebar-width: 16.25rem`(260px)。`docs/dev/ui-ux-design.md` が指定する 240–280px の範囲内
 - MASTER.md は `--space-xs`〜`--space-3xl`(2px〜32px)という名前付きスペーシングトークンを定義しているが、**`globals.css` はこれらを CSS 変数として実装していない**。実際は各コンポーネントで Tailwind の既定スペーシングスケール(`p-6` / `gap-3` / `px-3` 等)を直接指定しており、結果的に MASTER.md が意図する密度感には収まっている
 
 ## モーション方針
 
 - **CSS transition と Radix の `animate-in` / `animate-out`(`tw-animate-css`)のみ**。GSAP 等のアニメーションライブラリは `package.json` に存在せず未導入
-- 導入しない理由: グローバルインストールされる CLI ツールの依存を増やしたくないため(`docs/ui-ux-design.md` に明記)。MASTER.md の GSAP スクロールリビール スニペットは不採用
+- 導入しない理由: グローバルインストールされる CLI ツールの依存を増やしたくないため(`docs/dev/ui-ux-design.md` に明記)。MASTER.md の GSAP スクロールリビール スニペットは不採用
 - 遷移時間はおおむね 150–300ms の範囲(例: `Button` / `TableRow` / `ScrollBar` = `duration-150`、`Progress` インジケータ = `duration-300`、`Sidebar` ドロワー = `duration-[250ms]`)
 - `Select` / `Tooltip` のポップアップは `tw-animate-css` の `data-[state=open]:animate-in` / `data-[state=closed]:animate-out` + `fade-in-0` / `zoom-in-95` 系ユーティリティで開閉する
 

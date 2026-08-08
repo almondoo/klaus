@@ -6,3 +6,5 @@ tmp/
 .playwright-mcp/
 *.log
 .DS_Store
+docs/.vitepress/cache/
+docs/.vitepress/dist/

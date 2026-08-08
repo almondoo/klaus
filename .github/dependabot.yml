@@ -13,6 +13,11 @@ updates:
       semver-major-days: 14
       semver-minor-days: 7
       semver-patch-days: 3
+    # typescript 7 は tsup(rollup-plugin-dts)が旧 Compiler API 廃止に未対応のため
+    # メジャー更新を見送り中。再検討条件は #15 を参照。
+    ignore:
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
     groups:
       dev-dependencies:
         dependency-type: "development"

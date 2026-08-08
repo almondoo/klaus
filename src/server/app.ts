@@ -1,7 +1,7 @@
 /**
  * klaus localhost UI サーバーの Hono アプリ本体。
  * セキュリティミドルウェア(Host 検証・トークン認証・CSRF)→ API ルート → 静的配信、の順に構成する。
- * 契約は docs/ui-design.md のセキュリティ節を参照。
+ * 契約は docs/dev/ui-design.md のセキュリティ節を参照。
  */
 import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";

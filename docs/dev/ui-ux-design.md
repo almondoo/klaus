@@ -1,11 +1,11 @@
 # klaus UI ビジュアル / UX 設計(M4)
 
 > [!summary] この文書の役割
-> [[ui-design]](docs/ui-design.md)がアーキテクチャ(server / API / セキュリティ)を定めるのに対し、本書はビジュアルデザインと UX の**方針**を定める。
+> [[ui-design]](ui-design.md)がアーキテクチャ(server / API / セキュリティ)を定めるのに対し、本書はビジュアルデザインと UX の**方針**を定める。
 >
-> **実装の詳細(トークンの実値・コンポーネント構成)は [`ui/docs/design-system.md`](../ui/docs/design-system.md) と [`ui/docs/components.md`](../ui/docs/components.md) が正**。UI は shadcn/ui + Tailwind CSS v4 で実装されており、CSS 変数の実体は `ui/src/styles/globals.css` にある。本書と実装が食い違う場合は実装側が正しい(下記「実装との差分」を参照)。
+> **実装の詳細(トークンの実値・コンポーネント構成)は [`ui/docs/design-system.md`](https://github.com/almondoo/klaus/blob/main/ui/docs/design-system.md) と [`ui/docs/components.md`](https://github.com/almondoo/klaus/blob/main/ui/docs/components.md) が正**。UI は shadcn/ui + Tailwind CSS v4 で実装されており、CSS 変数の実体は `ui/src/styles/globals.css` にある。本書と実装が食い違う場合は実装側が正しい(下記「実装との差分」を参照)。
 >
-> `docs/design-system/klaus/MASTER.md` は ui-ux-pro-max が生成した出発点であり、現在の実装はそこから意図的に逸脱している箇所がある。
+> `docs/dev/design-system/klaus/MASTER.md` は ui-ux-pro-max が生成した出発点であり、現在の実装はそこから意図的に逸脱している箇所がある。
 
 ## デザイン方針
 
@@ -17,7 +17,7 @@ ui-ux-pro-max の product 検索で「Developer Tool / IDE」にマッチ: **Dar
 
 ## カラー方針
 
-配色は「コードエディタ的なダーク + ステータス色」。実際の CSS 変数名と値は `ui/src/styles/globals.css` が正で、対応表は [`ui/docs/design-system.md`](../ui/docs/design-system.md) にある。方針としての基準色:
+配色は「コードエディタ的なダーク + ステータス色」。実際の CSS 変数名と値は `ui/src/styles/globals.css` が正で、対応表は [`ui/docs/design-system.md`](https://github.com/almondoo/klaus/blob/main/ui/docs/design-system.md) にある。方針としての基準色:
 
 | 役割 | Hex | 用途 |
 |------|-----|------|
@@ -77,7 +77,7 @@ shadcn/ui 移行にあたり、以下は本書・MASTER.md の初期案から意
 ## アイコン
 
 - **lucide-react で統一**(shadcn 標準のアイコンライブラリ)。絵文字をアイコンとして使わない(必須ルール)
-- 主要マッピング: 実行 = Play、pass = CheckCircle、fail = XCircle、skipped = MinusCircle、running = Loader2(回転)、履歴 = History、戻る = ArrowLeft。実際に使用しているアイコンは [`ui/docs/components.md`](../ui/docs/components.md) を参照
+- 主要マッピング: 実行 = Play、pass = CheckCircle、fail = XCircle、skipped = MinusCircle、running = Loader2(回転)、履歴 = History、戻る = ArrowLeft。実際に使用しているアイコンは [`ui/docs/components.md`](https://github.com/almondoo/klaus/blob/main/ui/docs/components.md) を参照
 - アイコンのみのボタンには必ず `aria-label` を付与。クリック領域は 44×44px 以上を確保
 
 ## React 実装ルール(stack 検索より)

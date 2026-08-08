@@ -1,0 +1,78 @@
+# VitePress で構築したドキュメントサイト (docs/) を GitHub Pages へデプロイするワークフロー。
+# VitePress 公式のデプロイ手順 (https://vitepress.dev/guide/deploy#github-pages) を
+# 本リポジトリの pnpm 運用に合わせて調整している。
+name: deploy-docs
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/deploy-docs.yml"
+  # Actions タブから手動実行できるようにする
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 実行中のデプロイを中断せず、キューにある分だけ間引く(公式例のとおり)
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          # GITHUB_TOKEN の git 資格情報を後続ステップに残さない
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          # 他ワークフローと同じく正確なバージョンに固定する
+          version: 11.5.1
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: VitePress のビルドキャッシュを復元
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: docs/.vitepress/cache
+          key: ${{ runner.os }}-vitepress-${{ hashFiles('docs/**', 'pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-vitepress-
+
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+
+      - name: 依存関係をインストール
+        run: pnpm install --frozen-lockfile
+
+      - name: ドキュメントをビルド
+        run: pnpm docs:build
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        id: deployment

@@ -97,7 +97,7 @@ baseUrl: http://localhost:3000
 testEmail: test@example.com
 ```
 
-環境ファイルの値はすべて文字列で、テンプレート変数(`{{...}}`)として `{{baseUrl}}` のように参照できる。シークレット(パスワードなど)は環境ファイルに直書きせず、`{{env.TEST_PASSWORD}}` の形で OS 環境変数を参照する(`TEST_PASSWORD=xxx klaus run ...` のように渡す)。
+環境ファイルの値はすべて文字列で、テンプレート変数(<code v-pre>{{...}}</code>)として <code v-pre>{{baseUrl}}</code> のように参照できる。シークレット(パスワードなど)は環境ファイルに直書きせず、<code v-pre>{{env.TEST_PASSWORD}}</code> の形で OS 環境変数を参照する(`TEST_PASSWORD=xxx klaus run ...` のように渡す)。
 
 `env:` を指定しない、または `environments/<name>.yaml` が存在しない場合の挙動は次の通り:
 

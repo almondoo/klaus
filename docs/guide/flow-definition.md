@@ -16,7 +16,7 @@ steps:                 # 必須: 1件以上。name はフロー内で一意
 ```
 
 - 環境ファイルは **cwd 基準**で `environments/<name>.yaml` を解決する。`klaus run --env <name>` でフローの `env:` を上書きできる
-- 環境ファイルは `キー: 文字列値` のフラットなマップ。値にはテンプレート(`{{env.X}}` 等)を使える
+- 環境ファイルは `キー: 文字列値` のフラットなマップ。値にはテンプレート(<code v-pre>{{env.X}}</code> 等)を使える
 
 ## request(HTTP ステップ)
 
@@ -94,17 +94,17 @@ ws:
 
 ## テンプレート
 
-`{{...}}` は以下の順で解決される。**未解決の変数・未定義の OS 環境変数は RuntimeError(exit 3)**になる(黙って空文字にはならない)。
+<code v-pre>{{...}}</code> は以下の順で解決される。**未解決の変数・未定義の OS 環境変数は RuntimeError(exit 3)**になる(黙って空文字にはならない)。
 
 | 記法 | 解決先 |
 |---|---|
-| `{{var}}` | ①それまでのステップのキャプチャ変数 → ②環境ファイルの値(キャプチャ優先) |
-| `{{env.X}}` | OS 環境変数 `X`。シークレットは定義ファイルに直書きせずこれを使う |
-| `{{newUuid}}` | `crypto.randomUUID()` の UUID |
-| `{{newDate}}` | 現在時刻の ISO 8601 文字列 |
-| `{{newTimestamp}}` | 現在時刻の epoch ミリ秒 |
+| <code v-pre>{{var}}</code> | ①それまでのステップのキャプチャ変数 → ②環境ファイルの値(キャプチャ優先) |
+| <code v-pre>{{env.X}}</code> | OS 環境変数 `X`。シークレットは定義ファイルに直書きせずこれを使う |
+| <code v-pre>{{newUuid}}</code> | `crypto.randomUUID()` の UUID |
+| <code v-pre>{{newDate}}</code> | 現在時刻の ISO 8601 文字列 |
+| <code v-pre>{{newTimestamp}}</code> | 現在時刻の epoch ミリ秒 |
 
-展開が適用される場所: `request.url` / `request.headers` の値 / `request.body`(文字列値の深い展開)/ `graphql.query` / `graphql.variables` / `ws.url` / `ws.headers` / `ws.send` / アサーションの期待値(`equals: "{{testEmail}}"` 等)。
+展開が適用される場所: `request.url` / `request.headers` の値 / `request.body`(文字列値の深い展開)/ `graphql.query` / `graphql.variables` / `ws.url` / `ws.headers` / `ws.send` / アサーションの期待値(<code v-pre>equals: "{{testEmail}}"</code> 等)。
 
 ## capture(変数キャプチャ)
 

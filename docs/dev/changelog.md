@@ -1,7 +1,7 @@
 # 変更履歴
 
 各リリースで何が変わったかと、**その背景にある判断・踏んだ落とし穴**を記録する。
-API の現在の仕様は各リファレンス([CLI](cli.md) / [フロー定義](flow-definition.md) / [アーキテクチャ](architecture.md))が正で、ここは「なぜそうなったか」を残す場所。
+API の現在の仕様は各リファレンス([CLI](../guide/cli.md) / [フロー定義](../guide/flow-definition.md) / [アーキテクチャ](architecture.md))が正で、ここは「なぜそうなったか」を残す場所。
 
 ## 0.1.1
 
@@ -43,7 +43,7 @@ MIT から ELv2 へ変更した。利用・改変・再配布は自由だが、*
 - 導入したコンポーネント11種: `badge` / `button` / `card` / `collapsible` / `progress` / `scroll-area` / `select` / `separator` / `skeleton` / `table` / `tooltip`
 - 依存は Radix パッケージ7種 + `class-variance-authority` / `clsx` / `tailwind-merge`(`cn()`)、アイコンは `lucide-react`
 - Tailwind v4 は CSS-first 構成のため `tailwind.config.js` は持たず、トークンは `@theme` ブロックで定義する
-- 実装トークンの正は [ui/docs/design-system.md](../ui/docs/design-system.md)、コンポーネント構成の正は [ui/docs/components.md](../ui/docs/components.md)
+- 実装トークンの正は [ui/docs/design-system.md](https://github.com/almondoo/klaus/blob/main/ui/docs/design-system.md)、コンポーネント構成の正は [ui/docs/components.md](https://github.com/almondoo/klaus/blob/main/ui/docs/components.md)
 
 移行の意図・デザイン方針は [ui-ux-design.md](ui-ux-design.md) を参照。
 
@@ -96,7 +96,7 @@ overrides:
 klaus ui -p 4400        # または --port 4400
 ```
 
-未指定時は従来どおり空きポートを自動選択する。詳細は [CLI リファレンス](cli.md)。
+未指定時は従来どおり空きポートを自動選択する。詳細は [CLI リファレンス](../guide/cli.md)。
 
 ### ビルド構成の見直し
 
@@ -135,4 +135,4 @@ klaus ui -p 4400        # または --port 4400
 - **クライアント切断で SSE 実行が永久に停止していた** — 破棄済みレスポンスへの `res.write()` が `false` を返し `'drain'` が発火しないためデッドロックしていた。`'close'` / `'error'` と競合させ、以降の SSE 書き込みは no-op にしつつ、**履歴を残すためフロー自体は最後まで実行する**
 - **WebSocket のソケットリーク** — 送信失敗時に `fail()` がソケットを閉じていなかった。共通の `cleanup()` に集約
 - **`env` 経由のパストラバーサル**(セキュリティ) — `POST /api/runs` が `path` は検証していたが `env` は未検証だった。core 側の境界チェックと server 側の 403 の2層で対処
-- **アサーションの期待値がテンプレート展開されていなかった** — 手動 E2E で発覚(`equals: "{{testEmail}}"` が展開されず失敗)。`assert` ブロックにも `renderDeep` を適用し、回帰テストを追加
+- **アサーションの期待値がテンプレート展開されていなかった** — 手動 E2E で発覚(<code v-pre>equals: "{{testEmail}}"</code> が展開されず失敗)。`assert` ブロックにも `renderDeep` を適用し、回帰テストを追加
