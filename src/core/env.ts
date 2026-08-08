@@ -1,22 +1,65 @@
-import { join, resolve, sep } from "node:path";
+import { existsSync } from "node:fs";
+import { dirname, join, resolve, sep } from "node:path";
 import { ParseError } from "./errors.js";
 import { loadEnvironmentFile } from "./loader.js";
 import type { Environment } from "./schema.js";
 
 /**
- * cwd 基準で environments/<name>.yaml を解決する。
- * envName に `..` やセパレータ・絶対パスが含まれ、解決結果が environments/ の外を
- * 指す場合は ParseError を投げる(path traversal 防止。UI サーバー経由では env が
- * リクエストボディ由来の untrusted 入力になるため必須)。
+ * envDir/`${envName}.yaml` の解決結果が envDir の外を指していないか検証する。
+ * envName に `..` やセパレータ・絶対パスが含まれる場合に検知する(path traversal 防止。
+ * UI サーバー経由では env がリクエストボディ由来の untrusted 入力になるため必須)。
+ * ファイルシステムへアクセスする前に必ず呼び出すこと。
  */
-export function resolveEnvironmentPath(cwd: string, envName: string): string {
-  const envDir = join(cwd, "environments");
-  const resolvedPath = resolve(envDir, `${envName}.yaml`);
+function assertWithinEnvironmentsDir(envDir: string, resolvedPath: string, envName: string): void {
   const boundary = envDir.endsWith(sep) ? envDir : envDir + sep;
   if (!resolvedPath.startsWith(boundary)) {
     throw new ParseError(`環境名が不正です(パスの外側を指しています): ${envName}`);
   }
-  return resolvedPath;
+}
+
+/**
+ * cwd から上方探索で environments/<name>.yaml を解決する。
+ * - cwd から順に親ディレクトリへ辿り、各ディレクトリ直下の environments/<name>.yaml の
+ *   存在を確認する。見つかった時点でそのパスを返す。
+ * - 探索の上限(境界)は「`.git` エントリを含む最初の祖先ディレクトリ(そのディレクトリ自身は
+ *   含めて調べたうえで打ち切る)」または「ファイルシステムのルート」のいずれか先に到達した方。
+ *   すなわちリポジトリルートを跨いで探索することはない。
+ * - 各候補ディレクトリについて、ファイルシステムへアクセスする前に必ず path traversal の
+ *   境界チェックを行う。envName が不正な場合はその時点で ParseError を投げ、以降の探索は
+ *   一切行わない(untrusted な envName でファイルシステムを探査させないため)。
+ * - どの祖先ディレクトリにもファイルが見つからなかった場合は、cwd 基準のパス(従来の
+ *   挙動と同じ join(cwd, "environments", `${envName}.yaml")` 相当)をそのまま返す。
+ *   これにより「ファイルが見つからない」場合のエラーは loadEnvironment 側の
+ *   従来どおりの挙動になる。
+ */
+export function resolveEnvironmentPath(cwd: string, envName: string): string {
+  const startDir = resolve(cwd);
+  let dir = startDir;
+  let cwdBasedPath = "";
+
+  while (true) {
+    const envDir = join(dir, "environments");
+    const candidatePath = resolve(envDir, `${envName}.yaml`);
+    assertWithinEnvironmentsDir(envDir, candidatePath, envName);
+    if (dir === startDir) {
+      cwdBasedPath = candidatePath;
+    }
+
+    if (existsSync(candidatePath)) {
+      return candidatePath;
+    }
+    if (existsSync(join(dir, ".git"))) {
+      break;
+    }
+
+    const parent = dirname(dir);
+    if (parent === dir) {
+      break;
+    }
+    dir = parent;
+  }
+
+  return cwdBasedPath;
 }
 
 /**
