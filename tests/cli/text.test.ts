@@ -137,6 +137,54 @@ describe("formatStepLine", () => {
   });
 });
 
+describe("formatStepLine: 制御文字のサニタイズ", () => {
+  it("FAIL: assertion.message に ANSI エスケープや制御文字(改行含む)が含まれても、生の制御バイトのまま出力せず可視エスケープに変換する", () => {
+    const line = formatStepLine(
+      buildStep({
+        name: "malicious",
+        status: "failed",
+        assertions: [
+          {
+            ok: false,
+            kind: "bodyText",
+            expected: "ok",
+            actual: "injected",
+            message:
+              'body text: expected "ok" but got "\x1b[32mPASS fake\x1b[0m\nPASS injected\r\x07"',
+          },
+        ],
+      }),
+      false,
+    );
+    const lines = line.split("\n");
+    // 生の改行は仕込めないため、行は「FAIL ヘッダー」「詳細1行」の2行のまま
+    expect(lines).toHaveLength(2);
+    const detailLine = lines[1] ?? "";
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: 生の制御バイトが残っていないことを検証する意図的な正規表現
+    expect(detailLine).not.toMatch(/[\x00-\x1f\x7f]/);
+    expect(detailLine).toContain("\\x1B[32m");
+    expect(detailLine).toContain("\\n");
+    expect(detailLine).toContain("\\r");
+    expect(detailLine).toContain("\\x07");
+  });
+
+  it("ERROR: result.error に制御文字が含まれても可視エスケープに変換する", () => {
+    const line = formatStepLine(
+      buildStep({
+        name: "ping",
+        status: "error",
+        error: "connect refused\x1b[31m\nfake PASS line",
+      }),
+      false,
+    );
+    expect(line.split("\n")).toHaveLength(1);
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: 生の制御バイトが残っていないことを検証する意図的な正規表現
+    expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
+    expect(line).toContain("\\x1B[31m");
+    expect(line).toContain("\\n");
+  });
+});
+
 describe("formatSummary", () => {
   function buildRunResult(steps: StepResult[]): RunResult {
     return {

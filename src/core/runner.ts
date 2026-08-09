@@ -59,6 +59,13 @@ export interface RunFlowOptions {
    * 未指定の場合は何もしない(core 側では警告を蓄積せず、通知のみ行う)。
    */
   onWarning?: (message: string) => void;
+  /**
+   * フロー(または単発リクエスト)実行完了時に、収集済みの secrets({{env.X}} で解決した値)を
+   * 呼び出し元へ渡すコールバック。履歴書き込みのマスクとは別経路で、CLI の JUnit ファイル出力など
+   * 呼び出し元側で独自にマスクしたい場合に使う想定。未指定の場合は何もしない。
+   * runFlows 経由で複数フローを実行する場合はフローごとに呼ばれる(呼び出し元で累積すること)。
+   */
+  onSecrets?: (secrets: readonly string[]) => void;
 }
 
 const DEFAULT_HISTORY = true;
@@ -479,6 +486,9 @@ export async function executeFlow(
   const durationMs = performance.now() - flowStartedAt;
   const status = aggregateStatus(steps.map((s) => s.status));
 
+  // 実行完了時点で収集済みの secrets を呼び出し元へ渡す(履歴とは別経路のマスク用)
+  options.onSecrets?.([...secrets]);
+
   return { name: flow.name, file: filePath, status, steps, durationMs };
 }
 
@@ -521,6 +531,11 @@ export interface ExecuteSingleRequestOptions {
   envName?: string | undefined;
   /** 履歴書き込みの有無。既定は true(executeFlow の DEFAULT_HISTORY と同じ) */
   history?: boolean;
+  /**
+   * 実行完了時に、収集済みの secrets({{env.X}} で解決した値)を呼び出し元へ渡すコールバック。
+   * RunFlowOptions.onSecrets と同じ用途・シグネチャ。未指定の場合は何もしない。
+   */
+  onSecrets?: (secrets: readonly string[]) => void;
 }
 
 /** executeSingleRequest の結果 */
@@ -561,6 +576,9 @@ export async function executeSingleRequest(
       // 履歴書き込み失敗はステップ結果に影響させず無視する(executeFlow の警告握りつぶし方針と同じ考え方)
     }
   }
+
+  // 実行完了時点で収集済みの secrets を呼び出し元へ渡す(履歴とは別経路のマスク用)
+  options.onSecrets?.([...secrets]);
 
   return { result: outcome.result };
 }

@@ -57,6 +57,8 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
 
   // 2. 実行(テキストモードは onStepStart/onStepComplete で逐次出力する)
   const textReporter = useJson ? undefined : createTextReporter(useColor);
+  // JUnit ファイル出力にのみ使う secrets({{env.X}} で解決した値)。stdout の text/JSON 出力には使わない
+  const collectedSecrets: string[] = [];
   const runOptions: RunFlowOptions = {
     envNameOverride: options.env,
     history: options.history,
@@ -65,6 +67,10 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     // 履歴書き込み失敗などステップの成否に影響しない警告を stderr に出力する
     onWarning: (message) => {
       process.stderr.write(`klaus: warning: ${message}\n`);
+    },
+    // runFlows はフローごとに呼ぶため、複数フロー分を累積する
+    onSecrets: (secrets) => {
+      collectedSecrets.push(...secrets);
     },
   };
 
@@ -88,7 +94,12 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   }
 
   if (options.report === "junit") {
-    await writeFile(options.reportFile, formatJUnit(runResult), "utf-8");
+    // stdout(text/JSON)とは別経路で、JUnit ファイルにのみ secrets をマスクする
+    await writeFile(
+      options.reportFile,
+      formatJUnit(runResult, { secrets: collectedSecrets }),
+      "utf-8",
+    );
   }
 
   // 4. exit code
