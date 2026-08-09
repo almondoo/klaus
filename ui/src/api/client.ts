@@ -13,15 +13,22 @@ const impl = useMock ? mock : real;
 export const getFlows = impl.getFlows;
 export const getFlowDetail = impl.getFlowDetail;
 export const getEnvironments = impl.getEnvironments;
+export const getEnvironmentDetail = impl.getEnvironmentDetail;
+export const updateEnvironment = impl.updateEnvironment;
+export const captureToEnvironment = impl.captureToEnvironment;
 export const getHistory = impl.getHistory;
 export const runFlow = impl.runFlow;
+export const runSingleRequest = impl.runSingleRequest;
 
 export { ApiError } from "./http";
 export type { RunStreamCallbacks } from "./sse";
 export { getToken, onUnauthorized } from "./token";
 export type {
   AssertionResult,
+  EnvironmentCaptureRequestBody,
+  EnvironmentDetail,
   EnvironmentListEntry,
+  EnvironmentUpdateRequestBody,
   FlowDetail,
   FlowListEntry,
   FlowResult,
@@ -30,6 +37,8 @@ export type {
   HistoryPage,
   RunRequestBody,
   RunResultPayload,
+  SingleRequestRequestBody,
+  SingleRequestResultPayload,
   StepResult,
   StepResultPayload,
   StepStartPayload,

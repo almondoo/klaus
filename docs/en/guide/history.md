@@ -2,6 +2,8 @@
 
 klaus appends every request, response, and duration to a local JSONL file. The reason CLI text output stays a one-line summary on success is that full detail is offloaded here. The localhost UI's history browser also reads this file.
 
+To inspect it directly from the CLI without the browser UI, use `klaus history` (list) / `klaus history show <runId>` (detail). See the [CLI Reference](cli.md#klaus-history) for the options.
+
 ## File Conventions
 
 - Path: `.klaus/history/<YYYY-MM-DD>.jsonl` (**relative to the cwd**; the date is the local date)

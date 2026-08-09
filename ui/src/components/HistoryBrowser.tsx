@@ -98,7 +98,12 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                 <TableHead>状態</TableHead>
                 <TableHead>フロー</TableHead>
                 <TableHead>開始時刻</TableHead>
-                <TableHead>所要時間</TableHead>
+                {/* run 行は全ステップの durationMs 合計、ステップ行は単一ステップの durationMs。
+                    実行画面のサマリー(FlowResult.durationMs)はステップ間のオーバーヘッドも含む
+                    wall-clock 時間のため、run 行の値とは意味が異なる場合がある旨を title で補足する */}
+                <TableHead title="run 行は全ステップの所要時間の合計です(実行画面のサマリー時間とは計測範囲が異なる場合があります)">
+                  所要時間
+                </TableHead>
                 <TableHead>ステップ数</TableHead>
               </TableRow>
             </TableHeader>

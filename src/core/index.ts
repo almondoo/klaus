@@ -16,15 +16,43 @@ export {
   assertStatus,
   evaluateAssertions,
 } from "./assert.js";
-export { loadEnvironment, resolveEnvironmentPath } from "./env.js";
+export { collectYamlFiles, discoverFlowCandidates, isFlowCandidate } from "./discovery.js";
+export {
+  EnvironmentNotFoundError,
+  loadEnvironment,
+  resolveEnvironmentPath,
+  saveEnvironment,
+} from "./env.js";
 export * from "./errors.js";
 export type { HistoryEntry } from "./history.js";
-export { appendHistory, historyFilePath } from "./history.js";
+export { appendHistory, historyDateFromTimestamp, historyFilePath } from "./history.js";
+export type { GetHistoryQuery, HistoryPage } from "./history-query.js";
+export {
+  getHistoryPage,
+  readAllHistoryEntries,
+  resolveHistoryEntryStatus,
+} from "./history-query.js";
 export type { HttpRequestOptions, HttpResponse, RawHttpResponse } from "./http.js";
 export { DEFAULT_TIMEOUT_MS, sendRawRequest, sendRequest } from "./http.js";
-export { loadEnvironmentFile, loadFlow, parseEnvironmentYaml, parseFlowYaml } from "./loader.js";
-export type { RunFlowOptions, StepCompleteContext, StepStartContext } from "./runner.js";
-export { executeFlow, runFlow, runFlows } from "./runner.js";
+export type { FlowIssue, FlowValidationResult } from "./loader.js";
+export {
+  describeFlowSchemaIssues,
+  formatZodError,
+  loadEnvironmentFile,
+  loadFlow,
+  parseEnvironmentYaml,
+  parseFlowYaml,
+  validateFlowFile,
+  validateFlowYaml,
+} from "./loader.js";
+export type {
+  ExecuteSingleRequestOptions,
+  ExecuteSingleRequestResult,
+  RunFlowOptions,
+  StepCompleteContext,
+  StepStartContext,
+} from "./runner.js";
+export { captureValues, executeFlow, executeSingleRequest, runFlow, runFlows } from "./runner.js";
 export type {
   AssertDef,
   BodyAssertion,

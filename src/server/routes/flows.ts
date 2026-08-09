@@ -2,51 +2,12 @@
  * GET /api/flows・GET /api/flows/detail が使う共通ロジック。
  * core を再利用してパース・検証を行うだけで、実行・アサーションロジックは持たない。
  */
-import type { Dirent } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
-import { join, relative, resolve, sep } from "node:path";
+import { readFile } from "node:fs/promises";
+import { relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { ParseError, parseFlowYaml } from "../../core/index.js";
+import { collectYamlFiles, isFlowCandidate, ParseError, parseFlowYaml } from "../../core/index.js";
 import type { Step } from "../../core/schema.js";
 import type { FlowListEntry } from "../types.js";
-
-/** 再帰走査時に除外するディレクトリ名 */
-const EXCLUDED_DIRS = new Set([
-  "node_modules",
-  ".git",
-  "dist",
-  ".klaus",
-  "ui",
-  "environments",
-  "tmp",
-]);
-
-const YAML_EXTENSIONS = new Set([".yaml", ".yml"]);
-
-/** cwd 以下を再帰走査し、YAML ファイル(拡張子 .yaml/.yml)の絶対パス一覧を返す */
-async function collectYamlFiles(dir: string): Promise<string[]> {
-  let entries: Dirent[];
-  try {
-    entries = await readdir(dir, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-
-  const files: string[] = [];
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      if (EXCLUDED_DIRS.has(entry.name)) continue;
-      files.push(...(await collectYamlFiles(join(dir, entry.name))));
-      continue;
-    }
-    if (entry.isFile()) {
-      const dotIndex = entry.name.lastIndexOf(".");
-      const ext = dotIndex === -1 ? "" : entry.name.slice(dotIndex);
-      if (YAML_EXTENSIONS.has(ext)) files.push(join(dir, entry.name));
-    }
-  }
-  return files;
-}
 
 /** ParseError のメッセージから "filePath: " の重複プレフィックスを取り除く(path は別フィールドで返すため) */
 function formatParseErrorReason(error: ParseError): string {
@@ -81,8 +42,7 @@ export async function listFlows(cwd: string): Promise<FlowListEntry[]> {
       continue;
     }
 
-    const isCandidate = typeof raw === "object" && raw !== null && "steps" in raw;
-    if (!isCandidate) continue;
+    if (!isFlowCandidate(raw)) continue;
 
     const relPath = relative(cwd, filePath).split(sep).join("/");
     try {

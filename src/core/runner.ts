@@ -8,6 +8,7 @@ import { appendHistory, maskHistoryEntry } from "./history.js";
 import { sendRequest } from "./http.js";
 import { loadFlow } from "./loader.js";
 import type { Flow, RequestDef, Step } from "./schema.js";
+import { requestSchema } from "./schema.js";
 import { receiveSse } from "./sse.js";
 import { renderDeep, renderHeaders, renderString, type TemplateContext } from "./template.js";
 import type {
@@ -88,12 +89,29 @@ function buildRequestBody(request: RequestDef, templateContext: TemplateContext)
 }
 
 /**
+ * request.query(テンプレート展開後)を URL のクエリ文字列にマージする。
+ * URL に既にある同名キーは query 側の値で上書きする。query 未指定・空の場合は url をそのまま返す。
+ */
+function applyQueryParams(
+  url: string,
+  query: Record<string, string> | undefined,
+  templateContext: TemplateContext,
+): string {
+  if (!query || Object.keys(query).length === 0) return url;
+  const parsed = new URL(url);
+  for (const [key, value] of Object.entries(query)) {
+    parsed.searchParams.set(key, renderString(value, templateContext));
+  }
+  return parsed.toString();
+}
+
+/**
  * capture 定義(jsonpath)に従って JSON レスポンスから変数を抽出する。
  * JSONPath の評価例外・マッチなし(wrap:false で undefined が返る場合)は
  * 無警告で "undefined" を格納せず RuntimeError を投げてステップを error にする。
  * JSONPath が正当に null を返した場合は成功として扱う。
  */
-function captureValues(
+export function captureValues(
   captureDef: Record<string, string> | undefined,
   json: unknown,
   stepName: string,
@@ -223,7 +241,11 @@ async function executeStep(
     // テンプレート展開(未解決変数・OS 環境変数未定義は RuntimeError として catch 節に落ちる)
     // graphql 指定時のみ method 省略可であり、その場合は POST を既定にする
     const method = request.method ?? "POST";
-    const url = renderString(request.url, templateContext);
+    const url = applyQueryParams(
+      renderString(request.url, templateContext),
+      request.query,
+      templateContext,
+    );
     const headers = renderHeaders(request.headers, templateContext);
     const body = buildRequestBody(request, templateContext);
     requestSnapshot = { method, url, headers, body };
@@ -485,4 +507,60 @@ export async function runFlows(
   const status = aggregateStatus(flows.map((f) => f.status));
 
   return { runId, startedAt, durationMs, flows, status };
+}
+
+/** executeSingleRequest のオプション */
+export interface ExecuteSingleRequestOptions {
+  /** 検証前の生のリクエスト定義。内部で requestSchema.parse を通す(検証エラーは ZodError のまま投げる) */
+  request: unknown;
+  cwd?: string;
+  /**
+   * 環境ファイル(environments/<name>.yaml)の名前。未指定なら空の環境として扱う。
+   * 呼び出し元(サーバー等)がリクエストボディ由来の値をそのまま渡すため、明示的な undefined を許容する
+   */
+  envName?: string | undefined;
+  /** 履歴書き込みの有無。既定は true(executeFlow の DEFAULT_HISTORY と同じ) */
+  history?: boolean;
+}
+
+/** executeSingleRequest の結果 */
+export interface ExecuteSingleRequestResult {
+  result: StepResult;
+}
+
+/**
+ * フロー定義ファイルを介さず、単一のリクエスト定義を実行する(UI からの単発実行機能向け)。
+ * 内部では合成した1ステップのフローとして executeStep を呼ぶだけだが、executeStep 自体は
+ * 履歴書き込み・シークレットマスクを行わないため、ここで executeFlow と同じ処理
+ * (maskHistoryEntry → appendHistory)を明示的に行う必要がある。
+ */
+export async function executeSingleRequest(
+  options: ExecuteSingleRequestOptions,
+): Promise<ExecuteSingleRequestResult> {
+  const cwd = options.cwd ?? process.cwd();
+  const request = requestSchema.parse(options.request);
+  const environment = await loadEnvironment(cwd, undefined, options.envName);
+  const runId = randomUUID();
+  const flowName = "(single)";
+  const captures: Record<string, unknown> = {};
+  const secrets = new Set<string>();
+  const templateContext: TemplateContext = { captures, env: environment, secrets };
+  const step: Step = { name: "request", request };
+
+  const outcome = await executeStep(step, templateContext, runId, flowName);
+
+  const shouldWriteHistory = options.history ?? DEFAULT_HISTORY;
+  if (shouldWriteHistory && outcome.historyEntry) {
+    const maskedEntry = maskHistoryEntry({ ...outcome.historyEntry, source: "single" }, [
+      ...secrets,
+    ]);
+    try {
+      await appendHistory(cwd, maskedEntry);
+    } catch {
+      // 単発実行には executeFlow の onWarning のような通知先が無いため、
+      // 履歴書き込み失敗はステップ結果に影響させず無視する(executeFlow の警告握りつぶし方針と同じ考え方)
+    }
+  }
+
+  return { result: outcome.result };
 }

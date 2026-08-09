@@ -1,6 +1,6 @@
 # CLI リファレンス
 
-klaus のコマンドは `init`(雛形生成)・`run`(フロー実行)・`ui`(localhost Web UI 起動)の3つ。
+klaus のコマンドは `init`(雛形生成)・`run`(フロー実行)・`validate`(スキーマ検証)・`schema`(JSON Schema 出力)・`ui`(localhost Web UI 起動)・`history`(実行履歴の参照)の6つ。
 
 ## klaus init
 
@@ -14,6 +14,7 @@ klaus init
 |---|---|
 | `flows/example.yaml` | `https://example.com` への GET 1件、ステータス200のアサーション(日本語コメント付き) |
 | `environments/local.yaml` | `baseUrl` を持つ最小の環境ファイル |
+| `AGENTS.md` | AI コーディングエージェント向けに、コマンド体系・YAML スキーマ要点・exit code 表を約50行に圧縮したガイド |
 
 既存ファイルは上書きせずスキップし、その旨を stdout に表示する。必要なディレクトリは自動で作成される。常に exit 0。1件以上生成した場合、最後に次のコマンドのヒントを表示する: `klaus run flows/example.yaml -e local`
 
@@ -59,29 +60,43 @@ klaus run <files...> [options]
 
 ### JSON 出力(機械向け)
 
-実行完了後に1個の JSON(2スペース pretty print)を stdout に出力する。逐次出力はしない。
+実行完了後に1個の JSON(pretty print なし、1行の compact JSON)を stdout に出力する。逐次出力はしない。
+エージェント向けにトークン数を抑えるため **failure-focused** な構造にしてある: 成功(passed)したステップは
+`name` / `status` / `durationMs` のみの1行要約に落とし、`failed` / `error` / `skipped` のステップだけ
+request/response スナップショットや assertions などの詳細を持つ。
 
 ```jsonc
 {
-  "version": 1,          // 出力スキーマのバージョン
+  "version": 2,           // 出力スキーマのバージョン
   "runId": "<uuid>",
   "startedAt": "2026-08-08T…",
   "durationMs": 123,
-  "status": "passed",    // "passed" | "failed" | "error"
+  "status": "passed",     // "passed" | "failed" | "error"
+  "summary": { "flows": 1, "steps": 2, "passed": 1, "failed": 1, "error": 0, "skipped": 0 },
   "flows": [
     {
       "name": "認証フロー",
       "file": "…",
-      "status": "passed",
+      "status": "failed",
       "durationMs": 120,
       "steps": [
         {
+          // passed ステップは1行要約のみ(historyRef は履歴記録が有効なときだけ付与)
           "name": "login",
-          "status": "passed",   // "passed" | "failed" | "skipped" | "error"
+          "status": "passed",
           "durationMs": 6,
-          "request": { "method": "POST", "url": "…", "headers": {}, "body": {} },
-          "response": { "status": 200, "headers": {}, "body": {} },
-          "assertions": [ { "ok": true, "kind": "status", "expected": 200, "actual": 200, "message": "…" } ]
+          "historyRef": { "date": "2026-08-08", "runId": "<uuid>", "step": "login" }
+        },
+        {
+          // failed/error/skipped ステップは詳細を持つ
+          "name": "get-me",
+          "status": "failed",
+          "durationMs": 4,
+          "historyRef": { "date": "2026-08-08", "runId": "<uuid>", "step": "get-me" },
+          "startedAt": "2026-08-08T…",
+          "request": { "method": "GET", "url": "…", "headers": {}, "body": "…" },
+          "response": { "status": 200, "headers": {}, "body": "…" },
+          "assertions": [ { "ok": false, "kind": "status", "expected": 200, "actual": 401, "message": "…" } ]
         }
       ]
     }
@@ -89,7 +104,9 @@ klaus run <files...> [options]
 }
 ```
 
-SSE / WebSocket ステップでは `response.body` は undefined になり、受信データは `events`(SSE)/ `wsMessages`(WS)フィールドに入る。
+- **truncate**: 詳細に含まれる request/response の `body`(JSON ボディは文字列化してから)、SSE `events` の `data`、WS `wsMessages` の `data` はいずれも約500文字で切り詰める(text 出力の切り詰めと同じ規則)。JSON ボディの構造そのままの全文は履歴側にしか無い
+- **historyRef**: 履歴記録が有効な実行(`--no-history` を付けていない)では、各ステップ(passed 含む)に `historyRef: { date, runId, step }` が付く。全文が必要な場合は `klaus history show <runId> --step <step>` で取得する(詳細は [klaus history](#klaus-history) / [実行履歴](history.md) を参照)。`--no-history` 実行時は `historyRef` を省略する
+- SSE / WebSocket ステップでは `response.body` は無く、受信データは `events`(SSE)/ `wsMessages`(WS)フィールドに入る
 
 ### JUnit レポート
 
@@ -114,6 +131,69 @@ SSE / WebSocket ステップでは `response.body` は undefined になり、受
 
 エージェント(Claude Code 等)は exit code だけで故障箇所を判別できる: 2 なら定義を直す、3 なら対象 API の起動状態を見る、4 ならアサーション内容とレスポンスを比較する。
 
+## klaus validate
+
+```
+klaus validate [files...] [options]
+```
+
+フロー定義 YAML のスキーマ検証のみを行う(実行・ネットワークアクセスは一切しない)。環境ファイル(`environments/*.yaml`)は対象外。
+
+| オプション | 説明 | デフォルト |
+|---|---|---|
+| `--json` | TTY でも JSON 出力を強制 | — |
+
+- **引数あり**: 指定したファイルのみを検証する
+- **引数なし**: カレントディレクトリ以下を再帰探索し、フロー候補 YAML(最上位に `steps` キーを持つもの、`klaus ui` の `GET /api/flows` と同じ探索仕様・除外ディレクトリ)を検証する
+
+出力モードは `run` と同じ判定(TTY なら text、非 TTY または `--json` なら JSON、結果は stdout・診断は stderr)。
+
+### text 出力
+
+ファイルごとに `OK`(検証成功)または `NG`(検証失敗)を1行で表示し、`NG` の場合はエラー一覧を続けて表示する。エラーには主要なケース(method 不正・request/ws の排他や必須・body/graphql の排他・ws の URL スキーム不正・url 欠落・steps 空・step 名重複など)に限り、1行の修正例ヒントが付く。
+
+```
+OK   flows/login.yaml
+NG   flows/broken.yaml
+  - steps.0.request.method: request.method is required unless request.graphql is set
+    example: method: GET
+```
+
+### JSON 出力
+
+```jsonc
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "flows/broken.yaml",
+      "valid": false,
+      "errors": [
+        {
+          "path": "steps.0.request.method",
+          "message": "request.method is required unless request.graphql is set",
+          "hint": "example: method: GET"
+        }
+      ]
+    }
+  ]
+}
+```
+
+`errors[].path` は zod issue の path をドット区切りにしたもの(YAML 構文エラーなど issue の位置を特定できない場合は空文字列)。`hint` は主要なケースにのみ付与される(undefined になりうる)。
+
+exit code は全ファイル valid なら **0**、1件でも YAML 構文エラー・スキーマ違反があれば **2**。予期しない例外は `run` と同様 exit 1。
+
+## klaus schema
+
+```
+klaus schema
+```
+
+オプションはない。フロー定義 YAML の JSON Schema(zod スキーマから生成、2スペース pretty print)を stdout に出力するだけで、ファイルへの書き出しはしない。
+
+`request`/`ws` の排他・どちらか必須、`body`/`graphql` の排他、`graphql` 無しの `method` 必須、`ws.url` のスキーム制約、step 名の一意性は zod の `superRefine` によるカスタムバリデーションであり JSON Schema では表現できないため、該当箇所の `description` に注記を付与する形で補っている。常に exit 0。
+
 ## klaus ui
 
 ```
@@ -126,3 +206,50 @@ klaus ui [-p <n>] [--no-open]
 | `--no-open` | ブラウザの自動起動を抑止 | 自動起動する |
 
 起動するとトークン付き URL(`http://127.0.0.1:<port>/?token=…`)を stdout に表示し、デフォルトブラウザで開く。Ctrl+C で終了。サーバーの機能・セキュリティモデル・HTTP API は [localhost UI](ui.md) を参照。
+
+## klaus history
+
+ブラウザ UI を起動せずに実行履歴(`.klaus/history/*.jsonl`)を CLI から参照する。エージェントが巨大なレスポンスボディに汚染されずに履歴を読めるよう、デフォルトではフィールドを絞って出力する。ファイル規則・スキーマの詳細は [実行履歴](history.md) を参照。
+
+### 一覧(klaus history)
+
+```
+klaus history [options]
+```
+
+| オプション | 説明 | デフォルト |
+|---|---|---|
+| `--flow <name>` | フロー名で絞り込む(完全一致) | — |
+| `--failed` | status が failed のエントリのみに絞り込む | — |
+| `--last <n>` | 取得件数 | 20 |
+| `--fields <csv>` | 出力するフィールド(カンマ区切り) | `startedAt,runId,flow,step,status,durationMs` |
+| `--json` | TTY でも JSON 出力を強制する | — |
+
+出力モードは `klaus run` と同じ TTY 判定規約: stdout が TTY なら簡潔なテキスト表(1行1エントリ)、非 TTY(パイプ / エージェント実行)または `--json` 指定時は compact な JSON 配列を出力する。`--fields` に `request` / `response` / `assertions` 等を明示指定すれば、デフォルトでは含まれないリクエスト/レスポンスボディも取得できる。
+
+```
+$ klaus history --last 5 --fields step,status,durationMs
+step     status  durationMs
+get-me   failed  3
+login    passed  6
+```
+
+```
+$ klaus history --json --failed
+[{"startedAt":"2026-08-08T…","runId":"<uuid>","flow":"認証フロー","step":"get-me","status":"failed","durationMs":3}]
+```
+
+### 詳細表示(klaus history show)
+
+```
+klaus history show <runId> [--step <name>]
+```
+
+指定した `runId` に一致する履歴エントリを、保存されたままの形(シークレットはマスク済)ですべて JSON 出力する(TTY 判定はせず常に JSON)。`--step` を指定するとそのステップのみに絞り込む。該当エントリが無い場合は stderr にメッセージを出して exit 1。
+
+```
+$ klaus history show 3fa1c2e0-... --step get-me
+[{"v":1,"runId":"3fa1c2e0-...","flow":"認証フロー","step":"get-me","status":"failed", …}]
+```
+
+`klaus history` の一覧出力に含まれる `runId` / `step` を使って、詳細が必要なエントリだけをこのコマンドで掘り下げる、という使い方を想定している。

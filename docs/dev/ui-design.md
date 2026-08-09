@@ -6,7 +6,7 @@
 ## 目的とスコープ
 
 - `klaus ui` でローカルサーバーを起動し、ブラウザで UI を開く
-- UI の役割は **ランナー + ビューア**。フロー定義の編集はスコープ外(git-native 思想: YAML の編集はエディタで行う。UI からの編集は将来候補に留める)
+- UI の役割は **ランナー + ビューア + 単発リクエスト実行**。フロー YAML ファイル自体の編集は引き続きスコープ外(git-native 思想: YAML の編集はエディタで行う)だが、フロー定義を経由しない単発リクエスト(method/url/headers/query/body を都度その場で編集して実行)は方針転換により UI からの実行対象に含める。`POST /api/request` で実行し、既定タブとして「単発実行」画面を表示する
 - クラウド同期・アカウント機構は永久に作らない(要件どおり)
 
 ## アーキテクチャ
@@ -39,7 +39,9 @@ ui/          # 新規。Vite + React SPA(ビルド成果物を dist/ui に出力
 | `GET /api/flows` | cwd 配下のフロー YAML 一覧(パス・name・ステップ数。パースエラーはエラー印付きで返す) |
 | `GET /api/flows/detail?path=` | 1フローのパース済み定義 |
 | `GET /api/environments` | `environments/*.yaml` の環境名一覧 |
+| `GET /api/environments/:name` / `PUT /api/environments/:name` | 環境1件の内容取得・更新(UI からの key-value 編集用。既存コメントを保持したまま保存する) |
 | `POST /api/runs` | フロー実行。body: `{ path, env? }`。レスポンスは **SSE ストリーム**でステップ単位の進捗(`step-start` / `step-result`)と最終結果(`run-result`)を配信 |
+| `POST /api/request` | 単発リクエスト実行。フロー YAML を経由せず `{ request: { method?, url, headers?, query?, body?, graphql?, timeoutMs? }, env? }` をその場で組み立てて実行し、`{ result: StepResult }` を単発の JSON レスポンスで返す(SSE ではない) |
 | `GET /api/history?flow=&limit=&before=` | 履歴 JSONL の読み出し(新しい順・ページング) |
 
 - 実行進捗を SSE で流すため、core の `runner` は**ステップ完了ごとのコールバック(または AsyncIterator)を公開しておく**こと(M1〜M3 実装への要求。CLI のプログレス表示にも使える)
@@ -64,8 +66,8 @@ UI は履歴 JSONL を読む消費者になるため、以下をスキーマ契�
 
 ## 画面構成(ラフ)
 
-1. **フロー一覧**: フローファイルのリスト + 環境セレクタ + 実行ボタン
-2. **実行ビュー**: ステップごとの進捗(SSE でライブ更新)、アサーション結果の pass/fail、失敗時のリクエスト/レスポンス詳細
+1. **単発実行(既定タブ)**: method/url/headers/query/body をその場で編集し、選択中の環境(TopBar の環境セレクタ)で `POST /api/request` を実行。結果(ステータス/所要時間/ヘッダー/ボディ)を表示
+2. **フロー一覧 / 実行ビュー**: フローファイルのリスト + 環境セレクタ + 実行ボタン。ステップごとの進捗(SSE でライブ更新)、アサーション結果の pass/fail、失敗時のリクエスト/レスポンス詳細
 3. **履歴ブラウザ**: 過去実行の一覧(フロー・日時でフィルタ)→ ステップ詳細のドリルダウン
 
 状態管理はまず React 標準(useState / useReducer + fetch)で開始し、複雑化した時点で外部ライブラリを検討する(初期から導入しない)。

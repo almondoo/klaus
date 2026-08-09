@@ -111,6 +111,11 @@ export const requestSchema = z
       .optional(),
     url: z.string(),
     headers: z.record(z.string(), z.string()).optional(),
+    /**
+     * URL のクエリ文字列にマージするキー・値。値はテンプレート展開対象。
+     * URL に既に同名キーがある場合は query 側の値で上書きする(実行時解決は runner.ts 側)。
+     */
+    query: z.record(z.string(), z.string()).optional(),
     body: z.unknown().optional(),
     graphql: graphqlRequestSchema.optional(),
     timeoutMs: z.number().positive().default(30000),

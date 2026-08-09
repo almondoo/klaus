@@ -80,6 +80,49 @@ describe("flowSchema", () => {
   });
 });
 
+describe("requestSchema / query", () => {
+  it("query は Record<string,string> として受理される", () => {
+    const result = flowSchema.parse({
+      name: "query flow",
+      steps: [
+        {
+          name: "step1",
+          request: {
+            method: "GET",
+            url: "https://example.com",
+            query: { page: "1", q: "{{keyword}}" },
+          },
+        },
+      ],
+    });
+
+    expect(result.steps[0]?.request?.query).toEqual({ page: "1", q: "{{keyword}}" });
+  });
+
+  it("query は任意項目のため未指定でも検証エラーにならない", () => {
+    const result = flowSchema.parse({
+      name: "no query flow",
+      steps: [{ name: "step1", request: { method: "GET", url: "https://example.com" } }],
+    });
+
+    expect(result.steps[0]?.request?.query).toBeUndefined();
+  });
+
+  it("query の値が文字列以外だと検証エラーになる", () => {
+    expect(() =>
+      flowSchema.parse({
+        name: "invalid query flow",
+        steps: [
+          {
+            name: "step1",
+            request: { method: "GET", url: "https://example.com", query: { page: 1 } },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+});
+
 describe("requestSchema / graphql", () => {
   it("request.body と request.graphql は排他: 両方指定すると検証エラーになる", () => {
     expect(() =>

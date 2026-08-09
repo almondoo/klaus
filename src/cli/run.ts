@@ -82,7 +82,7 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
 
   // 3. 出力
   if (useJson) {
-    process.stdout.write(`${formatJson(runResult)}\n`);
+    process.stdout.write(`${formatJson(runResult, { historyEnabled: options.history })}\n`);
   } else {
     textReporter?.printSummary(runResult);
   }

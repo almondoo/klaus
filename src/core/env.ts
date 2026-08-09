@@ -1,6 +1,8 @@
 import { existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
-import { ParseError } from "./errors.js";
+import { parseDocument } from "yaml";
+import { KlausError, ParseError } from "./errors.js";
 import { loadEnvironmentFile } from "./loader.js";
 import type { Environment } from "./schema.js";
 
@@ -78,4 +80,52 @@ export async function loadEnvironment(
   }
   const path = resolveEnvironmentPath(cwd, envName);
   return loadEnvironmentFile(path);
+}
+
+/**
+ * 指定した環境ファイルが存在しない場合に投げるエラー。
+ * UI サーバー側で 404 に変換できるよう、ParseError(パース失敗)とは別の種別として区別する。
+ * 新規 env ファイルの作成はスコープ外のため、saveEnvironment は既存ファイルの更新のみ行う。
+ */
+export class EnvironmentNotFoundError extends KlausError {
+  readonly envName: string;
+
+  constructor(envName: string) {
+    super(`environment not found: ${envName}`);
+    this.name = "EnvironmentNotFoundError";
+    this.envName = envName;
+  }
+}
+
+/**
+ * environments/<envName>.yaml へ values を書き戻す。
+ * - yaml パッケージの Document API(parseDocument)でキー単位に set / delete することで、
+ *   既存のコメント・書式を保持する(全置換の stringify は使わない)。
+ * - values に無い既存キーは削除し、values にあるキーは追加・更新する。
+ * - 対象ファイルが存在しない場合は EnvironmentNotFoundError を投げる(新規作成はスコープ外)。
+ */
+export async function saveEnvironment(
+  cwd: string,
+  envName: string,
+  values: Record<string, string>,
+): Promise<void> {
+  const path = resolveEnvironmentPath(cwd, envName);
+  if (!existsSync(path)) {
+    throw new EnvironmentNotFoundError(envName);
+  }
+
+  const content = await readFile(path, "utf-8");
+  const doc = parseDocument(content);
+
+  const existing = (doc.toJSON() as Record<string, unknown> | null) ?? {};
+  for (const key of Object.keys(existing)) {
+    if (!(key in values)) {
+      doc.delete(key);
+    }
+  }
+  for (const [key, value] of Object.entries(values)) {
+    doc.set(key, value);
+  }
+
+  await writeFile(path, doc.toString(), "utf-8");
 }
