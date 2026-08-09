@@ -37,7 +37,15 @@
     }
   },
   "files": [
-    "dist",
+    "dist/cli.js",
+    "dist/index.js",
+    "dist/index.d.ts",
+    "dist/server.js",
+    "dist/ui/**/*.html",
+    "dist/ui/**/*.css",
+    "dist/ui/**/*.js",
+    "dist/ui/**/*.woff",
+    "dist/ui/**/*.woff2",
     "THIRD_PARTY_LICENSES.md"
   ],
   "publishConfig": {
