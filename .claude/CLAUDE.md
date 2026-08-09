@@ -16,6 +16,7 @@ klaus は YAML でリクエストフローを定義・実行する API 検証 CL
 
 - コミット: Conventional Commits 形式の prefix(feat/fix/build/test/docs/chore/style)+ 日本語本文。
 - ブランチ: develop で開発し、PR で main にマージ。CI は PR と develop への push で実行。
+- PR 作成時は package.json の version を上げてから PR を作成する(機能追加は minor、修正のみは patch。コミットは `chore: vX.Y.Z` の1行変更。ui/package.json は据え置き)。タグ `vX.Y.Z` はマージ後に main 上で打つ。
 
 ## 依存関係の固定
 
