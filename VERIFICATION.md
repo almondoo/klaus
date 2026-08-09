@@ -135,15 +135,18 @@ pnpm exec vitest run tests/sse.test.ts tests/ws.test.ts tests/graphql.test.ts
 - 実行方法:
 
   ```bash
-  verify/docker/run.sh
+  make verify        # 構築 + 検証フロー実行(コンテナは起動したまま残る)
+  make exec          # 常駐 klaus コンテナに bash で入り、klaus を自由に実行する
+  make verify-down   # コンテナ・ネットワークの片付け
   ```
 
-  内部で `pnpm build:all` → tarball 生成 → `docker compose build`(demo-api / klaus の
-  2 イメージ)→ demo-api 起動 → `klaus run flows/auth-flow.yaml` 実行 → exit code 表示
-  → `docker compose down` の後片付け、まで一気通貫で行う。demo API・フロー定義は
-  上記 2-1/2-2 の認証フローと同内容(baseUrl のみコンテナ間名前解決の `http://demo-api:3000`)。
+  `make verify` は内部(`verify/docker/run.sh`)で `pnpm build:all` → tarball 生成 →
+  `docker compose build`(demo-api / klaus の 2 イメージ)→ demo-api / klaus 起動 →
+  `klaus run flows/auth-flow.yaml` 実行 → exit code 表示、まで一気通貫で行う。
+  demo API・フロー定義は上記 2-1/2-2 の認証フローと同内容(baseUrl のみコンテナ間
+  名前解決の `http://demo-api:3000`)。
 
-- 期待結果: 「認証フロー」が PASS×2 で `status: "passed"`、スクリプトの最終行に
+- 期待結果: 「認証フロー」が PASS×2 で `status: "passed"`、
   `== klaus run exit code: 0 ==` と表示される。Docker デーモンが利用できない環境では
   `docker compose build` の時点で失敗するため、事前に `docker version` で確認しておく。
 
