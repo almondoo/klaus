@@ -26,6 +26,8 @@ request:
   url: "{{baseUrl}}/login"      # Required. Supports templates
   headers:                      # Optional. Values support templates
     Content-Type: application/json
+  query:                        # Optional. Values support templates
+    page: "1"                   #   Merged into the url's query string. If url already has the same key, query wins
   body:                         # Optional. object → sent as JSON (application/json is auto-set if Content-Type is unspecified)
     email: "{{testEmail}}"      #        string → sent as-is
   timeoutMs: 30000              # Optional. Defaults to 30000. Exceeding it is a RuntimeError (exit 3)
@@ -104,7 +106,7 @@ ws:
 | <code v-pre>{{newDate}}</code> | The current time as an ISO 8601 string |
 | <code v-pre>{{newTimestamp}}</code> | The current time as epoch milliseconds |
 
-Where expansion applies: `request.url` / values of `request.headers` / `request.body` (deep expansion of string values) / `graphql.query` / `graphql.variables` / `ws.url` / `ws.headers` / `ws.send` / assertion expected values (such as <code v-pre>equals: "{{testEmail}}"</code>).
+Where expansion applies: `request.url` / values of `request.headers` / values of `request.query` / `request.body` (deep expansion of string values) / `graphql.query` / `graphql.variables` / `ws.url` / `ws.headers` / `ws.send` / assertion expected values (such as <code v-pre>equals: "{{testEmail}}"</code>).
 
 ## capture (variable capture)
 

@@ -668,6 +668,98 @@ describe("executeFlow", () => {
   });
 });
 
+describe("request.query", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let cwd: string;
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+  });
+
+  afterEach(async () => {
+    if (cwd) {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("request.query は URL のクエリ文字列にマージされ、同名キーは query 側が優先され、値はテンプレート展開される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-query-"));
+    await mkdir(join(cwd, "environments"), { recursive: true });
+    await writeFile(join(cwd, "environments", "local.yaml"), "keyword: hello world\n");
+
+    const server = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ url: req.url }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+
+    try {
+      const flow = flowSchema.parse({
+        name: "query flow",
+        env: "local",
+        steps: [
+          {
+            name: "step1",
+            request: {
+              method: "GET",
+              url: `http://127.0.0.1:${port}/search?page=1`,
+              query: { page: "2", q: "{{keyword}}" },
+            },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "query-flow.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      // requestSnapshot.url に query 側でマージされた結果が反映される(page は 1 -> 2 に上書き)
+      const mergedUrl = new URL(result.steps[0]?.request?.url ?? "");
+      expect(mergedUrl.searchParams.get("page")).toBe("2");
+      expect(mergedUrl.searchParams.get("q")).toBe("hello world");
+
+      // サーバーが実際に受信した URL にもマージ結果が反映されている
+      const body = result.steps[0]?.response?.body as { url: string };
+      const receivedUrl = new URL(body.url, "http://127.0.0.1");
+      expect(receivedUrl.searchParams.get("page")).toBe("2");
+      expect(receivedUrl.searchParams.get("q")).toBe("hello world");
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("query 未指定の場合は url をそのまま使う(既存挙動に影響しない)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-query-"));
+
+    const server = createServer((req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ url: req.url }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as AddressInfo).port;
+
+    try {
+      const flow = flowSchema.parse({
+        name: "no query flow",
+        steps: [
+          {
+            name: "step1",
+            request: { method: "GET", url: `http://127.0.0.1:${port}/search?page=1` },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "no-query-flow.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.request?.url).toBe(`http://127.0.0.1:${port}/search?page=1`);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
 describe("runFlows", () => {
   let ctx: Awaited<ReturnType<typeof startAuthServer>>;
   const tmpRoot = join(process.cwd(), "tmp");

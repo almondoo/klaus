@@ -92,7 +92,7 @@ describe("cli integration", () => {
 
     expect(result.status).toBe(0);
     const parsed = JSON.parse(result.stdout);
-    expect(parsed.version).toBe(1);
+    expect(parsed.version).toBe(2);
     expect(parsed.status).toBe("passed");
     expect(parsed.flows).toHaveLength(1);
     expect(parsed.flows[0].steps[0].status).toBe("passed");

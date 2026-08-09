@@ -14,9 +14,11 @@ klaus ui [--port <n>] [--no-open]
 
 ## Screens
 
-1. **Flow list (sidebar)**: Lists flow YAML files under the cwd. Files with parse errors are shown with an error icon and reason, and can't be run. The environment selector at the top switches the equivalent of `--env`, and the run button starts execution
-2. **Execution view**: Steps transition live from running → pass/fail (delivered via SSE). Overall progress is shown as "Step n / m"; failed steps auto-expand to show request/response detail (JSON), while successful steps are collapsed by default. A summary is shown on completion
-3. **History browser**: Displays `.klaus/history/*.jsonl` newest first. Grouped by run, with row clicks drilling down into step detail. Supports filtering by flow and "load more" paging
+1. **Single request execution (default screen)**: A tab for running one request on the spot, without going through a flow. Edit method / URL / headers / query parameters / body as a form, and run it with `{{var}}` expanded against the selected environment. The result shows status, duration, response headers, and body; values can be extracted from the response body via JSONPath and saved into the selected environment (saved as a merge of a single key, leaving other keys untouched)
+2. **Flow list (sidebar)**: Lists flow YAML files under the cwd. Files with parse errors are shown with an error icon and reason, and can't be run. Selecting a flow switches to the execution view. The environment selector at the top switches the equivalent of `--env`, and the run button starts execution
+3. **Execution view**: Steps transition live from running → pass/fail (delivered via SSE). Overall progress is shown as "Step n / m"; failed steps auto-expand to show request/response detail (JSON), while successful steps are collapsed by default. A summary is shown on completion
+4. **Environment editor**: Opened via the edit button next to the environment selector; lets you edit the selected environment's key-value pairs in a table. Saving writes back to the file while preserving existing YAML comments
+5. **History browser**: Displays `.klaus/history/*.jsonl` newest first. Grouped by run, with row clicks drilling down into step detail. Supports filtering by flow and "load more" paging
 
 ## Security Model
 
@@ -28,7 +30,7 @@ Designed for local use only — **it must not be exposed externally via a revers
 | Auth token | Generated at startup with `crypto.randomBytes(32)`. Compared using a timing-safe comparison |
 | First access | Successful validation of `GET /?token=…` issues a `klaus_token` cookie (SameSite=Strict / HttpOnly) |
 | API auth | An `X-Klaus-Token` header is required on every `/api/*` (401 on mismatch) |
-| CSRF | POST additionally requires the cookie to match, and if an `Origin` header is present, only the same origin is allowed |
+| CSRF | POST/PUT/DELETE additionally require the cookie to match, and if an `Origin` header is present, only the same origin is allowed |
 | DNS rebinding | Any request whose `Host` isn't `127.0.0.1:<port>` / `localhost:<port>` gets a 403 |
 | CORS | No CORS headers are ever sent (same-origin serving only) |
 | Path traversal | APIs and static serving that accept file paths reject resolution outside the cwd / dist/ui with a 403 |

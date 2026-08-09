@@ -38,6 +38,28 @@ export interface EnvironmentListEntry {
   name: string;
 }
 
+/** GET /api/environments/:name, PUT /api/environments/:name のレスポンス */
+export interface EnvironmentDetail {
+  name: string;
+  values: Record<string, string>;
+}
+
+/** PUT /api/environments/:name のリクエストボディ */
+export interface EnvironmentUpdateRequestBody {
+  values: Record<string, string>;
+}
+
+/**
+ * POST /api/environments/:name/capture のリクエストボディ。
+ * server/types.ts の同名型と手動同期する契約(このファイル冒頭のコメント参照)。
+ * path は JSONPath、json は抽出対象のレスポンスボディを渡す。
+ */
+export interface EnvironmentCaptureRequestBody {
+  key: string;
+  path: string;
+  json: unknown;
+}
+
 /** GET /api/history のクエリパラメータ */
 export interface GetHistoryParams {
   flow?: string;
@@ -117,3 +139,28 @@ export type RunSseEvent =
   | { event: "step-start"; data: StepStartPayload }
   | { event: "step-result"; data: StepResultPayload }
   | { event: "run-result"; data: RunResultPayload };
+
+/**
+ * POST /api/request のリクエストボディ。単発リクエスト実行(フロー定義を経由しない即時実行)用。
+ * server/types.ts の同名型と手動同期する契約(このファイル冒頭のコメント参照)。
+ */
+export interface SingleRequestRequestBody {
+  request: {
+    method?: string;
+    url: string;
+    headers?: Record<string, string>;
+    query?: Record<string, string>;
+    body?: unknown;
+    graphql?: {
+      query: string;
+      variables?: Record<string, unknown>;
+    };
+    timeoutMs?: number;
+  };
+  env?: string;
+}
+
+/** POST /api/request のレスポンス */
+export interface SingleRequestResultPayload {
+  result: StepResult;
+}

@@ -4,10 +4,12 @@
  */
 import type {
   AssertionResult,
+  EnvironmentDetail,
   EnvironmentListEntry,
   FlowDetail,
   FlowListEntry,
   HistoryEntry,
+  SingleRequestRequestBody,
   StepResult,
 } from "./types";
 
@@ -46,6 +48,21 @@ export const mockFlowDetails: Record<string, FlowDetail> = {
 };
 
 export const mockEnvironments: EnvironmentListEntry[] = [{ name: "local" }, { name: "staging" }];
+
+/**
+ * 環境ごとの key-value フィクスチャ(EnvEditor の検証用)。
+ * mock.ts の updateEnvironment はここを直接書き換えて保存後の再取得を再現する。
+ */
+export const mockEnvironmentDetails: Record<string, EnvironmentDetail> = {
+  local: {
+    name: "local",
+    values: { baseUrl: "http://localhost:3000", apiKey: "local-secret" },
+  },
+  staging: {
+    name: "staging",
+    values: { baseUrl: "https://staging.example.com", apiKey: "staging-secret" },
+  },
+};
 
 /**
  * ステップ名ごとの固定結果(成功2件・失敗1件を混ぜて UI 挙動を確認しやすくする)。
@@ -173,6 +190,32 @@ export function buildMockStepResult(flowPath: string, stepName: string): StepRes
     status: "passed",
     startedAt,
     durationMs: 10,
+    assertions: [],
+  };
+}
+
+/**
+ * POST /api/request のモック結果を生成する。実サーバーへは接続せず、入力をそのまま
+ * echo したレスポンスを組み立てて返す(単発実行 UI の見た目確認用)。
+ */
+export function buildMockSingleRequestResult(body: SingleRequestRequestBody): StepResult {
+  const method = (body.request.method ?? "GET").toUpperCase();
+  return {
+    name: "single-request",
+    status: "passed",
+    startedAt: new Date().toISOString(),
+    durationMs: 60,
+    request: {
+      method,
+      url: body.request.url,
+      headers: body.request.headers ?? {},
+      body: body.request.body,
+    },
+    response: {
+      status: 200,
+      headers: { "content-type": "application/json" },
+      body: { mock: true, method, url: body.request.url, env: body.env ?? null },
+    },
     assertions: [],
   };
 }

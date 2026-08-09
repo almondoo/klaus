@@ -3,7 +3,7 @@
  * ui/src/api/types.ts の契約と一致させること(server は ui/src を import しないため、
  * ここで独立して定義し、レスポンス形状を手動で同期する)。
  */
-import type { HistoryEntry } from "../core/history.js";
+import type { HistoryPage as CoreHistoryPage } from "../core/history-query.js";
 import type { FlowResult, StepResult } from "../core/types.js";
 
 /** GET /api/flows の1エントリ */
@@ -35,17 +35,49 @@ export interface EnvironmentListEntry {
   name: string;
 }
 
-/** GET /api/history のレスポンス */
-export interface HistoryPage {
-  entries: HistoryEntry[];
-  /** さらに古い履歴がある場合、次回 before に渡すカーソル(ISO 日時) */
-  nextBefore?: string | undefined;
+/** GET /api/environments/:name, PUT /api/environments/:name のレスポンス */
+export interface EnvironmentDetail {
+  name: string;
+  values: Record<string, string>;
 }
+
+/** PUT /api/environments/:name のリクエストボディ */
+export interface EnvironmentUpdateRequestBody {
+  values: Record<string, string>;
+}
+
+/**
+ * POST /api/environments/:name/capture のリクエストボディ。
+ * path は JSONPath、json は抽出対象のレスポンスボディ(単発実行結果の response.body 等)を渡す。
+ */
+export interface EnvironmentCaptureRequestBody {
+  key: string;
+  path: string;
+  json: unknown;
+}
+
+/** GET /api/history のレスポンス(型本体は core/history-query.ts で定義。CLI の klaus history とも共有する) */
+export type HistoryPage = CoreHistoryPage;
 
 /** POST /api/runs のリクエストボディ */
 export interface RunRequestBody {
   path: string;
   env?: string;
+}
+
+/**
+ * POST /api/request のリクエストボディ。
+ * request はサーバー側で core の requestSchema.safeParse により検証するため、
+ * ここでは検証前の生の値として unknown のまま扱う。
+ */
+export interface SingleRequestRequestBody {
+  request: unknown;
+  env?: string;
+}
+
+/** POST /api/request のレスポンス(単一ステップの実行結果) */
+export interface SingleRequestResultPayload {
+  result: StepResult;
 }
 
 /** SSE event: step-start */

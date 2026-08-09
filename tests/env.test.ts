@@ -1,7 +1,12 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadEnvironment, resolveEnvironmentPath } from "../src/core/env.js";
+import {
+  EnvironmentNotFoundError,
+  loadEnvironment,
+  resolveEnvironmentPath,
+  saveEnvironment,
+} from "../src/core/env.js";
 import { ParseError } from "../src/core/errors.js";
 
 describe("resolveEnvironmentPath", () => {
@@ -113,5 +118,58 @@ describe("loadEnvironment", () => {
   it("env が未指定なら空オブジェクトを返す", async () => {
     const env = await loadEnvironment(dir, undefined);
     expect(env).toEqual({});
+  });
+});
+
+describe("saveEnvironment", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let dir: string;
+
+  beforeEach(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    dir = await mkdtemp(join(tmpRoot, "klaus-env-save-"));
+    // 上方探索が実リポジトリ側まで及ばないよう境界にする(resolveEnvironmentPath のテストと同様の理由)
+    await mkdir(join(dir, ".git"), { recursive: true });
+    await mkdir(join(dir, "environments"), { recursive: true });
+    await writeFile(
+      join(dir, "environments", "local.yaml"),
+      "# base URL\nbaseUrl: http://localhost:3000 # 開発用\napiKey: old-secret\n",
+      "utf-8",
+    );
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("値を更新しつつ既存のコメントを保持する", async () => {
+    await saveEnvironment(dir, "local", {
+      baseUrl: "http://localhost:4000",
+      apiKey: "old-secret",
+    });
+
+    const content = await readFile(join(dir, "environments", "local.yaml"), "utf-8");
+    expect(content).toContain("# base URL");
+    expect(content).toContain("baseUrl: http://localhost:4000 # 開発用");
+    expect(content).toContain("apiKey: old-secret");
+  });
+
+  it("values に無い既存キーを削除する", async () => {
+    await saveEnvironment(dir, "local", { baseUrl: "http://localhost:3000" });
+
+    const content = await readFile(join(dir, "environments", "local.yaml"), "utf-8");
+    expect(content).not.toContain("apiKey");
+  });
+
+  it("environments/ の外を指す env 名は ParseError で拒否する(path traversal 防止)", async () => {
+    await expect(saveEnvironment(dir, "../../etc/secrets/prod", { baseUrl: "x" })).rejects.toThrow(
+      ParseError,
+    );
+  });
+
+  it("対象ファイルが存在しない場合は EnvironmentNotFoundError を投げる(新規作成はスコープ外)", async () => {
+    await expect(saveEnvironment(dir, "missing", { baseUrl: "x" })).rejects.toThrow(
+      EnvironmentNotFoundError,
+    );
   });
 });

@@ -26,6 +26,8 @@ request:
   url: "{{baseUrl}}/login"      # 必須。テンプレート可
   headers:                      # 任意。値はテンプレート可
     Content-Type: application/json
+  query:                        # 任意。値はテンプレート可
+    page: "1"                   #   url のクエリ文字列にマージされる。url に同名キーがあれば query 側で上書き
   body:                         # 任意。object → JSON 送信(Content-Type 未指定なら application/json を自動付与)
     email: "{{testEmail}}"      #        string → そのまま送信
   timeoutMs: 30000              # 任意。デフォルト 30000。超過は RuntimeError(exit 3)
@@ -104,7 +106,7 @@ ws:
 | <code v-pre>{{newDate}}</code> | 現在時刻の ISO 8601 文字列 |
 | <code v-pre>{{newTimestamp}}</code> | 現在時刻の epoch ミリ秒 |
 
-展開が適用される場所: `request.url` / `request.headers` の値 / `request.body`(文字列値の深い展開)/ `graphql.query` / `graphql.variables` / `ws.url` / `ws.headers` / `ws.send` / アサーションの期待値(<code v-pre>equals: "{{testEmail}}"</code> 等)。
+展開が適用される場所: `request.url` / `request.headers` の値 / `request.query` の値 / `request.body`(文字列値の深い展開)/ `graphql.query` / `graphql.variables` / `ws.url` / `ws.headers` / `ws.send` / アサーションの期待値(<code v-pre>equals: "{{testEmail}}"</code> 等)。
 
 ## capture(変数キャプチャ)
 

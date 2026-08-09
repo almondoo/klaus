@@ -6,7 +6,8 @@ import type { AssertionResult, RequestSnapshot, ResponseSnapshot, SseEvent } fro
  * 実行履歴 1 行分のスキーマ。versioned にしてあるので、
  * 将来フィールドを変える場合は v を上げて後方互換を判断できるようにする。
  * v は 1 のまま(追加のみの後方互換な変更): status を新設し、
- * request/response は skipped ステップのため省略可能にし、SSE イベントを events に追加した。
+ * request/response は skipped ステップのため省略可能にし、SSE イベントを events に追加し、
+ * さらにフロー実行を介さない単発実行(POST /api/request)を示す source を追加した。
  */
 export interface HistoryEntry {
   v: 1;
@@ -28,6 +29,8 @@ export interface HistoryEntry {
   /** SSE ステップで受信したイベント一覧(SSE ステップ以外では省略) */
   events?: SseEvent[];
   assertions: AssertionResult[];
+  /** executeSingleRequest(フローを介さない単発実行)経由で書き込まれた場合 "single"。通常のフロー実行では省略する */
+  source?: "single";
 }
 
 /**
@@ -144,10 +147,23 @@ export function maskHistoryEntry(entry: HistoryEntry, secrets: readonly string[]
   };
 }
 
+/** Date を履歴ファイル名の日付部分(YYYY-MM-DD)に変換する */
+function toDateStr(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+/**
+ * ISO タイムスタンプ(HistoryEntry.startedAt 等)を履歴ファイル名の日付部分(YYYY-MM-DD)に変換する。
+ * historyFilePath 内部の日付導出ロジックと同じものを、書き込み時点の Date を持たない
+ * 呼び出し元(CLI JSON レポーター等が historyRef を組み立てる場合)からも使えるように公開する。
+ */
+export function historyDateFromTimestamp(isoTimestamp: string): string {
+  return toDateStr(new Date(isoTimestamp));
+}
+
 /** cwd 基準で今日の履歴ファイルパスを返す(.klaus/history/<YYYY-MM-DD>.jsonl) */
 export function historyFilePath(cwd: string, date: Date = new Date()): string {
-  const dateStr = date.toISOString().slice(0, 10);
-  return join(cwd, ".klaus", "history", `${dateStr}.jsonl`);
+  return join(cwd, ".klaus", "history", `${toDateStr(date)}.jsonl`);
 }
 
 /** 履歴を1行(JSON Lines)追記する。ディレクトリが無ければ作成する */

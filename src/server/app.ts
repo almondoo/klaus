@@ -6,9 +6,15 @@
 import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { loadFlow, ParseError } from "../core/index.js";
-import { listEnvironments } from "./routes/environments.js";
+import {
+  handleGetEnvironmentDetail,
+  handlePostEnvironmentCapture,
+  handlePutEnvironment,
+  listEnvironments,
+} from "./routes/environments.js";
 import { listFlows, resolveWithinCwd, summarizeStep } from "./routes/flows.js";
 import { getHistoryPage } from "./routes/history.js";
+import { handleSingleRequest } from "./routes/request.js";
 import { handleRunRequest } from "./routes/runs.js";
 import { createStaticHandler } from "./routes/static.js";
 import type { FlowDetail } from "./types.js";
@@ -84,10 +90,10 @@ export function createApp(options: CreateAppOptions): Hono {
     await next();
   });
 
-  // CSRF 対策: 状態変更 API(POST)はさらに Cookie 一致を必須にし、
+  // CSRF 対策: 状態変更 API(POST/PUT/DELETE)はさらに Cookie 一致を必須にし、
   // Origin ヘッダーが存在する場合は同一オリジンのみ許可する
   app.use("/api/*", async (c, next) => {
-    if (c.req.method === "POST") {
+    if (c.req.method === "POST" || c.req.method === "PUT" || c.req.method === "DELETE") {
       const cookies = parseCookies(c.req.header("cookie") ?? "");
       if (!cookies.klaus_token || !timingSafeTokenEqual(cookies.klaus_token, token)) {
         return c.text("Forbidden: CSRF check failed (cookie)", 403);
@@ -131,7 +137,19 @@ export function createApp(options: CreateAppOptions): Hono {
     return c.json(await listEnvironments(cwd));
   });
 
+  app.get("/api/environments/:name", (c) =>
+    handleGetEnvironmentDetail(c, cwd, c.req.param("name")),
+  );
+
+  app.put("/api/environments/:name", (c) => handlePutEnvironment(c, cwd, c.req.param("name")));
+
+  app.post("/api/environments/:name/capture", (c) =>
+    handlePostEnvironmentCapture(c, cwd, c.req.param("name")),
+  );
+
   app.post("/api/runs", (c) => handleRunRequest(c, cwd));
+
+  app.post("/api/request", (c) => handleSingleRequest(c, cwd));
 
   app.get("/api/history", async (c) => {
     const flow = c.req.query("flow");
