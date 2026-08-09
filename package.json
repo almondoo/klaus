@@ -1,6 +1,6 @@
 {
   "name": "@almondoo/klaus",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "API 検証 CLI: YAML でリクエストフローを定義し、実行・アサーション・履歴管理を行う",
   "type": "module",
   "license": "Elastic-2.0",
