@@ -16,11 +16,11 @@ Takes no options. Generates a minimal starting point in the current directory.
 
 | Generated file | Contents |
 |---|---|
-| `flows/example.yaml` | A single GET to `https://example.com` with a status-200 assertion (with English comments) |
+| `api/example.yaml` | A single GET to `https://example.com` with a status-200 assertion (with English comments) |
 | `environments/local.yaml` | A minimal environment file with a `baseUrl` |
-| `AGENTS.md` | A guide for AI coding agents, compressing the command set, YAML schema essentials, and the exit code table into about 50 lines |
+| `AGENTS.md` | A guide for AI coding agents, compressing the command set, YAML schema essentials, exit code table, and the api/flows directory convention into about 50 lines |
 
-Existing files are never overwritten — they're skipped, with a message printed to stdout. Any needed directories are created automatically. Always exits 0. If at least one file was generated, a hint for the next command is printed at the end: `klaus run flows/example.yaml -e local`
+Existing files are never overwritten — they're skipped, with a message printed to stdout. Any needed directories are created automatically. Always exits 0. If at least one file was generated, a hint for the next command is printed at the end: `klaus run api/example.yaml -e local`
 
 ## klaus run
 

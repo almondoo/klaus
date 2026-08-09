@@ -16,11 +16,11 @@ klaus init
 
 | 生成されるファイル | 内容 |
 |---|---|
-| `flows/example.yaml` | `https://example.com` への GET 1件、ステータス200のアサーション(英語コメント付き) |
+| `api/example.yaml` | `https://example.com` への GET 1件、ステータス200のアサーション(英語コメント付き) |
 | `environments/local.yaml` | `baseUrl` を持つ最小の環境ファイル |
-| `AGENTS.md` | AI コーディングエージェント向けに、コマンド体系・YAML スキーマ要点・exit code 表を約50行に圧縮したガイド(英語) |
+| `AGENTS.md` | AI コーディングエージェント向けに、コマンド体系・YAML スキーマ要点・exit code 表・api/flows のディレクトリ規約を約50行に圧縮したガイド(英語) |
 
-既存ファイルは上書きせずスキップし、その旨を stdout に表示する。必要なディレクトリは自動で作成される。常に exit 0。1件以上生成した場合、最後に次のコマンドのヒントを表示する: `klaus run flows/example.yaml -e local`
+既存ファイルは上書きせずスキップし、その旨を stdout に表示する。必要なディレクトリは自動で作成される。常に exit 0。1件以上生成した場合、最後に次のコマンドのヒントを表示する: `klaus run api/example.yaml -e local`
 
 ## klaus run
 

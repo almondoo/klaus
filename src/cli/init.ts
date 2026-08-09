@@ -3,7 +3,9 @@ import { dirname, join } from "node:path";
 
 /**
  * `klaus init` サブコマンドの実装。
- * カレントディレクトリに flows/environments の最小構成(サンプル1件ずつ)を生成する。
+ * カレントディレクトリに api/environments の最小構成(サンプル1件ずつ)を生成する。
+ * サンプルは単発チェック(1 ステップ)のため、api/=単発チェック・flows/=シナリオという
+ * ディレクトリ規約(examples/README.md 参照)に合わせて api/ 配下に置く。
  * 既存ファイルは上書きしない(スキップして stdout に報告するのみ)。
  */
 
@@ -77,9 +79,14 @@ Decision rule: all files are parse-validated before execution; if even one fails
 
 Execution results are automatically appended to \`.klaus/history/<YYYY-MM-DD>.jsonl\` (disable with \`--no-history\`). Values referenced via \`{{env.X}}\` etc. are treated as secrets and recorded in history masked as "***".
 
+## Directory convention
+
+klaus doesn't care where flow YAML files live, but by convention: \`api/\` holds single-step checks of one endpoint, and \`flows/\` holds multi-step scenarios that chain requests via \`capture\`. Place new files accordingly.
+
 ## Minimal flow example
 
 \`\`\`yaml
+# api/example.yaml
 name: example flow
 steps:
   - name: get-example
@@ -99,7 +106,7 @@ interface ScaffoldFile {
   content: string;
 }
 
-const EXAMPLE_FLOW_RELATIVE_PATH = join("flows", "example.yaml");
+const EXAMPLE_FLOW_RELATIVE_PATH = join("api", "example.yaml");
 
 const SCAFFOLD_FILES: ScaffoldFile[] = [
   { relativePath: EXAMPLE_FLOW_RELATIVE_PATH, content: EXAMPLE_FLOW_YAML },

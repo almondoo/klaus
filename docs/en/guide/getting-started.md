@@ -19,10 +19,10 @@ After installing, run this in your project directory to generate a minimal start
 klaus init
 ```
 
-This creates `flows/example.yaml` (a sample flow that issues a single GET to `https://example.com` and asserts a 200 status) and `environments/local.yaml` (a minimal environment file with a `baseUrl`) in the current directory. It takes no options. Existing files are never overwritten — they're skipped instead — and any needed directories are created automatically. Once done, it prints a hint for the next command:
+This creates `api/example.yaml` (a sample flow that issues a single GET to `https://example.com` and asserts a 200 status) and `environments/local.yaml` (a minimal environment file with a `baseUrl`) in the current directory. It takes no options. Existing files are never overwritten — they're skipped instead — and any needed directories are created automatically. Once done, it prints a hint for the next command:
 
 ```bash
-klaus run flows/example.yaml -e local
+klaus run api/example.yaml -e local
 ```
 
 The sections below walk through writing a flow definition by hand, to explain what's inside this scaffold.
