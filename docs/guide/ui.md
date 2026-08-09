@@ -35,4 +35,6 @@ klaus ui [--port <n>] [--no-open]
 | CORS | ヘッダーを一切付けない(同一オリジン配信のみ) |
 | path traversal | ファイルパスを受ける API・静的配信で cwd / dist/ui 外への解決を 403 で拒否 |
 
+上記の認証トークンは、起動時に stdout へ表示されるだけでなく、ブラウザ自動起動コマンド(`open` / `xdg-open` / `cmd /c start`)の引数としても渡される。共有のマルチユーザーホストでは、この引数が他のローカルユーザーからプロセス一覧(`ps` や `/proc/<pid>/cmdline`)経由で読める可能性がある。該当する環境では `--no-open` を指定してブラウザの自動起動を避け、表示された URL を自分で開くこと。詳細は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) を参照。
+
 HTTP API の仕様と内部構成は [../dev/ui-api.md](../dev/ui-api.md) を参照。

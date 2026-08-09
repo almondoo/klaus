@@ -35,4 +35,6 @@ Designed for local use only — **it must not be exposed externally via a revers
 | CORS | No CORS headers are ever sent (same-origin serving only) |
 | Path traversal | APIs and static serving that accept file paths reject resolution outside the cwd / dist/ui with a 403 |
 
+The auth token above is not only printed to stdout at startup, but also passed as an argument to the browser auto-launch command (`open` / `xdg-open` / `cmd /c start`). On a shared multi-user host, that argument may be readable by other local users via the process list (`ps`, `/proc/<pid>/cmdline`). On such hosts, pass `--no-open` to skip the automatic browser launch and open the printed URL yourself. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) for details.
+
 For the HTTP API specification and internal structure, see [../dev/ui-api.md](../dev/ui-api.md).

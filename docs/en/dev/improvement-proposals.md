@@ -54,6 +54,8 @@ This also implies a design change: `HistoryEntry` has no `status` field today (s
 
 **Resolution**: took a different approach than the candidate fixes above. Values resolved from OS environment variables via <code v-pre>{{env.X}}</code> (length 4 or more) are now automatically replaced with `***` right before a history entry is written (`maskHistoryEntry`), covering the request's url/headers/body, the response's headers/body, and the `data` field of SSE events. It applies to both the default file sink and custom sinks; live run output (the UI's execution view) and values sourced from environment files are not covered. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) and [history.md](../guide/history.md) for the precise boundary.
 
+**Addendum (2026-08-09)**: an audit raised two follow-up findings, both since fixed. (1) Masking only matched the raw value by substring, so a secret placed in `request.query` still leaked in plaintext once `URLSearchParams` percent-encoded it (`expandSecretVariants` now also covers the encoded variants). (2) The JUnit report produced by `klaus run --report junit` wasn't going through the same mask, leaving plaintext secrets in CI artifacts (masking was added to `formatJUnit`; stdout text/JSON output and live run output remain unmasked, as before).
+
 ### A-5. `environments/` resolution is cwd-only — Implemented (2026-08-08)
 
 **Basis**: `resolveEnvironmentPath(cwd, name)` is based on the runtime current directory. Even in this session, running the samples required `cd examples` first. Running `klaus run api/foo.yaml` from a project subdirectory fails to find the environment file.
@@ -63,6 +65,8 @@ This also implies a design change: `HistoryEntry` has no `status` field today (s
 **Cost**: 1-2 hours. **Verdict: recommended** — directly affects the CLI's first-run experience. Just make sure the search behavior is documented clearly.
 
 **Resolution**: went with the former (upward search). `resolveEnvironmentPath` now walks from cwd up through parent directories, stopping at the first ancestor directory containing `.git` (that directory itself is still checked) or the filesystem root. Each candidate directory is boundary-checked for path traversal before it's ever touched on the filesystem.
+
+**Addendum (2026-08-09)**: an audit flagged a missing trust boundary — an attacker could plant an environment file in an ancestor directory above the cwd. Fixed: a candidate found above the cwd now has its owner and other-writable bit checked, and is refused (fail closed) if untrustworthy (`assertTrustedAncestorEnvironmentsSource`; POSIX only, skipped on Windows). See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) for details.
 
 ### A-6. No `klaus init` — Implemented (2026-08-08)
 

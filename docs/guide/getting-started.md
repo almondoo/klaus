@@ -107,6 +107,8 @@ steps:
 
 `env: local` は、klaus の実行時カレントディレクトリ(`klaus run` を実行した cwd。フローファイル自身の場所ではない)を起点に `environments/local.yaml` を上方探索して読み込む。cwd から親ディレクトリへ順に辿り、各ディレクトリ直下の `environments/local.yaml` の存在を確認する。探索は `.git` を含む最初の祖先ディレクトリ(そのディレクトリ自身は調べたうえで打ち切る)、またはファイルシステムのルートに到達した時点で止まる。そのため、プロジェクトのサブディレクトリで `klaus run` を実行しても、プロジェクトルート直下の `environments/` が見つかる(リポジトリを跨いで探索することはない)。
 
+ただし cwd より上の祖先ディレクトリで見つかった候補は、所有者・書き込み権限を検査したうえで信頼できない場合(他ユーザー所有、または誰でも書き込み可能)は読み込まずにエラーで停止する(POSIX のみ、Windows ではスキップ)。詳細は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) を参照。
+
 ```yaml
 # environments/local.yaml
 baseUrl: http://localhost:3000

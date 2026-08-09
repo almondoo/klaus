@@ -107,6 +107,8 @@ steps:
 
 `env: local` resolves `environments/local.yaml` by searching upward starting from klaus's current working directory at run time (the cwd from which `klaus run` was invoked, not the location of the flow file itself). Starting at the cwd, klaus walks up through each parent directory, checking for `environments/local.yaml` directly under it. The search stops (inclusively checking that directory first) at the first ancestor directory containing a `.git` entry, or at the filesystem root — whichever comes first. This means running `klaus run` from a subdirectory of your project still finds the project root's `environments/` (the search never crosses into another repository).
 
+For a candidate found above the cwd, though, klaus checks its owner and write permissions and refuses to load it (exit 2) if untrustworthy — owned by another user, or writable by anyone (POSIX only; skipped on Windows). See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) for details.
+
 ```yaml
 # environments/local.yaml
 baseUrl: http://localhost:3000

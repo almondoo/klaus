@@ -61,6 +61,7 @@ klaus run <files...> [options]
 
 - 行種別: `PASS` / `FAIL`(失敗アサーションの expected/actual、レスポンスボディは約500文字で切り詰め)/ `SKIP`(理由付き)/ `ERROR`(runtime エラーのメッセージ)
 - TTY では ANSI 色付き(pass=緑 / fail=赤 / skip=黄)。非 TTY・`--json` 時は色なし
+- `FAIL` の詳細行・`ERROR` のメッセージ(レスポンス本文由来)に含まれる制御文字は、可視エスケープ(`\n` / `\r` / `\t` / `\xNN`)に変換されたうえで出力される。改行も対象にしているのは、レスポンス本文に改行を仕込んで偽の `PASS` 行を捏造したり出力を隠したりする端末出力の偽装を防ぐため
 
 ### JSON 出力(機械向け)
 
@@ -109,12 +110,15 @@ request/response スナップショットや assertions などの詳細を持つ
 ```
 
 - **truncate**: 詳細に含まれる request/response の `body`(JSON ボディは文字列化してから)、SSE `events` の `data`、WS `wsMessages` の `data` はいずれも約500文字で切り詰める(text 出力の切り詰めと同じ規則)。JSON ボディの構造そのままの全文は履歴側にしか無い
+- シークレットのマスク・制御文字の可視エスケープ(text 出力や JUnit レポートで行われるもの)はここには適用されず、生の値のまま出力される。マスク済みの値が必要な場合は履歴側(`klaus history show`)または `--report junit` を使う
 - **historyRef**: 履歴記録が有効な実行(`--no-history` を付けていない)では、各ステップ(passed 含む)に `historyRef: { date, runId, step }` が付く。全文が必要な場合は `klaus history show <runId> --step <step>` で取得する(詳細は [klaus history](#klaus-history) / [実行履歴](history.md) を参照)。`--no-history` 実行時は `historyRef` を省略する
 - SSE / WebSocket ステップでは `response.body` は無く、受信データは `events`(SSE)/ `wsMessages`(WS)フィールドに入る
 
 ### JUnit レポート
 
 `--report junit` で flow = `<testsuite>`、step = `<testcase>` の XML を `--report-file` に書き出す。stdout の text / JSON 出力とは独立して併用できる。特殊文字は XML エスケープされる。
+
+<code v-pre>{{env.X}}</code> 由来のシークレットは履歴 JSONL と同じ規則でマスクされ(エンコード形も対象。詳細は [実行履歴](history.md) を参照)、レスポンス本文由来の制御文字は XML 1.0 が許容するタブ・LF・CR 以外を可視エスケープ(`\xNN`)に変換したうえで書き出される。**この2点は stdout の text / JSON 出力(`--json` を含む)には適用されない** — ファイルとして残る成果物(履歴 JSONL・JUnit レポート)のみが対象で、呼び出し元へ返るライブ実行結果は対象外。
 
 ## exit code
 
@@ -218,6 +222,8 @@ klaus ui [-p <n>] [--no-open]
 | `--no-open` | ブラウザの自動起動を抑止 | 自動起動する |
 
 起動するとトークン付き URL(`http://127.0.0.1:<port>/?token=…`)を stdout に表示し、デフォルトブラウザで開く。Ctrl+C で終了。サーバーの機能・セキュリティモデル・HTTP API は [localhost UI](ui.md) を参照。
+
+共有のマルチユーザーホストでは、このトークン付き URL がブラウザ起動コマンドの引数として渡るため、他のローカルユーザーからプロセス一覧経由で読める可能性がある。そうした環境では `--no-open` を指定し、表示された URL を自分で開くこと。
 
 ## klaus history
 
