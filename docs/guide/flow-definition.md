@@ -170,3 +170,24 @@ assert:
 - ステップが **failed**(アサーション失敗)または **error**(runtime エラー)になると、そのフローの**残りステップは実行されず skipped** として記録される
 - 複数フローファイルを渡した場合、あるフローが失敗しても**他のフローは実行される**
 - 最終 exit code は [CLI リファレンス](cli.md#exit-code) の優先ルールに従う
+
+## JSON Schema
+
+フロー定義のスキーマは JSON Schema としても公開している。エディタの補完・バリデーションや、AI エージェントがフロー YAML を生成する際の参照に使える。
+
+- 公開 URL: `https://almondoo.github.io/klaus/schema/flow.schema.json`
+- npm パッケージ同梱パス: `node_modules/@almondoo/klaus/dist/schema/flow.schema.json`
+
+YAML ファイルの先頭に `# yaml-language-server: $schema=` コメントを書くと、対応エディタ(VS Code の YAML 拡張など)で補完・検証が効くようになる。
+
+```yaml
+# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
+name: 認証フロー
+steps:
+  - name: login
+    request:
+      method: POST
+      url: "{{baseUrl}}/login"
+```
+
+**注意**: `request.body` と `request.graphql` の排他、`step.request` と `step.ws` のどちらか一方が必須、`ws.url` のスキーム制約、ステップ名の一意性など、このページで説明した `superRefine` によるチェックは JSON Schema の構造そのものには表現されない(対象プロパティの `description` に注記としては含まれる)。これらは `klaus validate` / `klaus run` の実行時検証でのみ強制される。

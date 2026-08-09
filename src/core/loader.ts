@@ -42,7 +42,7 @@ export interface FlowIssue {
 
 /**
  * zod issue から「例: ...」形式の1行修正ヒントを作る。
- * 対象は主要ケースのみ(method 不正/必須、request・ws の排他/どちらか必須、body/graphql の排他、
+ * 対象は主要ケースのみ(未知キー、method 不正/必須、request・ws の排他/どちらか必須、body/graphql の排他、
  * ws の URL スキーム不正、url 欠落、steps 空、step 名重複)。該当しない issue は undefined を返す。
  */
 function hintForIssue(issue: ZodError["issues"][number]): string | undefined {
@@ -50,6 +50,12 @@ function hintForIssue(issue: ZodError["issues"][number]): string | undefined {
   const last = path[path.length - 1];
   const parent = path[path.length - 2];
 
+  // strictObject による未知キー検出。typo の可能性があることも合わせて示す
+  if (issue.code === "unrecognized_keys") {
+    const keys = issue.keys.map((key) => `"${key}"`).join(", ");
+    const location = path.length > 0 ? ` at "${path.join(".")}"` : " at the top level";
+    return `unknown key(s) ${keys}${location}: check for a typo, or remove the key(s) if unused`;
+  }
   // request.method が不正、または graphql 指定なしで method が省略されている場合
   if (last === "method") {
     return "example: method: GET";

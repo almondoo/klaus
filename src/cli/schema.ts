@@ -1,10 +1,12 @@
 /**
  * `klaus schema` サブコマンドの実装。
- * flowSchema(src/core/schema.ts)から JSON Schema を生成し、stdout に書き出すだけ。
- * ファイル書き出しや npm パッケージへの同梱は行わない。
+ * flowSchema(src/core/schema.ts)/ jsonReportSchema(src/cli/reporters/json.ts)から
+ * JSON Schema を生成し、stdout に書き出すだけ。ファイル書き出しは行わない
+ * (npm パッケージ同梱物の書き出しは schema-gen.ts が別途行う)。
  */
 import { z } from "zod";
 import { flowSchema } from "../core/index.js";
+import { jsonReportSchema } from "./reporters/json.js";
 
 /**
  * superRefine による制約(JSON Schema には変換されない)の注記先。
@@ -67,9 +69,25 @@ export function buildFlowJsonSchema(): Record<string, unknown> {
   return json;
 }
 
+/**
+ * jsonReportSchema(`run --json` の出力形, src/cli/reporters/json.ts)の JSON Schema 表現を生成する。
+ * transform を含まないため flow 側と異なり io オプションは不要。
+ */
+export function buildRunReportJsonSchema(): Record<string, unknown> {
+  return z.toJSONSchema(jsonReportSchema) as Record<string, unknown>;
+}
+
+/**
+ * `klaus schema` が出力する対象。
+ * "flow": フロー定義 YAML のスキーマ(既定)。"run-report": `klaus run --json` 出力のスキーマ。
+ * target を引数で受け取れるようにしてあるだけで、CLI 側(src/cli/index.ts)の
+ * サブコマンド引数配線は未実施(統合時対応。詳細は最終報告を参照)。
+ */
+export type SchemaTarget = "flow" | "run-report";
+
 /** schema コマンド本体。JSON Schema を stdout に書き出すだけ。常に exit 0 */
-export async function schemaCommand(): Promise<number> {
-  const json = buildFlowJsonSchema();
+export async function schemaCommand(target: SchemaTarget = "flow"): Promise<number> {
+  const json = target === "run-report" ? buildRunReportJsonSchema() : buildFlowJsonSchema();
   process.stdout.write(`${JSON.stringify(json, null, 2)}\n`);
   return 0;
 }

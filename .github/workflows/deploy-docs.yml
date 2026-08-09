@@ -12,6 +12,11 @@ on:
       - "package.json"
       - "pnpm-lock.yaml"
       - ".github/workflows/deploy-docs.yml"
+      # 公開する JSON Schema (docs/public/schema/) の源泉。これらの変更時も再デプロイする
+      - "src/core/schema.ts"
+      - "src/cli/schema.ts"
+      - "src/cli/schema-gen.ts"
+      - "src/cli/reporters/json.ts"
   # Actions タブから手動実行できるようにする
   workflow_dispatch:
 
@@ -56,6 +61,13 @@ jobs:
 
       - name: 依存関係をインストール
         run: pnpm install --frozen-lockfile
+
+      # docs/guide/flow-definition.md 等が参照する JSON Schema (docs/public/schema/*.json) を
+      # ドキュメントビルド前に生成する。生成には dist/schema-gen.js (pnpm build の成果物) が必要。
+      - name: JSON Schema を生成
+        run: |
+          pnpm build
+          pnpm build:schema:docs
 
       - name: ドキュメントをビルド
         run: pnpm docs:build

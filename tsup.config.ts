@@ -86,4 +86,22 @@ export default defineConfig([
       js: requireShim,
     },
   },
+  {
+    // `node dist/schema-gen.js` として実行するビルド時専用スクリプト。
+    // JSON Schema (dist/schema/*.json、--docs 指定時は docs/public/schema/*.json も)を書き出す
+    // (package.json の build:schema スクリプト参照)。ユーザー向け CLI サブコマンドではないため
+    // shebang は不要。
+    entry: { "schema-gen": "src/cli/schema-gen.ts" },
+    format: ["esm"],
+    dts: false,
+    sourcemap: true,
+    clean: false,
+    target: "node22",
+    outDir: "dist",
+    noExternal,
+    shims: true,
+    banner: {
+      js: requireShim,
+    },
+  },
 ]);
