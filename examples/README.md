@@ -5,20 +5,28 @@ klaus の使い方を示すサンプル。**このディレクトリを作業デ
 ```
 examples/
 ├── api/
-│   └── auth-flow.yaml        # login → token キャプチャ → 認証付きリクエスト
+│   └── login-check.yaml       # 単発チェック: /login だけを1ステップで検証
+├── flows/
+│   └── auth-flow.yaml        # シナリオフロー: login → token キャプチャ → 認証付きリクエスト
 ├── environments/
 │   ├── local.yaml            # testEmail: test@example.com
 │   └── development.yaml       # testEmail: dev@example.com
 └── mock-server.mjs           # 動作確認用のダミー API(:3000)
 ```
 
+klaus に構文上の区別はなく、トップレベルに `steps` を持つ YAML はすべて「フロー定義」として探索・実行される(`src/core/discovery.ts`)。`api/` と `flows/` はディレクトリ名で用途を示しているだけの慣習で、klaus 自身はディレクトリ名を見ない。
+
+- `api/` … 単発 API チェック。1 ステップだけで1つのエンドポイントの動作を素早く確認する書き方。
+- `flows/` … シナリオフロー。複数ステップで前段の結果(capture)を後段に引き継ぎながら検証する書き方。`klaus init` が生成する `flows/` ディレクトリの規約に合わせている。
+
 ## 実行
 
 ```bash
 cd examples
 
-klaus run api/auth-flow.yaml                 # フローの env: local を使う
-klaus run api/auth-flow.yaml --env development   # development に切り替え
+klaus run flows/auth-flow.yaml                 # フローの env: local を使う
+klaus run flows/auth-flow.yaml --env development   # development に切り替え
+klaus run api/login-check.yaml                  # 単発チェックも同じ run コマンドで実行できる
 ```
 
 `--env` はフロー定義の `env:` を上書きする。環境ファイルを増やせば（`staging.yaml` など）そのまま `--env staging` で切り替えられる。
@@ -36,7 +44,7 @@ klaus run api/auth-flow.yaml --env development   # development に切り替え
 シークレットを渡す例:
 
 ```bash
-TEST_PASSWORD=... klaus run api/auth-flow.yaml
+TEST_PASSWORD=... klaus run flows/auth-flow.yaml
 ```
 
 ## 対向 API（動作確認）
@@ -49,8 +57,9 @@ node examples/mock-server.mjs        # → mock API on http://127.0.0.1:3000
 
 # ターミナル2: examples に入って実行
 cd examples
-node ../dist/cli.js run api/auth-flow.yaml               # local: $.email == test@example.com
-node ../dist/cli.js run api/auth-flow.yaml --env development   # development: dev@example.com
+node ../dist/cli.js run flows/auth-flow.yaml               # local: $.email == test@example.com
+node ../dist/cli.js run flows/auth-flow.yaml --env development   # development: dev@example.com
+node ../dist/cli.js run api/login-check.yaml                # 単発チェック: $.token の存在確認
 ```
 
 mock は login した email をそのまま `/me` で返すので、env を切り替えると `testEmail` の値が変わり、リクエスト内容とアサーション結果も連動して変わる（`--json` や `.klaus/history/*.jsonl` で確認できる）。実運用では `environments/*.yaml` の `baseUrl` を自分の API に向ける。
