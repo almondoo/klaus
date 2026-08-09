@@ -54,6 +54,8 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 **対応**: 修正案とは異なる方式を採用。<code v-pre>{{env.X}}</code> で OS 環境変数から解決した値(長さ 4 文字以上)を履歴エントリへの書き込み直前に `***` へ自動置換する(`maskHistoryEntry`)。request の url/headers/body、response の headers/body、SSE events の data が対象。デフォルトのファイル sink・カスタム sink の両方に適用され、ライブ実行結果(UI の実行ビュー)や environments ファイル由来の値はマスク対象外。境界の詳細は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) と [history.md](../guide/history.md) を参照。
 
+**追記(2026-08-09)**: 監査で2点指摘され対応した。(1) マスクが生の値の部分一致にしか効かず、`request.query` に置いたシークレットが `URLSearchParams` のエンコード後の姿で平文のまま残っていた点(`expandSecretVariants` でエンコード済みバリアントも対象に追加)。(2) `klaus run --report junit` が出力する JUnit レポートには同じマスクが適用されておらず、CI アーティファクトに平文で残っていた点(`formatJUnit` にマスクを追加。stdout の text / JSON 出力とライブ実行結果は引き続きマスク対象外)。
+
 ### A-5. `environments/` の解決が cwd 基準のみ — 対応済み(2026-08-08)
 
 **根拠**: `resolveEnvironmentPath(cwd, name)` は実行時カレントディレクトリ基準。このセッションでも、サンプルを動かすのに `cd examples` が必須になった。プロジェクトのサブディレクトリから `klaus run api/foo.yaml` を叩くと環境ファイルが見つからない。
@@ -63,6 +65,8 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 **コスト**: 1〜2時間。**判定: 推奨** — CLI の初回体験に直接効く。ただし探索仕様は明文化すること。
 
 **対応**: 前者(上方探索)を採用。`resolveEnvironmentPath` が cwd から親ディレクトリへ順に辿り、`.git` を含む祖先ディレクトリ(そのディレクトリ自身は含めて調べる)またはファイルシステムルートで打ち切る。各候補ディレクトリで path traversal の境界チェックを行ってからファイルシステムへアクセスする。
+
+**追記(2026-08-09)**: 監査で、cwd より上の祖先ディレクトリに攻撃者が環境ファイルを仕込める信頼境界の欠如が指摘され対応した。cwd より上で見つかった候補は所有者・other-writable を検査し、信頼できなければ読み込まずにエラーで停止する(`assertTrustedAncestorEnvironmentsSource`、POSIX のみ、Windows ではスキップ)。詳細は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) を参照。
 
 ### A-6. `klaus init` が無い — 対応済み(2026-08-08)
 

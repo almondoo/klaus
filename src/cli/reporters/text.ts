@@ -4,6 +4,7 @@ import type {
   StepResult,
   StepStartContext,
 } from "../../core/index.js";
+import { sanitizeForTerminal } from "./sanitize.js";
 
 /** 生の ANSI エスケープシーケンス(依存追加を避けるため自前で持つ) */
 const ANSI = {
@@ -47,7 +48,8 @@ export function formatStepLine(result: StepResult, useColor: boolean): string {
     const status = result.response?.status ?? "-";
     const lines = [colorize(`  FAIL ${result.name} (${status}, ${durationMs}ms)`, "red", useColor)];
     for (const assertion of result.assertions.filter((a) => !a.ok)) {
-      lines.push(`    - ${truncate(assertion.message)}`);
+      // 制御文字のサニタイズは truncate/colorize より前に行う(colorize が付与する ANSI コードを壊さないため)
+      lines.push(`    - ${truncate(sanitizeForTerminal(assertion.message))}`);
     }
     return lines.join("\n");
   }
@@ -58,7 +60,7 @@ export function formatStepLine(result: StepResult, useColor: boolean): string {
   }
 
   // error(runtime エラー)
-  const message = truncate(result.error ?? "unknown error");
+  const message = truncate(sanitizeForTerminal(result.error ?? "unknown error"));
   return colorize(`  ERROR ${result.name}: ${message}`, "red", useColor);
 }
 

@@ -40,13 +40,39 @@ export interface HistoryEntry {
 const MIN_SECRET_LENGTH = 4;
 
 /** 文字列中に含まれる秘密情報値をすべて "***" に置換する */
-function maskString(value: string, secrets: readonly string[]): string {
+export function maskString(value: string, secrets: readonly string[]): string {
   let masked = value;
   for (const secret of secrets) {
     if (secret.length < MIN_SECRET_LENGTH) continue;
     masked = masked.split(secret).join("***");
   }
   return masked;
+}
+
+/**
+ * シークレットの生値に加えて、URL に埋め込まれる際に取り得るエンコード済み表現を展開する。
+ * runner.ts の applyQueryParams は URLSearchParams.set() 経由で値をパーセントエンコードして
+ * URL 文字列を組み立てるため、生の値のままでは maskString の単純な部分一致が失敗し、
+ * エンコード形(例: "aB%2Bcd%2FEf%3D%3D")が履歴に平文で残ってしまう。
+ * form-urlencoded な body など、URL 以外のフィールドでも同様のズレが起こり得るため、
+ * url だけを特別扱いせず、マスク対象の全フィールドに対してこの展開済みリストを使う。
+ *
+ * MIN_SECRET_LENGTH の判定は生の値に対してのみ行う(生の値が4文字未満ならどのバリアントも対象外)。
+ * 返すリストは長い順に並べる。短いバリアントを先に置換すると、それが長いバリアントの一部を
+ * 破壊してしまう(例: 生の値を先に置換すると、その値を含むエンコード形が二度と一致しなくなる)ため。
+ */
+export function expandSecretVariants(secrets: readonly string[]): string[] {
+  const variants = new Set<string>();
+  for (const secret of secrets) {
+    if (secret.length < MIN_SECRET_LENGTH) continue;
+    variants.add(secret);
+    variants.add(encodeURIComponent(secret));
+    // URLSearchParams のシリアライズ形(application/x-www-form-urlencoded)。
+    // encodeURIComponent とは空白(%20 と +)や !'()~ の扱いが異なるため、
+    // 実際に applyQueryParams が URL を組むのと同じ実装から導出して取りこぼしを防ぐ。
+    variants.add(new URLSearchParams({ v: secret }).toString().slice(2));
+  }
+  return Array.from(variants).sort((a, b) => b.length - a.length);
 }
 
 /** 任意の JSON 互換値を深く辿り、文字列だけを秘密情報マスクする(template.ts の renderDeep と対称の実装) */
@@ -112,31 +138,35 @@ function maskAssertions(
 export function maskHistoryEntry(entry: HistoryEntry, secrets: readonly string[]): HistoryEntry {
   if (secrets.length === 0) return entry;
 
+  // url・headers・body・events・assertions のすべてに同じ展開済みリストを使う
+  // (エンコード形のズレは url に限らずどのフィールドでも起こり得るため)
+  const variants = expandSecretVariants(secrets);
+
   const request = entry.request
     ? {
         ...entry.request,
-        url: maskString(entry.request.url, secrets),
-        headers: maskHeaders(entry.request.headers, secrets),
-        body: maskDeep(entry.request.body, secrets),
+        url: maskString(entry.request.url, variants),
+        headers: maskHeaders(entry.request.headers, variants),
+        body: maskDeep(entry.request.body, variants),
       }
     : undefined;
 
   const response = entry.response
     ? {
         ...entry.response,
-        headers: maskHeaders(entry.response.headers, secrets),
-        body: maskDeep(entry.response.body, secrets),
+        headers: maskHeaders(entry.response.headers, variants),
+        body: maskDeep(entry.response.body, variants),
       }
     : undefined;
 
   const events = entry.events?.map((event) => ({
     ...event,
-    event: maskOptionalString(event.event, secrets),
-    id: maskOptionalString(event.id, secrets),
-    data: maskString(event.data, secrets),
+    event: maskOptionalString(event.event, variants),
+    id: maskOptionalString(event.id, variants),
+    data: maskString(event.data, variants),
   }));
 
-  const assertions = maskAssertions(entry.assertions, secrets);
+  const assertions = maskAssertions(entry.assertions, variants);
 
   return {
     ...entry,

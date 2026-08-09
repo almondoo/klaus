@@ -191,6 +191,33 @@ describe("runCommand", () => {
     expect(xml).toContain('<testcase name="ok"');
   });
 
+  it("--report junit: {{env.X}} のシークレットを含むフローでアサーション失敗しても、書き出された XML は *** にマスクされ生値を含まない", async () => {
+    const SECRET_KEY = "KLAUS_TEST_JUNIT_SECRET";
+    const SECRET_VALUE = "junit-report-secret-value-456";
+    process.env[SECRET_KEY] = SECRET_VALUE;
+    try {
+      const flowPath = join(workDir, "assert-fail-secret.yaml");
+      await writeFile(
+        flowPath,
+        `name: assert fail flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      bodyText:\n        contains: "{{env.${SECRET_KEY}}}"\n`,
+        "utf-8",
+      );
+      const reportPath = join(workDir, "report-secret.xml");
+
+      const exitCode = await runCommand(
+        [flowPath],
+        baseOptions({ report: "junit", reportFile: reportPath }),
+      );
+
+      expect(exitCode).toBe(4);
+      const xml = await readFile(reportPath, "utf-8");
+      expect(xml).not.toContain(SECRET_VALUE);
+      expect(xml).toContain("***");
+    } finally {
+      delete process.env[SECRET_KEY];
+    }
+  });
+
   it("--report を指定しない場合はレポートファイルを書き出さない", async () => {
     const flowPath = join(workDir, "success-no-report.yaml");
     await writeFile(

@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import { parseDocument } from "yaml";
@@ -22,6 +22,49 @@ function assertWithinEnvironmentsDir(envDir: string, resolvedPath: string, envNa
 }
 
 /**
+ * 上方探索で cwd(startDir)より上の祖先ディレクトリに見つかった environments/<name>.yaml を
+ * 信頼してよいかを検証する。git の safe.directory と同じ考え方で、startDir 自身は利用者が
+ * 選んだ作業ディレクトリなので対象外とし、それより上の祖先だけを検査する(共有ホストで
+ * 攻撃者が仕込んだ環境ファイルを、リポジトリ外で作業しているだけで黙って読み込んでしまう
+ * ことを防ぐため)。信頼できないと判断した場合は ParseError で fail closed に拒否する。
+ * ファイルシステムへの追加アクセスを避けるため、existsSync で候補の存在が確認できた
+ * 場合にのみ呼び出すこと。
+ */
+function assertTrustedAncestorEnvironmentsSource(envDir: string, candidatePath: string): void {
+  // Windows には process.getuid が存在せず、パーミッションビットの意味論も ACL モデルとは
+  // 異なるため、POSIX 前提の mode 判定をそのまま適用すると誤判定になる。ここでは検査自体を
+  // スキップし、従来どおり採用する。
+  if (process.platform === "win32") {
+    return;
+  }
+
+  for (const target of [envDir, candidatePath]) {
+    const stat = statSync(target);
+    if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
+      throw new ParseError(
+        "refusing to load an environment file from an ancestor directory owned by another user " +
+          "(create the environment file inside your project directory instead)",
+        candidatePath,
+      );
+    }
+    // other-writable(誰でも書き換え可能)なら拒否する。
+    // group-writable(0o020)はここでは拒否しない。umask 002 かつユーザーごとの
+    // プライベートグループを使う環境(RHEL 系など)では通常のファイルが既定で group-writable に
+    // なり、拒否すると普通の利用者を誤って弾いてしまうため。この判断により「自分が所有し、かつ
+    // group-writable で、そのグループに他ユーザーが属している」場合だけは通過する余地が残るが、
+    // 他ユーザー所有のディレクトリ・ファイルは mode に関わらず直前の uid チェックで拒否される
+    // ので、攻撃者がファイルを置き換える経路(所有者が攻撃者になる)は塞がっている。
+    if ((stat.mode & 0o002) !== 0) {
+      throw new ParseError(
+        "refusing to load an environment file from an ancestor directory that is writable by other users " +
+          "(create the environment file inside your project directory instead)",
+        candidatePath,
+      );
+    }
+  }
+}
+
+/**
  * cwd から上方探索で environments/<name>.yaml を解決する。
  * - cwd から順に親ディレクトリへ辿り、各ディレクトリ直下の environments/<name>.yaml の
  *   存在を確認する。見つかった時点でそのパスを返す。
@@ -31,6 +74,11 @@ function assertWithinEnvironmentsDir(envDir: string, resolvedPath: string, envNa
  * - 各候補ディレクトリについて、ファイルシステムへアクセスする前に必ず path traversal の
  *   境界チェックを行う。envName が不正な場合はその時点で ParseError を投げ、以降の探索は
  *   一切行わない(untrusted な envName でファイルシステムを探査させないため)。
+ * - cwd より上の祖先ディレクトリで候補が見つかった場合は、そのディレクトリと候補ファイルの
+ *   所有者・パーミッションを検査する(assertTrustedAncestorEnvironmentsSource)。信頼できない
+ *   祖先だった場合は、探索を継続せずその場で ParseError を投げて fail closed に拒否する
+ *   (黙って別の候補を探すと、利用者にとって最終的に何が読まれたのか分からなくなるため)。
+ *   cwd 自身の environments/ はこの検査の対象外(利用者自身が選んだ作業ディレクトリのため)。
  * - どの祖先ディレクトリにもファイルが見つからなかった場合は、cwd 基準のパス(従来の
  *   挙動と同じ join(cwd, "environments", `${envName}.yaml")` 相当)をそのまま返す。
  *   これにより「ファイルが見つからない」場合のエラーは loadEnvironment 側の
@@ -50,6 +98,9 @@ export function resolveEnvironmentPath(cwd: string, envName: string): string {
     }
 
     if (existsSync(candidatePath)) {
+      if (dir !== startDir) {
+        assertTrustedAncestorEnvironmentsSource(envDir, candidatePath);
+      }
       return candidatePath;
     }
     if (existsSync(join(dir, ".git"))) {

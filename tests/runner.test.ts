@@ -665,6 +665,64 @@ describe("executeFlow", () => {
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
     });
+
+    it("request.query の {{env.X}} が URL 上でパーセントエンコードされても *** にマスクされる(生形・エンコード形とも履歴に残らない)", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+      const QUERY_SECRET_KEY = "KLAUS_TEST_MASK_QUERY_SECRET";
+      // + と = を含む base64 風の値。URLSearchParams.set() 経由で組むとパーセントエンコードされ、
+      // 生の値のままでは maskString の単純な部分一致に失敗する(F1 の再現条件)
+      const QUERY_SECRET_VALUE = "aB+cd/Ef==";
+      process.env[QUERY_SECRET_KEY] = QUERY_SECRET_VALUE;
+
+      const server = createServer((req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ url: req.url }));
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const port = (server.address() as AddressInfo).port;
+      const baseUrl = `http://127.0.0.1:${port}`;
+
+      try {
+        const flow = flowSchema.parse({
+          name: "masking flow (query)",
+          steps: [
+            {
+              name: "step1",
+              request: {
+                method: "GET",
+                url: `${baseUrl}/ok`,
+                query: { token: `{{env.${QUERY_SECRET_KEY}}}` },
+              },
+              assert: { status: 200 },
+            },
+          ],
+        });
+
+        const captured: HistoryEntry[] = [];
+        await executeFlow(flow, "masking-flow-query.yaml", {
+          cwd,
+          history: (entry) => {
+            captured.push(entry);
+          },
+        });
+
+        expect(captured).toHaveLength(1);
+        const url = captured[0]?.request?.url ?? "";
+        expect(url).toBe(`${baseUrl}/ok?token=***`);
+        expect(url).not.toContain(QUERY_SECRET_VALUE);
+        expect(url).not.toContain(encodeURIComponent(QUERY_SECRET_VALUE));
+
+        // fixture がレスポンス本文にエコーした req.url(パーセントエンコード済みシークレットを含む)にも
+        // url フィールドと同じ展開済みバリアントが効くことを確認する(url だけを特別扱いしていない裏付け)
+        const responseBody = captured[0]?.response?.body as { url: string };
+        expect(responseBody.url).toBe("/ok?token=***");
+        expect(responseBody.url).not.toContain(QUERY_SECRET_VALUE);
+        expect(responseBody.url).not.toContain(encodeURIComponent(QUERY_SECRET_VALUE));
+      } finally {
+        delete process.env[QUERY_SECRET_KEY];
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    });
   });
 });
 

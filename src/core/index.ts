@@ -25,7 +25,13 @@ export {
 } from "./env.js";
 export * from "./errors.js";
 export type { HistoryEntry } from "./history.js";
-export { appendHistory, historyDateFromTimestamp, historyFilePath } from "./history.js";
+export {
+  appendHistory,
+  expandSecretVariants,
+  historyDateFromTimestamp,
+  historyFilePath,
+  maskString,
+} from "./history.js";
 export type { GetHistoryQuery, HistoryPage } from "./history-query.js";
 export {
   getHistoryPage,

@@ -61,6 +61,7 @@ auth flow (/path/to/auth-flow.yaml)
 
 - Line types: `PASS` / `FAIL` (the failed assertion's expected/actual, with the response body truncated to about 500 characters) / `SKIP` (with a reason) / `ERROR` (the runtime error message)
 - On a TTY, output is ANSI-colored (pass=green / fail=red / skip=yellow). No color when non-TTY or with `--json`
+- Control characters found in `FAIL` detail lines and `ERROR` messages (sourced from the response body) are converted to visible escapes (`\n` / `\r` / `\t` / `\xNN`) before being printed. Newlines are included in this so that a response body can't be used to forge a fake `PASS` line or otherwise spoof terminal output
 
 ### JSON Output (for machines)
 
@@ -109,12 +110,15 @@ full detail (request/response snapshots, assertions, etc).
 ```
 
 - **Truncation**: the `body` of request/response snapshots in the detail (JSON bodies are stringified first), the `data` of SSE `events`, and the `data` of WS `wsMessages` are all truncated to about 500 characters (same rule as the text output). The full untruncated JSON body is only available from history
+- Secret masking and control-character escaping (as done in text output and JUnit reports) are **not** applied here — values are printed as-is. Use the history side (`klaus history show`) or `--report junit` when masked values are needed
 - **historyRef**: when history recording is enabled (i.e. `--no-history` was not passed), every step (including passed ones) gets a `historyRef: { date, runId, step }`. Fetch the full detail with `klaus history show <runId> --step <step>` (see [klaus history](#klaus-history) / [Execution History](history.md)). `historyRef` is omitted entirely when run with `--no-history`
 - For SSE / WebSocket steps, `response.body` is absent; received data instead goes into the `events` (SSE) / `wsMessages` (WS) fields
 
 ### JUnit Report
 
 With `--report junit`, an XML file is written to `--report-file` where each flow becomes a `<testsuite>` and each step a `<testcase>`. It can be combined with either the text or JSON stdout output independently. Special characters are XML-escaped.
+
+Secrets sourced from <code v-pre>{{env.X}}</code> are masked using the same rules as history (encoded forms included; see [Execution History](history.md) for details), and control characters sourced from the response body are converted to visible escapes (`\xNN`), except for the tab/LF/CR that XML 1.0 permits. **Neither of these applies to the stdout text / JSON output** (including `--json`) — only artifacts written to disk (the history JSONL and the JUnit report) are covered; live run output returned to the caller is not.
 
 ## Exit code
 
@@ -218,6 +222,8 @@ klaus ui [-p <n>] [--no-open]
 | `--no-open` | Suppresses automatically opening the browser | opens automatically |
 
 On startup, a URL with a token (`http://127.0.0.1:<port>/?token=…`) is printed to stdout and opened in the default browser. Press Ctrl+C to stop it. For the server's features, security model, and HTTP API, see [localhost UI](ui.md).
+
+On a shared multi-user host, this token-bearing URL is passed as an argument to the browser-launch command, so it may be readable by other local users via the process list. On such hosts, pass `--no-open` and open the printed URL yourself instead.
 
 ## klaus history
 
