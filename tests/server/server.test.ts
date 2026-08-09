@@ -187,6 +187,44 @@ describe("klaus server", () => {
     // steps キーを持たない YAML(フロー候補として一覧に出てはいけない)
     await writeFile(join(workDir, "not-a-flow.yaml"), "someOtherKey: 1\n", "utf-8");
 
+    // GET /api/environments 用: environments/*.yaml を2件用意する(一覧が name でソートされることの確認用)
+    await mkdir(join(workDir, "environments"), { recursive: true });
+    await writeFile(
+      join(workDir, "environments", "staging.yaml"),
+      "baseUrl: https://staging.example.com\n",
+      "utf-8",
+    );
+    await writeFile(
+      join(workDir, "environments", "local.yaml"),
+      "baseUrl: https://local.example.com\n",
+      "utf-8",
+    );
+
+    // GET /api/flows/detail 用: request(method 明示)/graphql(method 省略)/ws の3種を1フローに混在させる
+    await writeFile(
+      join(workDir, "detail.yaml"),
+      [
+        "name: detail flow",
+        "steps:",
+        "  - name: get-step",
+        "    request:",
+        "      method: GET",
+        `      url: "${fixture.baseUrl}/step1"`,
+        "    assert:",
+        "      status: 200",
+        "  - name: graphql-step",
+        "    request:",
+        `      url: "${fixture.baseUrl}/graphql"`,
+        "      graphql:",
+        '        query: "{ ping }"',
+        "  - name: ws-step",
+        "    ws:",
+        "      url: ws://example.com/socket",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+
     klaus = await startServer({ cwd: workDir, port: 0 });
     base = `http://127.0.0.1:${klaus.port}`;
   }, 30000);
@@ -200,6 +238,14 @@ describe("klaus server", () => {
   it("X-Klaus-Token ヘッダーが無いと /api/* は 401", async () => {
     const res = await fetch(`${base}/api/flows`);
     expect(res.status).toBe(401);
+  });
+
+  it("GET /api/<未定義パス>: どの API ルートにもマッチしない場合は静的配信の catch-all 経由で 404(index.html にフォールバックしない)", async () => {
+    const res = await fetch(`${base}/api/nonexistent`, {
+      headers: { "X-Klaus-Token": klaus.token },
+    });
+    expect(res.status).toBe(404);
+    expect(await res.text()).toBe("Not Found");
   });
 
   it("Host ヘッダーが 127.0.0.1:<port>/localhost:<port> 以外だと 403(DNS rebinding 対策)", async () => {
@@ -228,6 +274,147 @@ describe("klaus server", () => {
       body: JSON.stringify({ path: "success.yaml", env: "../../../etc/secrets/prod" }),
     });
     expect(res.status).toBe(403);
+  });
+
+  it("POST /api/runs: Cookie(klaus_token)が無い/値が不一致だと 403(CSRF 対策)", async () => {
+    const noCookieRes = await fetch(`${base}/api/runs`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Klaus-Token": klaus.token },
+      body: JSON.stringify({ path: "success.yaml" }),
+    });
+    expect(noCookieRes.status).toBe(403);
+
+    const mismatchedCookieRes = await fetch(`${base}/api/runs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": klaus.token,
+        Cookie: "klaus_token=wrong-token-value",
+      },
+      body: JSON.stringify({ path: "success.yaml" }),
+    });
+    expect(mismatchedCookieRes.status).toBe(403);
+  });
+
+  it("POST /api/runs: Origin ヘッダーが別オリジンだと 403(CSRF 対策)", async () => {
+    const res = await fetch(`${base}/api/runs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": klaus.token,
+        Cookie: `klaus_token=${klaus.token}`,
+        Origin: "http://evil.example.com",
+      },
+      body: JSON.stringify({ path: "success.yaml" }),
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("GET /?token=<正しいトークン> でクッキー(klaus_token)が発行される", async () => {
+    // このテストはテスト実行時の src(未ビルド)を対象にしており、静的配信自体(dist/ui)の
+    // 有無・ステータスは対象外。ここでは "/" ミドルウェアが Set-Cookie を発行する分岐のみを見る
+    const res = await fetch(`${base}/?token=${klaus.token}`);
+    expect(res.headers.get("set-cookie")).toContain(`klaus_token=${klaus.token}`);
+  });
+
+  it("GET /api/flows/detail: request(method明示)/graphql(method省略)/ws のステップ形状が丸め込まれて返る", async () => {
+    const res = await fetch(`${base}/api/flows/detail?path=${encodeURIComponent("detail.yaml")}`, {
+      headers: { "X-Klaus-Token": klaus.token },
+    });
+    expect(res.status).toBe(200);
+    const detail = (await res.json()) as {
+      path: string;
+      name: string;
+      env?: string;
+      steps: Array<{ name: string; method: string; url: string }>;
+    };
+
+    expect(detail.name).toBe("detail flow");
+    expect(detail.env).toBeUndefined();
+    expect(detail.steps).toEqual([
+      { name: "get-step", method: "GET", url: `${fixture.baseUrl}/step1` },
+      // graphql ステップは method 省略時に実行時既定値 "POST" へ丸め込まれる
+      { name: "graphql-step", method: "POST", url: `${fixture.baseUrl}/graphql` },
+      // ws ステップは method 固定 "WS"、url は ws.url
+      { name: "ws-step", method: "WS", url: "ws://example.com/socket" },
+    ]);
+  });
+
+  it("GET /api/environments: environments/*.yaml の名前一覧が name でソートされて返る", async () => {
+    const res = await fetch(`${base}/api/environments`, {
+      headers: { "X-Klaus-Token": klaus.token },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual([{ name: "local" }, { name: "staging" }]);
+  });
+
+  it("GET /api/environments: environments ディレクトリが存在しない場合は空配列を返す", async () => {
+    const emptyDir = await mkdtemp(join(tmpRoot, "klaus-server-no-env-"));
+    const server = await startServer({ cwd: emptyDir, port: 0 });
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/environments`, {
+        headers: { "X-Klaus-Token": server.token },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual([]);
+    } finally {
+      await server.close();
+      await rm(emptyDir, { recursive: true, force: true });
+    }
+  });
+
+  it("POST /api/runs: JSON として不正なボディは 400", async () => {
+    const res = await fetch(`${base}/api/runs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": klaus.token,
+        Cookie: `klaus_token=${klaus.token}`,
+      },
+      body: "not valid json",
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid JSON body" });
+  });
+
+  it("POST /api/runs: path 未指定は 400", async () => {
+    const res = await fetch(`${base}/api/runs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": klaus.token,
+        Cookie: `klaus_token=${klaus.token}`,
+      },
+      body: JSON.stringify({}),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "path is required" });
+  });
+
+  it("POST /api/runs: loadFlow が失敗するフロー(スキーマ検証エラー)は run-result が status: error で配信される", async () => {
+    const res = await fetch(`${base}/api/runs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": klaus.token,
+        Cookie: `klaus_token=${klaus.token}`,
+      },
+      body: JSON.stringify({ path: "broken.yaml" }),
+    });
+    expect(res.status).toBe(200);
+
+    const events = await collectSseEvents(res);
+    // ステップループに入る前に失敗するため step-start/step-result は配信されず、run-result のみになる
+    expect(events.map((e) => e.event)).toEqual(["run-result"]);
+
+    const runResult = events[0]?.data as {
+      flow: { status: string; steps: Array<{ name: string; status: string; error?: string }> };
+    };
+    expect(runResult.flow.status).toBe("error");
+    expect(runResult.flow.steps).toHaveLength(1);
+    expect(runResult.flow.steps[0]?.name).toBe("(flow load)");
+    expect(runResult.flow.steps[0]?.status).toBe("error");
+    expect(runResult.flow.steps[0]?.error).toBeTruthy();
   });
 
   it("GET /api/flows: 正常なフローとパースエラーのフローが混在して返る(steps キーを持たないファイルは除外)", async () => {

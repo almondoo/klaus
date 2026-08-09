@@ -65,4 +65,31 @@ describe("initCommand", () => {
     // environments/local.yaml は既存ファイルが無いので通常どおり作成される
     await readFile(join(workDir, "environments", "local.yaml"), "utf-8");
   });
+
+  it("生成対象のファイルが全て既存の場合は何も作成せず、その旨のメッセージのみ出す", async () => {
+    await mkdir(join(workDir, "flows"), { recursive: true });
+    await mkdir(join(workDir, "environments"), { recursive: true });
+    await writeFile(join(workDir, "flows", "example.yaml"), "name: keep me\nsteps: []\n", "utf-8");
+    await writeFile(
+      join(workDir, "environments", "local.yaml"),
+      "baseUrl: https://keep.example.com\n",
+      "utf-8",
+    );
+
+    const exitCode = await initCommand(workDir);
+
+    expect(exitCode).toBe(0);
+    const output = stdoutSpy.join("");
+    expect(output).toContain("スキップしました(既に存在します): flows/example.yaml");
+    expect(output).toContain("スキップしました(既に存在します): environments/local.yaml");
+    expect(output).not.toContain("作成しました:");
+    expect(output).toContain(
+      "生成対象のファイルはすべて既に存在するため、何も作成しませんでした。",
+    );
+    // 既存の内容が保持されていること
+    const preservedFlow = await readFile(join(workDir, "flows", "example.yaml"), "utf-8");
+    const preservedEnv = await readFile(join(workDir, "environments", "local.yaml"), "utf-8");
+    expect(preservedFlow).toBe("name: keep me\nsteps: []\n");
+    expect(preservedEnv).toBe("baseUrl: https://keep.example.com\n");
+  });
 });
