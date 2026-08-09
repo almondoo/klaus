@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -78,6 +78,73 @@ describe("resolveEnvironmentPath", () => {
         join(subDir, "environments", "local.yaml"),
       );
     });
+
+    // Windows には process.getuid が存在せず、パーミッションビットの意味論も異なるため、
+    // このユーザー/パーミッション検査自体が env.ts 側でスキップされる(Windows では意味を成さない)。
+    it.skipIf(process.platform === "win32")(
+      "cwd より上の祖先の environments/ が other-writable な場合は ParseError で拒否する",
+      async () => {
+        await mkdir(join(root, "environments"), { recursive: true });
+        await writeFile(
+          join(root, "environments", "local.yaml"),
+          "baseUrl: http://localhost:3000\n",
+        );
+        await chmod(join(root, "environments"), 0o777);
+        const subDir = join(root, "sub", "nested");
+        await mkdir(subDir, { recursive: true });
+
+        try {
+          expect(() => resolveEnvironmentPath(subDir, "local")).toThrow(ParseError);
+        } finally {
+          await chmod(join(root, "environments"), 0o755);
+        }
+      },
+    );
+
+    it.skipIf(process.platform === "win32")(
+      "startDir 自身の environments/ が other-writable でも解決される(検査は cwd より上の祖先のみに適用される)",
+      async () => {
+        await mkdir(join(root, "environments"), { recursive: true });
+        await writeFile(
+          join(root, "environments", "local.yaml"),
+          "baseUrl: http://localhost:3000\n",
+        );
+        await chmod(join(root, "environments"), 0o777);
+
+        try {
+          expect(resolveEnvironmentPath(root, "local")).toBe(
+            join(root, "environments", "local.yaml"),
+          );
+        } finally {
+          await chmod(join(root, "environments"), 0o755);
+        }
+      },
+    );
+
+    it.skipIf(process.platform === "win32")(
+      "祖先の environments/ が別ユーザー所有と判定される場合は ParseError で拒否する",
+      async () => {
+        await mkdir(join(root, "environments"), { recursive: true });
+        await writeFile(
+          join(root, "environments", "local.yaml"),
+          "baseUrl: http://localhost:3000\n",
+        );
+        const subDir = join(root, "sub", "nested");
+        await mkdir(subDir, { recursive: true });
+
+        // process.getuid を実際の所有者(テストプロセス自身)とは異なる uid を返す関数に
+        // 差し替え、uid 不一致の分岐を通す(tests/cli/run.test.ts の process.cwd 差し替えと同じ作法)。
+        const getuidSpy = process.getuid;
+        process.getuid = () => (getuidSpy ? getuidSpy() + 1 : 1);
+        try {
+          expect(() => resolveEnvironmentPath(subDir, "local")).toThrow(ParseError);
+        } finally {
+          // exactOptionalPropertyTypes 下では getuidSpy(() => number | undefined)をそのまま
+          // 代入できないため、元の値(POSIX では常に関数)へ戻すことを明示するキャストを行う。
+          process.getuid = getuidSpy as () => number;
+        }
+      },
+    );
   });
 });
 
