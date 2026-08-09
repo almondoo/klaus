@@ -141,6 +141,53 @@ describe("maskHistoryEntry", () => {
     expect(masked.request?.headers["X-Short"]).toBe("abc");
   });
 
+  it("クエリパラメータとしてパーセントエンコードされた base64 風の値(+ / = を含む)も *** に置換する", () => {
+    // "aB+cd/Ef==" を URLSearchParams.set() 経由で組んだ場合の実際の表現(applyQueryParams と同じ導出)
+    const encoded = encodeURIComponent("aB+cd/Ef==");
+    const entry = {
+      ...base,
+      request: {
+        method: "GET",
+        url: `http://localhost/x?token=${encoded}`,
+        headers: {},
+      },
+    };
+
+    const masked = maskHistoryEntry(entry, ["aB+cd/Ef=="]);
+    expect(masked.request?.url).toBe("http://localhost/x?token=***");
+  });
+
+  it("空白を含むシークレットが URLSearchParams のシリアライズ形(+ にエンコード)でも *** に置換する", () => {
+    const secret = "sp ace-secret";
+    const serialized = new URLSearchParams({ v: secret }).toString().slice(2);
+    const entry = {
+      ...base,
+      request: {
+        method: "GET",
+        url: `http://localhost/x?token=${serialized}`,
+        headers: {},
+      },
+    };
+
+    const masked = maskHistoryEntry(entry, [secret]);
+    expect(masked.request?.url).toBe("http://localhost/x?token=***");
+  });
+
+  it("4文字未満のシークレットは生形・エンコード形のどちらもマスクしない(既存境界の維持)", () => {
+    const secret = "a b"; // 3文字(空白を含む)
+    const entry = {
+      ...base,
+      request: {
+        method: "GET",
+        url: `http://localhost/x?raw=${secret}&enc=${encodeURIComponent(secret)}`,
+        headers: {},
+      },
+    };
+
+    const masked = maskHistoryEntry(entry, [secret]);
+    expect(masked.request?.url).toBe(entry.request.url);
+  });
+
   it("events の data も秘密情報をマスクする", () => {
     const entry = {
       ...base,
