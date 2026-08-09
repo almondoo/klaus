@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -23,6 +23,27 @@ function requestWithHost(port: number, path: string, host: string): Promise<{ st
         res.on("end", () => resolve({ status: res.statusCode ?? 0 }));
       },
     );
+    req.on("error", reject);
+    req.end();
+  });
+}
+
+/**
+ * 任意のヘッダーを直接指定してリクエストするためのヘルパー。
+ * node:http.request を使うことで、fetch() の Headers 実装では表現しにくい配列値の
+ * ヘッダー(同名ヘッダーの複数行送信、例: Set-Cookie)をそのまま生のソケットレベルで送れる
+ * (node-bridge.ts の toWebRequest が req.headers の配列値を1つずつ変換する分岐の検証用)。
+ */
+function requestWithHeaders(
+  port: number,
+  path: string,
+  headers: Record<string, string | string[]>,
+): Promise<{ status: number }> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({ host: "127.0.0.1", port, path, method: "GET", headers }, (res) => {
+      res.resume();
+      res.on("end", () => resolve({ status: res.statusCode ?? 0 }));
+    });
     req.on("error", reject);
     req.end();
   });
@@ -263,6 +284,20 @@ describe("klaus server", () => {
     expect(res.status).toBe(403);
   });
 
+  it("POST /api/runs: path が cwd 外を指す値だと 403(path traversal 拒否)", async () => {
+    const res = await fetch(`${base}/api/runs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": klaus.token,
+        Cookie: `klaus_token=${klaus.token}`,
+      },
+      body: JSON.stringify({ path: "../../../etc/passwd" }),
+    });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe("Forbidden: path traversal detected");
+  });
+
   it("POST /api/runs: env が cwd 外を指す値だと 403(path traversal 拒否)", async () => {
     const res = await fetch(`${base}/api/runs`, {
       method: "POST",
@@ -315,6 +350,27 @@ describe("klaus server", () => {
     // 有無・ステータスは対象外。ここでは "/" ミドルウェアが Set-Cookie を発行する分岐のみを見る
     const res = await fetch(`${base}/?token=${klaus.token}`);
     expect(res.headers.get("set-cookie")).toContain(`klaus_token=${klaus.token}`);
+  });
+
+  it("同名ヘッダーを複数送るリクエスト(Set-Cookie 等)でも node-bridge が1つずつ変換して正常応答する", async () => {
+    // node:http は set-cookie のようなヘッダー名を配列として IncomingMessage.headers に渡す。
+    // toWebRequest がこの配列値を1つずつ Web 標準 Headers へ append する分岐を検証する
+    const res = await requestWithHeaders(klaus.port, "/api/flows", {
+      "X-Klaus-Token": klaus.token,
+      "Set-Cookie": ["a=1", "b=2"],
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it("HEAD リクエストはボディ無しレスポンスになり、node-bridge のボディ書き込みをスキップする分岐を通る", async () => {
+    // Hono は HEAD を内部的に GET として処理したうえで、レスポンスボディを null にして返す
+    // (response.body === null になるため、writeWebResponse は res.write を呼ばず res.end のみ行う)
+    const res = await fetch(`${base}/api/flows`, {
+      method: "HEAD",
+      headers: { "X-Klaus-Token": klaus.token },
+    });
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe("");
   });
 
   it("GET /api/flows/detail: request(method明示)/graphql(method省略)/ws のステップ形状が丸め込まれて返る", async () => {
@@ -602,6 +658,36 @@ describe("klaus server", () => {
     expect(res.status).toBe(403);
   });
 
+  it("POST /api/request: JSON として不正なボディは 400", async () => {
+    const res = await fetch(`${base}/api/request`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": klaus.token,
+        Cookie: `klaus_token=${klaus.token}`,
+      },
+      body: "not valid json",
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid JSON body" });
+  });
+
+  it("POST /api/request: ボディ全体が JSON オブジェクトでない(null)場合は 400", async () => {
+    const res = await fetch(`${base}/api/request`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": klaus.token,
+        Cookie: `klaus_token=${klaus.token}`,
+      },
+      // JSON としては妥当だが、トップレベルがオブジェクトでない(null)ため body の
+      // 型ガード(!body || typeof body !== "object")に落ちる
+      body: "null",
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "request is required" });
+  });
+
   describe("GET/PUT /api/environments/:name", () => {
     // 一覧テスト(environments/*.yaml の厳密な一覧比較)へ影響しないよう、専用の workDir・server を使う
     let dir: string;
@@ -616,6 +702,11 @@ describe("klaus server", () => {
         "# 環境変数の例\nbaseUrl: http://localhost:4000 # 開発用\ntoken: old-token\n",
         "utf-8",
       );
+      // saveEnvironment の書き込み失敗(EnvironmentNotFoundError 以外の例外の rethrow)を
+      // 再現するため、読み取りはできるが書き込みはできないファイルを用意する
+      const readonlyPath = join(dir, "environments", "readonly.yaml");
+      await writeFile(readonlyPath, "baseUrl: http://localhost:4000\n", "utf-8");
+      await chmod(readonlyPath, 0o444);
       server = await startServer({ cwd: dir, port: 0 });
       apiBase = `http://127.0.0.1:${server.port}`;
     });
@@ -685,6 +776,73 @@ describe("klaus server", () => {
       expect(res.status).toBe(404);
     });
 
+    it("PUT /api/environments/:name: JSON として不正なボディは 400", async () => {
+      const res = await fetch(`${apiBase}/api/environments/editable`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": server.token,
+          Cookie: `klaus_token=${server.token}`,
+        },
+        body: "not valid json",
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "invalid JSON body" });
+    });
+
+    it("PUT /api/environments/:name: values が省略・配列の場合は 400", async () => {
+      const missingRes = await fetch(`${apiBase}/api/environments/editable`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": server.token,
+          Cookie: `klaus_token=${server.token}`,
+        },
+        body: JSON.stringify({}),
+      });
+      expect(missingRes.status).toBe(400);
+      expect(await missingRes.json()).toEqual({ error: "values is required" });
+
+      const arrayRes = await fetch(`${apiBase}/api/environments/editable`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": server.token,
+          Cookie: `klaus_token=${server.token}`,
+        },
+        body: JSON.stringify({ values: ["a", "b"] }),
+      });
+      expect(arrayRes.status).toBe(400);
+      expect(await arrayRes.json()).toEqual({ error: "values is required" });
+    });
+
+    it("PUT /api/environments/:name: values の値に文字列以外が含まれる場合は 400", async () => {
+      const res = await fetch(`${apiBase}/api/environments/editable`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": server.token,
+          Cookie: `klaus_token=${server.token}`,
+        },
+        body: JSON.stringify({ values: { baseUrl: 123 } }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "values must be a map of string to string" });
+    });
+
+    it("PUT /api/environments/:name: ファイル書き込みに失敗すると EnvironmentNotFoundError 以外の例外は 500 で rethrow される", async () => {
+      const res = await fetch(`${apiBase}/api/environments/readonly`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": server.token,
+          Cookie: `klaus_token=${server.token}`,
+        },
+        body: JSON.stringify({ values: { baseUrl: "http://localhost:9999" } }),
+      });
+      expect(res.status).toBe(500);
+    });
+
     it("PUT /api/environments/:name: 正常時は値を更新してレスポンスとファイルの両方に反映し、コメントを保持する", async () => {
       const res = await fetch(`${apiBase}/api/environments/editable`, {
         method: "PUT",
@@ -723,6 +881,11 @@ describe("klaus server", () => {
         "baseUrl: http://localhost:4000\nother: keep-me\n",
         "utf-8",
       );
+      // saveEnvironment の書き込み失敗(EnvironmentNotFoundError 以外の例外の rethrow)を
+      // 再現するため、読み取りはできるが書き込みはできないファイルを用意する
+      const readonlyPath = join(dir, "environments", "readonly-capture.yaml");
+      await writeFile(readonlyPath, "baseUrl: http://localhost:4000\n", "utf-8");
+      await chmod(readonlyPath, 0o444);
       server = await startServer({ cwd: dir, port: 0 });
       apiBase = `http://127.0.0.1:${server.port}`;
     });
@@ -769,7 +932,7 @@ describe("klaus server", () => {
       });
       expect(res.status).toBe(400);
       const payload = (await res.json()) as { error: string };
-      expect(payload.error).toContain("マッチする値がありません");
+      expect(payload.error).toContain("matched no value");
     });
 
     it("抽出した値がオブジェクトの場合は文字列化できないため 400", async () => {
@@ -780,7 +943,7 @@ describe("klaus server", () => {
       });
       expect(res.status).toBe(400);
       const payload = (await res.json()) as { error: string };
-      expect(payload.error).toContain("保存できません");
+      expect(payload.error).toContain("cannot save");
     });
 
     it("存在しない環境は 404", async () => {
@@ -799,6 +962,172 @@ describe("klaus server", () => {
         json: { token: "abc123" },
       });
       expect(res.status).toBe(403);
+    });
+
+    it("JSON として不正なボディは 400", async () => {
+      const res = await fetch(`${apiBase}/api/environments/capture-target/capture`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": server.token,
+          Cookie: `klaus_token=${server.token}`,
+        },
+        body: "not valid json",
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "invalid JSON body" });
+    });
+
+    it("key が欠落・空文字の場合は 400", async () => {
+      const missingRes = await postCapture("capture-target", {
+        path: "$.token",
+        json: { token: "abc123" },
+      });
+      expect(missingRes.status).toBe(400);
+      expect(await missingRes.json()).toEqual({ error: "key is required" });
+
+      const blankRes = await postCapture("capture-target", {
+        key: "   ",
+        path: "$.token",
+        json: { token: "abc123" },
+      });
+      expect(blankRes.status).toBe(400);
+      expect(await blankRes.json()).toEqual({ error: "key is required" });
+    });
+
+    it("path が文字列でない場合は 400", async () => {
+      const res = await postCapture("capture-target", {
+        key: "token",
+        path: 123,
+        json: { token: "abc123" },
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "path is required" });
+    });
+
+    it("ファイル書き込みに失敗すると EnvironmentNotFoundError 以外の例外は 500 で rethrow される", async () => {
+      const res = await postCapture("readonly-capture", {
+        key: "token",
+        path: "$.token",
+        json: { token: "abc123" },
+      });
+      expect(res.status).toBe(500);
+    });
+  });
+
+  describe("GET /api/flows(走査時のエッジケース)", () => {
+    // 一覧テスト(GET /api/flows: 正常なフローとパースエラーのフローが混在)へ影響しないよう、専用の workDir・server を使う
+    let dir: string;
+    let server: StartServerResult;
+    let apiBase: string;
+    let unreadablePath: string;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(join(tmpRoot, "klaus-server-flows-edge-"));
+      await writeFile(
+        join(dir, "valid.yaml"),
+        [
+          "name: valid flow",
+          "steps:",
+          "  - name: step1",
+          "    request:",
+          "      method: GET",
+          '      url: "http://example.com"',
+          "",
+        ].join("\n"),
+        "utf-8",
+      );
+      // YAML 構文自体が壊れていて最上位のキーを判定できないファイルは候補から除外される(collectYamlFiles の parseYaml catch)
+      await writeFile(join(dir, "broken-syntax.yaml"), "steps: [\n", "utf-8");
+      // 読み取り権限が無いファイルも候補から除外される(collectYamlFiles の readFile catch。クラッシュしない)
+      unreadablePath = join(dir, "unreadable.yaml");
+      await writeFile(unreadablePath, "name: unreadable flow\nsteps:\n  - name: step1\n", "utf-8");
+      await chmod(unreadablePath, 0o000);
+      server = await startServer({ cwd: dir, port: 0 });
+      apiBase = `http://127.0.0.1:${server.port}`;
+    });
+
+    afterAll(async () => {
+      // rm --force での削除を確実にするため、権限を落としたファイルは戻してから削除する
+      await chmod(unreadablePath, 0o644);
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it("YAML 構文エラー・読み取り不可のファイルは一覧から除外され、正常なファイルのみ返る", async () => {
+      const res = await fetch(`${apiBase}/api/flows`, {
+        headers: { "X-Klaus-Token": server.token },
+      });
+      expect(res.status).toBe(200);
+      const flows = (await res.json()) as Array<{ path: string }>;
+      expect(flows.map((f) => f.path)).toEqual(["valid.yaml"]);
+    });
+  });
+
+  describe("POST /api/runs: 履歴書き込み失敗時の警告", () => {
+    // 他の describe の履歴件数アサーションに影響しないよう、専用の workDir・server を使う
+    let dir: string;
+    let server: StartServerResult;
+    let apiBase: string;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(join(tmpRoot, "klaus-server-history-warn-"));
+      await writeFile(
+        join(dir, "simple.yaml"),
+        [
+          "name: simple flow",
+          "steps:",
+          "  - name: step1",
+          "    request:",
+          "      method: GET",
+          `      url: "${fixture.baseUrl}/step1"`,
+          "    assert:",
+          "      status: 200",
+          "",
+        ].join("\n"),
+        "utf-8",
+      );
+      // .klaus をディレクトリではなくファイルにしておくと、履歴書き込み時の mkdir(.klaus/history) が
+      // ENOTDIR で失敗し、appendHistory の例外を runner が onWarning 経由で通知する分岐を再現できる
+      await writeFile(join(dir, ".klaus"), "not a directory", "utf-8");
+      server = await startServer({ cwd: dir, port: 0 });
+      apiBase = `http://127.0.0.1:${server.port}`;
+    });
+
+    afterAll(async () => {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it("履歴書き込みに失敗してもフロー実行自体は成功し、stderr に警告が出力される", async () => {
+      const stderrWrite = process.stderr.write;
+      const stderrSpy: string[] = [];
+      process.stderr.write = ((chunk: string) => {
+        stderrSpy.push(chunk.toString());
+        return true;
+      }) as typeof process.stderr.write;
+
+      try {
+        const res = await fetch(`${apiBase}/api/runs`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Klaus-Token": server.token,
+            Cookie: `klaus_token=${server.token}`,
+          },
+          body: JSON.stringify({ path: "simple.yaml" }),
+        });
+        expect(res.status).toBe(200);
+        const events = await collectSseEvents(res);
+        const runResult = events.find((e) => e.event === "run-result")?.data as {
+          flow: { status: string };
+        };
+        expect(runResult.flow.status).toBe("passed");
+      } finally {
+        process.stderr.write = stderrWrite;
+      }
+
+      expect(stderrSpy.join("")).toContain("klaus ui: warning: failed to write history");
     });
   });
 });

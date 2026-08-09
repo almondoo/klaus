@@ -28,6 +28,37 @@ describe("renderString", () => {
     expect(() => renderString("{{unknown}}", { captures: {}, env: {} })).toThrow(RuntimeError);
   });
 
+  describe("未解決変数のエラーメッセージ(利用可能な変数名の提示)", () => {
+    it("captures / env のどちらも空なら none と表示する", () => {
+      expect(() => renderString("{{unknown}}", { captures: {}, env: {} })).toThrow(
+        'template variable "unknown" could not be resolved (available: none)',
+      );
+    });
+
+    it("captures / env の両方に値がある場合はキー名のみを列挙する(値は含めない)", () => {
+      expect(() =>
+        renderString("{{unknown}}", {
+          captures: { token: "secret-token-value" },
+          env: { baseUrl: "https://example.com", apiKey: "secret-api-key" },
+        }),
+      ).toThrow(
+        'template variable "unknown" could not be resolved (available: env: baseUrl, apiKey; captures: token)',
+      );
+    });
+
+    it("env のみ空の場合は captures だけを表示する", () => {
+      expect(() => renderString("{{unknown}}", { captures: { token: "abc" }, env: {} })).toThrow(
+        'template variable "unknown" could not be resolved (available: captures: token)',
+      );
+    });
+
+    it("captures のみ空の場合は env だけを表示する", () => {
+      expect(() =>
+        renderString("{{unknown}}", { captures: {}, env: { baseUrl: "https://example.com" } }),
+      ).toThrow('template variable "unknown" could not be resolved (available: env: baseUrl)');
+    });
+  });
+
   describe("env.X (OS 環境変数)", () => {
     const KEY = "KLAUS_TEST_TEMPLATE_VAR";
 
@@ -82,6 +113,26 @@ describe("renderString", () => {
   it("文字列内の複数の変数を部分置換する", () => {
     const result = renderString("{{a}}-{{b}}", { captures: { a: "1", b: "2" }, env: {} });
     expect(result).toBe("1-2");
+  });
+
+  describe("非文字列値の展開(stringifyValue)", () => {
+    it("captures の値が null の場合は文字列 'null' として展開する", () => {
+      const result = renderString("{{value}}", { captures: { value: null }, env: {} });
+      expect(result).toBe("null");
+    });
+
+    it("captures の値が数値・真偽値の場合はそのまま文字列化する", () => {
+      expect(renderString("{{n}}", { captures: { n: 42 }, env: {} })).toBe("42");
+      expect(renderString("{{b}}", { captures: { b: true }, env: {} })).toBe("true");
+    });
+
+    it("captures の値がオブジェクトの場合は JSON 文字列化して展開する", () => {
+      const result = renderString("{{obj}}", {
+        captures: { obj: { id: 1, name: "a" } },
+        env: {},
+      });
+      expect(result).toBe('{"id":1,"name":"a"}');
+    });
   });
 });
 

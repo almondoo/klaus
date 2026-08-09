@@ -162,7 +162,7 @@ export async function handlePostEnvironmentCapture(
   if (stringValue === undefined) {
     return c.json(
       {
-        error: `抽出した値を環境変数として保存できません(オブジェクト・配列・null は非対応です): key="${body.key}"`,
+        error: `cannot save the extracted value as an environment variable (objects, arrays, and null are not supported): key="${body.key}"`,
       },
       400,
     );

@@ -46,8 +46,8 @@ export async function uiCommand(options: UiCommandOptions): Promise<void> {
 
   const { url, close } = await startServer({ port: options.port, cwd: process.cwd() });
 
-  process.stdout.write(`klaus UI を起動しました: ${url}\n`);
-  process.stdout.write("終了するには Ctrl+C を押してください\n");
+  process.stdout.write(`klaus UI started: ${url}\n`);
+  process.stdout.write("Press Ctrl+C to stop\n");
 
   if (options.open) {
     openBrowser(url);
@@ -57,7 +57,7 @@ export async function uiCommand(options: UiCommandOptions): Promise<void> {
   const shutdown = async (): Promise<void> => {
     if (shuttingDown) return;
     shuttingDown = true;
-    process.stdout.write("\nklaus UI を終了します\n");
+    process.stdout.write("\nStopping klaus UI\n");
     await close();
     process.exit(0);
   };

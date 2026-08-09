@@ -2,6 +2,10 @@
 
 klaus のコマンドは `init`(雛形生成)・`run`(フロー実行)・`validate`(スキーマ検証)・`schema`(JSON Schema 出力)・`ui`(localhost Web UI 起動)・`history`(実行履歴の参照)の6つ。
 
+## --help
+
+`klaus --help` および `klaus run --help` の末尾には、docs サイト(このサイト。英語版は `/en/` 配下)へのリンク・`klaus init` で雛形生成できる旨・exit code の一行要約が付与される。
+
 ## klaus init
 
 ```
@@ -12,9 +16,9 @@ klaus init
 
 | 生成されるファイル | 内容 |
 |---|---|
-| `flows/example.yaml` | `https://example.com` への GET 1件、ステータス200のアサーション(日本語コメント付き) |
+| `flows/example.yaml` | `https://example.com` への GET 1件、ステータス200のアサーション(英語コメント付き) |
 | `environments/local.yaml` | `baseUrl` を持つ最小の環境ファイル |
-| `AGENTS.md` | AI コーディングエージェント向けに、コマンド体系・YAML スキーマ要点・exit code 表を約50行に圧縮したガイド |
+| `AGENTS.md` | AI コーディングエージェント向けに、コマンド体系・YAML スキーマ要点・exit code 表を約50行に圧縮したガイド(英語) |
 
 既存ファイルは上書きせずスキップし、その旨を stdout に表示する。必要なディレクトリは自動で作成される。常に exit 0。1件以上生成した場合、最後に次のコマンドのヒントを表示する: `klaus run flows/example.yaml -e local`
 
@@ -50,7 +54,7 @@ klaus run <files...> [options]
   PASS login (200, 6ms)
   FAIL get-me (200, 3ms)
     body $.email: expected "a@example.com" but got "b@example.com"
-  SKIP logout (前ステップの失敗によりスキップ)
+  SKIP logout: skipped because a previous step failed
 
 1 flow, 3 steps: 1 passed, 1 failed, 1 skipped (12ms)
 ```
@@ -187,10 +191,18 @@ exit code は全ファイル valid なら **0**、1件でも YAML 構文エラ�
 ## klaus schema
 
 ```
-klaus schema
+klaus schema [-t <target>]
 ```
 
-オプションはない。フロー定義 YAML の JSON Schema(zod スキーマから生成、2スペース pretty print)を stdout に出力するだけで、ファイルへの書き出しはしない。
+| オプション | 説明 | デフォルト |
+|---|---|---|
+| `-t`, `--target <target>` | 出力するスキーマ。`flow`(フロー定義 YAML)または `run-report`(`run --json` の出力ペイロード) | `flow` |
+
+JSON Schema(zod スキーマから生成、2スペース pretty print)を stdout に出力するだけで、ファイルへの書き出しはしない。
+
+両スキーマは静的ファイルとしても公開されている: `https://almondoo.github.io/klaus/schema/flow.schema.json` / `https://almondoo.github.io/klaus/schema/run-report.schema.json`。npm パッケージにも `node_modules/@almondoo/klaus/dist/schema/*.json` として同梱される。
+
+`run --json` の `version` フィールドは package.json のバージョンとは独立した単なるリテラル値(現在は `2`)。このスキーマの後方互換を壊す変更(フィールド削除・型変更・意味変更)をする場合のみ値を上げる(オプショナルフィールドの追加のような後方互換な変更では上げない)。利用側は現在の形が不変とは仮定せず、`version` を見て分岐すること。
 
 `request`/`ws` の排他・どちらか必須、`body`/`graphql` の排他、`graphql` 無しの `method` 必須、`ws.url` のスキーム制約、step 名の一意性は zod の `superRefine` によるカスタムバリデーションであり JSON Schema では表現できないため、該当箇所の `description` に注記を付与する形で補っている。常に exit 0。
 

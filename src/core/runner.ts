@@ -124,14 +124,14 @@ export function captureValues(
       value = JSONPath({ path, json: json as never, wrap: false });
     } catch (error) {
       throw new RuntimeError(
-        `capture "${name}": JSONPath "${path}" の評価に失敗しました (step "${stepName}"): ${
+        `capture "${name}": failed to evaluate JSONPath "${path}" (step "${stepName}"): ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
     }
     if (value === undefined) {
       throw new RuntimeError(
-        `capture "${name}": JSONPath "${path}" にマッチする値がありません (step "${stepName}")`,
+        `capture "${name}": JSONPath "${path}" matched no value (step "${stepName}")`,
       );
     }
     result[name] = value;
@@ -461,7 +461,7 @@ export async function executeFlow(
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         options.onWarning?.(
-          `履歴の書き込みに失敗しました (flow "${flow.name}", step "${step.name}"): ${message}`,
+          `failed to write history (flow "${flow.name}", step "${step.name}"): ${message}`,
         );
       }
     }

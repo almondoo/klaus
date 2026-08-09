@@ -2,6 +2,10 @@
 
 klaus has six commands: `init` (scaffolds a starting point), `run` (executes flows), `validate` (schema-validates flows), `schema` (prints a JSON Schema), `ui` (launches the localhost web UI), and `history` (inspects execution history).
 
+## --help
+
+Both `klaus --help` and `klaus run --help` end with a link to the docs site (this site; the Japanese version is at the site root, not under `/en/`), a note that `klaus init` scaffolds a starting point, and a one-line exit code summary.
+
 ## klaus init
 
 ```
@@ -12,9 +16,9 @@ Takes no options. Generates a minimal starting point in the current directory.
 
 | Generated file | Contents |
 |---|---|
-| `flows/example.yaml` | A single GET to `https://example.com` with a status-200 assertion (with Japanese comments) |
+| `flows/example.yaml` | A single GET to `https://example.com` with a status-200 assertion (with English comments) |
 | `environments/local.yaml` | A minimal environment file with a `baseUrl` |
-| `AGENTS.md` | A guide for AI coding agents, compressing the command set, YAML schema essentials, and the exit code table into about 50 lines (written in Japanese) |
+| `AGENTS.md` | A guide for AI coding agents, compressing the command set, YAML schema essentials, and the exit code table into about 50 lines |
 
 Existing files are never overwritten — they're skipped, with a message printed to stdout. Any needed directories are created automatically. Always exits 0. If at least one file was generated, a hint for the next command is printed at the end: `klaus run flows/example.yaml -e local`
 
@@ -50,7 +54,7 @@ auth flow (/path/to/auth-flow.yaml)
   PASS login (200, 6ms)
   FAIL get-me (200, 3ms)
     body $.email: expected "a@example.com" but got "b@example.com"
-  SKIP logout (skipped because a previous step failed)
+  SKIP logout: skipped because a previous step failed
 
 1 flow, 3 steps: 1 passed, 1 failed, 1 skipped (12ms)
 ```
@@ -187,10 +191,18 @@ Exit code is **0** if every file is valid, and **2** if at least one has a YAML 
 ## klaus schema
 
 ```
-klaus schema
+klaus schema [-t <target>]
 ```
 
-Takes no options. Prints the JSON Schema for the flow definition YAML (generated from the zod schema, 2-space pretty-printed) to stdout only — nothing is written to disk.
+| Option | Description | Default |
+|---|---|---|
+| `-t`, `--target <target>` | The schema to print: `flow` (the flow definition YAML) or `run-report` (the `run --json` output payload) | `flow` |
+
+Prints the JSON Schema (generated from the zod schema, 2-space pretty-printed) to stdout only — nothing is written to disk.
+
+Both schemas are also published as static files: `https://almondoo.github.io/klaus/schema/flow.schema.json` and `https://almondoo.github.io/klaus/schema/run-report.schema.json`, and bundled in the npm package at `node_modules/@almondoo/klaus/dist/schema/*.json`.
+
+The `version` field of the `run --json` payload is a plain literal (currently `2`), independent of the package version. It is bumped only when a change to this schema would break existing consumers (a field is removed, a field's type changes, or its meaning changes) — purely additive changes such as a new optional field do not bump it. Consumers should branch on `version` rather than assume the current shape is permanent.
 
 The `request`/`ws` exclusivity and requiredness, the `body`/`graphql` exclusivity, `method` being required unless `graphql` is set, the `ws.url` scheme constraint, and step name uniqueness are all custom validations expressed via zod's `superRefine` and can't be represented in JSON Schema, so they're instead noted in the `description` of the relevant subschema. Always exits 0.
 
