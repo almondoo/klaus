@@ -1,0 +1,2 @@
+# run.sh が生成する pack 作業ディレクトリ(tarball と Dockerfile のコピー)
+.pack/

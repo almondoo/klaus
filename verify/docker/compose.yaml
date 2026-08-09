@@ -1,0 +1,51 @@
+# npm publish 相当検証用の compose 定義。
+# - demo-api: 検証用ダミー API(VERIFICATION.md 2-1 相当)。
+# - klaus: .pack/klaus.tgz(pack 済み tarball)から npm install -g した klaus を
+#   bin コマンドとしてクリーンな Node 22 コンテナで実行する。
+#
+# klaus サービスのビルドコンテキストは ./.pack(git 管理外)を指す。
+# このディレクトリは run.sh がその都度、tarball と Dockerfile のコピーだけを置いて作る
+# 最小コンテキストであり、リポジトリの node_modules は含まれない。
+services:
+  demo-api:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM node:22.19-slim
+        WORKDIR /app
+        COPY demo-server.mjs .
+        EXPOSE 3000
+        USER node
+        CMD ["node", "demo-server.mjs"]
+    healthcheck:
+      # slim イメージに curl / wget が無いため node 組み込みの http でヘルスチェックする
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "require('http').get({host:'127.0.0.1',port:3000,path:'/login'},r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))",
+        ]
+      interval: 1s
+      timeout: 1s
+      retries: 10
+    networks:
+      - verify
+
+  klaus:
+    build:
+      context: ./.pack
+      dockerfile: Dockerfile
+    depends_on:
+      demo-api:
+        condition: service_healthy
+    networks:
+      - verify
+    working_dir: /work
+    volumes:
+      - ./flows:/work/flows:ro
+      - ./environments:/work/environments:ro
+    command: ["run", "flows/auth-flow.yaml"]
+
+networks:
+  verify: {}

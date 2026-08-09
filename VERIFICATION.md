@@ -117,6 +117,36 @@ pnpm exec vitest run tests/sse.test.ts tests/ws.test.ts tests/graphql.test.ts
 
 手動で確認したい場合は `docs/guide/flow-definition.md` の各セクションの YAML 例を使う。
 
+## 4.5. Docker での publish 相当検証
+
+上記 1〜4 は手元の pnpm ワークスペース上での確認であり、`pnpm exec` 経由の実行や
+リポジトリの `node_modules` が前提になっている。しかし npm publish で実際にユーザーへ
+届く内容(`npm pack` の `files` 選定結果)や `bin` 配線、依存バンドル漏れ(コンテナには
+`dependencies` の zod しか入らず、tsup でバンドルしたはずの他 6 依存が本当に
+`dist/*.js` に含まれているか)は、クリーンな Node 環境に tarball を
+`npm install -g` して初めて検証できる。これを自動化したものが `verify/docker/` 一式。
+
+- 目的:
+  - files 指定の過不足(`.map` 等の除外漏れ・必須ファイルの欠落)を tarball ベースで確認する
+  - `bin.klaus` の配線(`npm install -g` 後に `klaus` コマンドとして解決されるか)を確認する
+  - バンドル漏れ(zod 以外の実行時依存が `node_modules` に現れず、`dist/*.js` 単体で動くか)を確認する
+  - engines で指定した Node 22 系のクリーンな環境で実際に動くかを確認する
+
+- 実行方法:
+
+  ```bash
+  verify/docker/run.sh
+  ```
+
+  内部で `pnpm build:all` → tarball 生成 → `docker compose build`(demo-api / klaus の
+  2 イメージ)→ demo-api 起動 → `klaus run flows/auth-flow.yaml` 実行 → exit code 表示
+  → `docker compose down` の後片付け、まで一気通貫で行う。demo API・フロー定義は
+  上記 2-1/2-2 の認証フローと同内容(baseUrl のみコンテナ間名前解決の `http://demo-api:3000`)。
+
+- 期待結果: 「認証フロー」が PASS×2 で `status: "passed"`、スクリプトの最終行に
+  `== klaus run exit code: 0 ==` と表示される。Docker デーモンが利用できない環境では
+  `docker compose build` の時点で失敗するため、事前に `docker version` で確認しておく。
+
 ## 5. 片付け
 
 ```bash
