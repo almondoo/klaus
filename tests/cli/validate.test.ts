@@ -111,6 +111,46 @@ steps:
     expect(report.files[1]?.errors[0]?.path).toBe("steps");
   });
 
+  it("非 JSON(テキスト)出力では OK/NG に加え、NG のエラー位置・メッセージ・hint 行を表示する", async () => {
+    const goodPath = join(workDir, "good.yaml");
+    const badPath = join(workDir, "bad-unknown-key.yaml");
+    // hint の無いエラー(YAML 構文エラーはトップレベル = path 無しで hint も付かない)で
+    // "(root)" フォールバックと hint 省略の分岐も合わせて確認する
+    const syntaxErrorPath = join(workDir, "bad-syntax.yaml");
+    await writeFile(goodPath, VALID_FLOW_YAML, "utf-8");
+    await writeFile(
+      badPath,
+      `
+name: sample flow
+steps:
+  - name: step1
+    request:
+      method: GET
+      url: "https://example.com"
+      bogus: true
+`,
+      "utf-8",
+    );
+    await writeFile(syntaxErrorPath, "name: sample\nsteps: [\n", "utf-8");
+    const isTtySpy = process.stdout.isTTY;
+    process.stdout.isTTY = true;
+    try {
+      const exitCode = await validateCommand([goodPath, badPath, syntaxErrorPath], { json: false });
+
+      expect(exitCode).toBe(2);
+      const output = stdoutSpy.join("");
+      expect(output).toContain(`OK   ${goodPath}\n`);
+      expect(output).toContain(`NG   ${badPath}\n`);
+      expect(output).toContain("- steps.0.request: ");
+      expect(output).toContain('unknown key(s) "bogus" at "steps.0.request"');
+      expect(output).toContain("check for a typo, or remove the key(s) if unused");
+      // YAML 構文エラーは path が無いため "(root)" にフォールバックし、hint 行は出力されない
+      expect(output).toContain(`NG   ${syntaxErrorPath}\n  - (root): YAML syntax error`);
+    } finally {
+      process.stdout.isTTY = isTtySpy;
+    }
+  });
+
   it("引数なしの場合はカレントディレクトリ以下のフロー候補 YAML を探索する", async () => {
     await mkdir(join(workDir, "flows"), { recursive: true });
     await mkdir(join(workDir, "environments"), { recursive: true });

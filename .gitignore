@@ -2,9 +2,11 @@ node_modules/
 dist/
 .vite/
 tmp/
+coverage/
 .klaus/
 .playwright-mcp/
 *.log
 .DS_Store
 docs/.vitepress/cache/
 docs/.vitepress/dist/
+docs/public/schema/

@@ -31,6 +31,11 @@ async function startServer() {
         );
         return;
       }
+      if (req.url === "/broken-json") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end("{not valid json");
+        return;
+      }
       if (req.url === "/slow") {
         setTimeout(() => {
           res.writeHead(200, { "Content-Type": "application/json" });
@@ -81,6 +86,12 @@ describe("sendRequest", () => {
     const parsed = response.body as { receivedContentType: string; receivedBody: string };
     expect(parsed.receivedContentType).toContain("application/json");
     expect(JSON.parse(parsed.receivedBody)).toEqual({ hello: "world" });
+  });
+
+  it("content-type が JSON でもボディが壊れている場合はテキストのまま返す", async () => {
+    const response = await sendRequest({ method: "GET", url: `${ctx.baseUrl}/broken-json` });
+    expect(response.body).toBe("{not valid json");
+    expect(response.bodyText).toBe("{not valid json");
   });
 
   it("body が string ならそのまま送信する", async () => {

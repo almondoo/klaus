@@ -48,9 +48,9 @@ jobs:
           pnpm lint
           pnpm typecheck
 
-      - name: テスト
+      - name: テスト(カバレッジ閾値込み)
         run: |
-          pnpm test
+          pnpm test:coverage
           pnpm --filter @almondoo/klaus-ui test
 
       - name: フルビルド
