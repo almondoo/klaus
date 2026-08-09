@@ -6,6 +6,7 @@ import {
   assertEventCount,
   assertEvents,
   assertHeaders,
+  assertMessages,
   assertStatus,
   evaluateAssertions,
 } from "../src/core/assert.js";
@@ -77,6 +78,68 @@ describe("assertBody", () => {
     }).not.toThrow();
     expect(results[0]?.ok).toBe(false);
   });
+
+  it("構文が不正な jsonpath 式でも例外を投げず、ok:false を返す(safeJsonPath の catch 分岐)", () => {
+    let results: ReturnType<typeof assertBody> = [];
+    expect(() => {
+      results = assertBody([{ path: "$[?(", exists: true }], json);
+    }).not.toThrow();
+    expect(results[0]?.ok).toBe(false);
+    expect(results[0]?.actual).toBe(false);
+  });
+
+  it("equals はネストしたオブジェクト・配列を構造的に比較する(一致)", () => {
+    const results = assertBody(
+      [
+        { path: "$.user", equals: { email: "a@example.com" } },
+        { path: "$.items", equals: [1, 2, 3] },
+      ],
+      json,
+    );
+    expect(results.every((r) => r.ok)).toBe(true);
+  });
+
+  it("equals はネストしたオブジェクト・配列を構造的に比較する(不一致)", () => {
+    const objectMismatch = assertBody(
+      [{ path: "$.user", equals: { email: "different@example.com" } }],
+      json,
+    );
+    expect(objectMismatch[0]?.ok).toBe(false);
+
+    const arrayLengthMismatch = assertBody([{ path: "$.items", equals: [1, 2] }], json);
+    expect(arrayLengthMismatch[0]?.ok).toBe(false);
+
+    const arrayElementMismatch = assertBody([{ path: "$.items", equals: [1, 2, 4] }], json);
+    expect(arrayElementMismatch[0]?.ok).toBe(false);
+  });
+
+  it("contains / regex を存在しない path(undefined 値)に適用すると空文字列として評価される", () => {
+    const results = assertBody(
+      [
+        { path: "$.missing", contains: "x" },
+        { path: "$.missing", regex: "^$" },
+      ],
+      json,
+    );
+    expect(results[0]?.ok).toBe(false);
+    expect(results[0]?.actual).toBe("");
+    // 正規表現自体は空文字列にマッチするが、path が存在しない(resolvedExists:false)ため ok:false になる
+    expect(results[1]?.ok).toBe(false);
+    expect(results[1]?.actual).toBe("");
+  });
+
+  it("contains / regex を文字列でない値(配列)に適用すると JSON.stringify した文字列として評価される", () => {
+    const results = assertBody(
+      [
+        { path: "$.items", contains: "2" },
+        { path: "$.items", regex: "^\\[1,2,3\\]$" },
+      ],
+      json,
+    );
+    expect(results[0]?.ok).toBe(true);
+    expect(results[0]?.actual).toBe("[1,2,3]");
+    expect(results[1]?.ok).toBe(true);
+  });
 });
 
 describe("assertBodyText", () => {
@@ -135,6 +198,29 @@ describe("assertEvents", () => {
     const rawEvents = [{ data: "hello" }, { data: "world" }];
     const results = assertEvents([{ contains: "wor" }], rawEvents);
     expect(results[0]?.ok).toBe(true);
+  });
+
+  it("data が JSON でない場合、path 指定は exists:false として扱われる(resolveItemValue の catch 分岐)", () => {
+    const brokenEvents = [{ data: "not json {{{" }];
+    const results = assertEvents([{ index: 0, path: "$.foo", exists: true }], brokenEvents);
+    expect(results[0]?.ok).toBe(false);
+    expect(results[0]?.actual).toBe(false);
+  });
+
+  it("index が受信イベント数を超える場合、対象なしとして exists:false で評価される", () => {
+    const results = assertEvents([{ index: 5, exists: true }], events);
+    expect(results[0]?.ok).toBe(false);
+    expect(results[0]?.kind).toBe("event.exists");
+    expect(results[0]?.actual).toBe(false);
+  });
+});
+
+describe("assertMessages", () => {
+  it("index が受信メッセージ数を超える場合、対象なしとして評価される(assertEvents と同一ロジック)", () => {
+    const messages = [{ data: "1" }];
+    const results = assertMessages([{ index: 3, equals: "x" }], messages);
+    expect(results[0]?.ok).toBe(false);
+    expect(results[0]?.kind).toBe("message.equals");
   });
 });
 

@@ -170,3 +170,24 @@ Common semantics for `events` / `messages`:
 - When a step becomes **failed** (assertion failure) or **error** (runtime error), the **remaining steps in that flow are not run and are recorded as skipped**
 - When multiple flow files are passed, **other flows still run** even if one flow fails
 - The final exit code follows the priority rules in the [CLI Reference](cli.md#exit-code)
+
+## JSON Schema
+
+The flow definition schema is also published as JSON Schema. Use it for editor completion/validation, or as a reference when an AI agent generates flow YAML.
+
+- Published URL: `https://almondoo.github.io/klaus/schema/flow.schema.json`
+- Path bundled in the npm package: `node_modules/@almondoo/klaus/dist/schema/flow.schema.json`
+
+Adding a `# yaml-language-server: $schema=` comment at the top of a YAML file enables completion and validation in editors that support it (such as VS Code's YAML extension).
+
+```yaml
+# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
+name: auth flow
+steps:
+  - name: login
+    request:
+      method: POST
+      url: "{{baseUrl}}/login"
+```
+
+**Note**: constraints enforced via `superRefine` and described elsewhere on this page — the mutual exclusivity of `request.body` and `request.graphql`, requiring exactly one of `step.request` / `step.ws`, the `ws.url` scheme restriction, and step name uniqueness — are not expressible in the JSON Schema structure itself (they are noted in the `description` of the relevant properties). These are enforced only by runtime validation in `klaus validate` / `klaus run`.

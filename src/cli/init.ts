@@ -8,21 +8,21 @@ import { dirname, join } from "node:path";
  */
 
 /** 生成するサンプルのフロー定義。src/core/schema.ts の flowSchema / requestSchema を満たす最小形 */
-const EXAMPLE_FLOW_YAML = `# klaus のフロー定義ファイル。name と steps(1件以上)を持つ
+const EXAMPLE_FLOW_YAML = `# klaus flow definition file. Has a name and one or more steps
 name: example flow
 steps:
-  # 1ステップ = 1リクエスト。name はフロー内で一意である必要がある
+  # 1 step = 1 request. name must be unique within the flow
   - name: get-example
     request:
-      method: GET # HTTP メソッド
-      url: "https://example.com" # リクエスト先 URL({{変数名}} で environments の値を埋め込める)
+      method: GET # HTTP method
+      url: "https://example.com" # request URL ({{varName}} interpolates values from environments)
     assert:
-      status: 200 # レスポンスの HTTP ステータスコードを検証する
+      status: 200 # verify the response HTTP status code
 `;
 
 /** 生成するサンプルの環境ファイル。src/core/schema.ts の environmentSchema(string -> string)を満たす最小形 */
-const LOCAL_ENVIRONMENT_YAML = `# klaus run --env local で参照される環境変数ファイル(値はすべて文字列)
-# フロー内では {{baseUrl}} のように参照できる。用途に応じて自由にキーを追加・変更してよい
+const LOCAL_ENVIRONMENT_YAML = `# Environment variable file referenced by klaus run --env local (all values are strings)
+# Flows can reference these as {{baseUrl}}. Add or change keys freely as needed
 baseUrl: https://example.com
 `;
 
@@ -32,52 +32,52 @@ baseUrl: https://example.com
  * コマンド体系・YAML スキーマ要点・exit code 表を圧縮して1ファイルにまとめたもの。
  * コマンド一覧は将来の追加(validate / history 等)に備え、後から行を足しやすい箇条書きにしてある。
  */
-const AGENTS_MD = `# klaus 向け AGENTS ガイド
+const AGENTS_MD = `# AGENTS guide for klaus
 
-klaus は YAML でリクエストフローを定義し、実行・アサーション・履歴管理を行う API 検証 CLI です。
+klaus is an API testing CLI that defines request flows in YAML and runs execution, assertions, and history tracking.
 
-## コマンド
+## Commands
 
-- \`klaus run <files...>\`: フロー定義 YAML を実行する
-  - \`--env <name>\`: environments/<name>.yaml の値で flow の env を上書きする
-  - \`--json\`: TTY 実行時でも JSON 出力を強制する
-  - \`--report junit\` / \`--report-file <path>\`: JUnit XML レポートを追加出力する
-  - \`--no-history\`: 実行履歴(.klaus/history/*.jsonl)への書き込みを無効化する
-- \`klaus validate [files...]\`: 実行なしでフロー YAML のスキーマ検証のみ行う(引数なしで全フローを探索検証。エラーには修正例ヒント付き)
-- \`klaus schema\`: フロー YAML の JSON Schema を stdout に出力する(エディタ補完・フロー生成の精度向上に使う)
-- \`klaus history\`: 実行履歴を一覧する(\`--flow <name>\` / \`--failed\` / \`--last <n>\` / \`--fields <csv>\`。既定はボディを含まない要約)
-- \`klaus history show <runId> [--step <name>]\`: 履歴エントリの全文(マスク済み)を JSON で取得する
-- \`klaus init\`: flows/environments/AGENTS.md の最小雛形をカレントディレクトリに生成する(既存ファイルは上書きしない)
-- \`klaus ui\`: localhost Web UI(ランナー + ビューア)を起動する
-- 上記が現時点の全コマンド。今後コマンドが増える場合はこの下に追記される
+- \`klaus run <files...>\`: run flow definition YAML files
+  - \`--env <name>\`: overrides the flow's env with the values in environments/<name>.yaml
+  - \`--json\`: force JSON output even when running on a TTY
+  - \`--report junit\` / \`--report-file <path>\`: also write a JUnit XML report
+  - \`--no-history\`: disable writing to the execution history (.klaus/history/*.jsonl)
+- \`klaus validate [files...]\`: schema-validate flow YAML without executing (with no arguments, discovers and validates all flows; errors carry a fix-example hint)
+- \`klaus schema\`: print the flow YAML's JSON Schema to stdout (useful for editor completion and improving flow generation accuracy)
+- \`klaus history\`: list execution history (\`--flow <name>\` / \`--failed\` / \`--last <n>\` / \`--fields <csv>\`; the default output is a summary without bodies)
+- \`klaus history show <runId> [--step <name>]\`: fetch the full (masked) history entries as JSON
+- \`klaus init\`: generate a minimal flows/environments/AGENTS.md starting point in the current directory (existing files are never overwritten)
+- \`klaus ui\`: launch the localhost Web UI (runner + viewer)
+- This is the full command list as of now; future commands will be appended below
 
-非 TTY(パイプ・CI・エージェント実行など)では自動的に JSON 出力になる。結果データは stdout、パースエラー等の診断メッセージは stderr に出る。run の JSON は failure-focused(成功ステップは要約のみ)かつボディは 500 文字で truncate される。全文は各ステップの \`historyRef\`(\`{date, runId, step}\`)を使い \`klaus history show <runId> --step <name>\` で取得する。
+Non-TTY output (pipes, CI, agent execution, etc.) is automatically JSON. Result data goes to stdout; diagnostic messages such as parse errors go to stderr. The \`run\` JSON output is failure-focused (passed steps are summarized only) and bodies are truncated to 500 characters. Fetch the full text via each step's \`historyRef\` (\`{date, runId, step}\`) using \`klaus history show <runId> --step <name>\`.
 
-## YAML スキーマ要点
+## YAML schema essentials
 
-- flow: \`name\`(必須)/ \`env\`(任意、--env で上書き可)/ \`steps\`(1件以上、name はフロー内で一意)
-- step: \`name\` に加え \`request\` と \`ws\` はどちらか一方が必須(排他)。任意で \`capture\` / \`assert\` / \`sse\`
-- request: \`method\`(graphql 指定時のみ省略可、既定 POST)/ \`url\` / \`headers\` / \`query\`(key-value。URL のクエリ文字列へマージされ、同名キーは query 側が優先)/ \`body\`(\`graphql\` と排他)/ \`timeoutMs\`(既定 30000ms)
-- capture: レスポンス body に対する JSONPath で変数を取り出す(例: \`{ token: "$.data.token" }\`)
-- \`{{var}}\` の解決順: ①ステップの capture 変数 → ②environments の値。\`{{env.X}}\` は OS 環境変数 X を参照する(未定義なら実行時エラー)
+- flow: \`name\` (required) / \`env\` (optional, overridable with --env) / \`steps\` (one or more, name must be unique within the flow)
+- step: alongside \`name\`, exactly one of \`request\` or \`ws\` is required (mutually exclusive). \`capture\` / \`assert\` / \`sse\` are optional
+- request: \`method\` (omittable only when \`graphql\` is set, defaults to POST) / \`url\` / \`headers\` / \`query\` (key-value, merged into the URL's query string; \`query\` wins on key collision) / \`body\` (mutually exclusive with \`graphql\`) / \`timeoutMs\` (defaults to 30000ms)
+- capture: extract variables from the response body via JSONPath (e.g. \`{ token: "$.data.token" }\`)
+- \`{{var}}\` resolution order: (1) the step's capture variables, then (2) values from environments. \`{{env.X}}\` references OS environment variable X (a runtime error if undefined)
 
-## exit code
+## Exit codes
 
-| code | 意味 |
+| code | meaning |
 |---|---|
-| 0 | 全件成功 |
-| 1 | 一般エラー(不正な CLI 引数・予期しない例外) |
-| 2 | 定義ファイルのパースエラー |
-| 3 | 実行時エラー(接続不能・タイムアウト・キャプチャ失敗等) |
-| 4 | アサーション失敗 |
+| 0 | all passed |
+| 1 | general error (invalid CLI arguments, unexpected exception) |
+| 2 | definition file parse error |
+| 3 | runtime error (connection failure, timeout, capture failure, etc.) |
+| 4 | assertion failure |
 
-判定ルール: 実行前に全ファイルをパース検証し、1件でも失敗すれば exit 2(何も実行しない)。実行後、runtime エラー(status "error")を含むフローがあれば exit 3、なければアサーション失敗(status "failed")があれば exit 4、全成功なら exit 0(3 と 4 が混在する場合は 3 を優先)。exit code だけで故障箇所を判別できる: 2 なら定義を直す、3 なら対象 API の起動状態を見る、4 ならアサーション内容とレスポンスを比較する。
+Decision rule: all files are parse-validated before execution; if even one fails, exit 2 (nothing is run). After execution, exit 3 if any flow has a runtime error (status "error"), otherwise exit 4 if there's an assertion failure (status "failed"), otherwise exit 0 for all passed (when both 3 and 4 apply, 3 takes priority). The exit code alone identifies where to look: 2 means fix the definition, 3 means check whether the target API is up, and 4 means compare the assertion against the response.
 
-## 履歴
+## History
 
-実行結果は \`.klaus/history/<YYYY-MM-DD>.jsonl\` に自動追記される(\`--no-history\` で無効化可)。\`{{env.X}}\` 等で参照した値はシークレットとみなされ、履歴には "***" でマスクされて記録される。
+Execution results are automatically appended to \`.klaus/history/<YYYY-MM-DD>.jsonl\` (disable with \`--no-history\`). Values referenced via \`{{env.X}}\` etc. are treated as secrets and recorded in history masked as "***".
 
-## 最小フロー例
+## Minimal flow example
 
 \`\`\`yaml
 name: example flow
@@ -90,7 +90,7 @@ steps:
       status: 200
 \`\`\`
 
-environments/local.yaml に \`baseUrl: https://example.com\` を置けば、上記 url を \`"{{baseUrl}}"\` として参照できる。
+Place \`baseUrl: https://example.com\` in environments/local.yaml, and the url above can be written as \`"{{baseUrl}}"\`.
 `;
 
 interface ScaffoldFile {
@@ -138,20 +138,18 @@ export async function initCommand(cwd: string = process.cwd()): Promise<number> 
   }
 
   for (const relativePath of created) {
-    process.stdout.write(`作成しました: ${relativePath}\n`);
+    process.stdout.write(`created: ${relativePath}\n`);
   }
   for (const relativePath of skipped) {
-    process.stdout.write(`スキップしました(既に存在します): ${relativePath}\n`);
+    process.stdout.write(`skipped (already exists): ${relativePath}\n`);
   }
 
   if (created.length > 0) {
     process.stdout.write(
-      `\n雛形の生成が完了しました。次のコマンドで実行できます:\n  klaus run ${EXAMPLE_FLOW_RELATIVE_PATH} -e local\n`,
+      `\nScaffolding complete. Run it with:\n  klaus run ${EXAMPLE_FLOW_RELATIVE_PATH} -e local\n`,
     );
   } else {
-    process.stdout.write(
-      "\n生成対象のファイルはすべて既に存在するため、何も作成しませんでした。\n",
-    );
+    process.stdout.write("\nAll target files already exist, so nothing was created.\n");
   }
 
   return 0;

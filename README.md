@@ -1,5 +1,8 @@
 # klaus
 
+[![CI](https://github.com/almondoo/klaus/actions/workflows/ci.yml/badge.svg)](https://github.com/almondoo/klaus/actions/workflows/ci.yml)
+![coverage](https://img.shields.io/badge/coverage-%E2%89%A590%25_lines-brightgreen)
+
 ローカル HTTP API を CLI から検証するツール。リクエスト定義を素の YAML で git 管理し、実行・アサーション・履歴管理を行う。人間と AI エージェント(Claude Code 等)の両方が使うことを前提に設計している。
 
 ドキュメントサイト: https://almondoo.github.io/klaus/
@@ -187,9 +190,10 @@ pnpm install
 pnpm build      # tsup(core / cli / server)。dist/ui は保持される
 pnpm build:ui   # Vite(ui/ → dist/ui)
 pnpm build:all  # clean + build + build:ui(リリース用のフルビルド)
-pnpm test       # vitest
-pnpm typecheck  # tsc --noEmit
-pnpm lint       # biome
+pnpm test           # vitest
+pnpm test:coverage  # vitest + カバレッジ(閾値: lines 90% を CI で強制。対象は src/、ui/ は対象外)
+pnpm typecheck      # tsc --noEmit
+pnpm lint           # biome
 ```
 
 構成: `src/core`(CLI 非依存の実行エンジン)+ `src/cli`(薄い CLI 層)+ `src/server`(`klaus ui` の API サーバー)+ `ui/`(Vite + React の Web UI、ワークスペース)。利用者向けガイドは `docs/guide/`、開発者向け資料は `docs/dev/` を参照(目次: `docs/index.md`)。

@@ -28,8 +28,7 @@ function contentTypeFor(filePath: string): string {
 }
 
 /** dist/ui が存在しない・未ビルドの場合に表示する案内文 */
-const MISSING_BUILD_MESSAGE =
-  "klaus UI の静的ファイルが見つかりません。`pnpm build:all` を実行してください。";
+const MISSING_BUILD_MESSAGE = "klaus UI static files not found. Run `pnpm build:all`.";
 
 async function readIfExists(filePath: string): Promise<Buffer | null> {
   try {

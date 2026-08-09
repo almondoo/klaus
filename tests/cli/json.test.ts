@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatJson } from "../../src/cli/reporters/json.js";
+import { formatJson, jsonReportSchema } from "../../src/cli/reporters/json.js";
 import type { FlowResult, RunResult, StepResult } from "../../src/core/index.js";
 
 function buildStep(overrides: Partial<StepResult>): StepResult {
@@ -189,5 +189,28 @@ describe("formatJson", () => {
     const parsed = JSON.parse(formatJson(buildRunResult([flow]), { historyEnabled: false }));
 
     expect(parsed.flows[0].steps[0].historyRef).toBeUndefined();
+  });
+
+  it("実出力は jsonReportSchema(zod)の検証を通る", () => {
+    const flow = buildFlow({
+      steps: [
+        buildStep({ name: "ok", status: "passed" }),
+        buildStep({
+          name: "ng",
+          status: "failed",
+          request: { method: "GET", url: "http://x", headers: {}, body: undefined },
+          response: { status: 500, headers: {}, body: "boom" },
+          events: [{ event: "message", data: "e" }],
+          wsMessages: [{ data: "m" }],
+          assertions: [{ ok: false, kind: "status", expected: 200, actual: 500, message: "ng" }],
+          error: "assertion failed",
+        }),
+      ],
+    });
+    const parsed = JSON.parse(
+      formatJson(buildRunResult([flow]), { historyEnabled: true }),
+    ) as unknown;
+
+    expect(() => jsonReportSchema.parse(parsed)).not.toThrow();
   });
 });

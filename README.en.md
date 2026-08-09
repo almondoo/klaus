@@ -1,5 +1,8 @@
 # klaus
 
+[![CI](https://github.com/almondoo/klaus/actions/workflows/ci.yml/badge.svg)](https://github.com/almondoo/klaus/actions/workflows/ci.yml)
+![coverage](https://img.shields.io/badge/coverage-%E2%89%A590%25_lines-brightgreen)
+
 A CLI tool for verifying local HTTP APIs. Request definitions are managed as plain YAML in git, with execution, assertions, and history management. Designed for use by both humans and AI agents (Claude Code, etc.).
 
 Documentation site: https://almondoo.github.io/klaus/en/
@@ -187,9 +190,10 @@ pnpm install
 pnpm build      # tsup (core / cli / server); dist/ui is preserved
 pnpm build:ui   # Vite (ui/ -> dist/ui)
 pnpm build:all  # clean + build + build:ui (full build for release)
-pnpm test       # vitest
-pnpm typecheck  # tsc --noEmit
-pnpm lint       # biome
+pnpm test           # vitest
+pnpm test:coverage  # vitest + coverage (thresholds: 90% lines, enforced in CI; scope is src/, ui/ excluded)
+pnpm typecheck      # tsc --noEmit
+pnpm lint           # biome
 ```
 
 Structure: `src/core` (CLI-independent execution engine) + `src/cli` (thin CLI layer) + `src/server` (API server for `klaus ui`) + `ui/` (Vite + React web UI, workspace). See `docs/en/guide/` for the user guide and `docs/en/dev/` for developer documentation (index: `docs/en/index.md`).

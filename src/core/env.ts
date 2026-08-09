@@ -15,7 +15,9 @@ import type { Environment } from "./schema.js";
 function assertWithinEnvironmentsDir(envDir: string, resolvedPath: string, envName: string): void {
   const boundary = envDir.endsWith(sep) ? envDir : envDir + sep;
   if (!resolvedPath.startsWith(boundary)) {
-    throw new ParseError(`環境名が不正です(パスの外側を指しています): ${envName}`);
+    throw new ParseError(
+      `invalid environment name (resolves outside the environments dir): ${envName}`,
+    );
   }
 }
 

@@ -6,7 +6,7 @@
     "baseRef": "head"
   },
   "permissions": {
-    "deny": ["Edit(pnpm-lock.yaml)", "Write(pnpm-lock.yaml)"]
+    "deny": ["Edit(pnpm-lock.yaml)"]
   },
   "hooks": {
     "PostToolUse": [

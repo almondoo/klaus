@@ -37,10 +37,10 @@ describe("initCommand", () => {
     const agentsContent = await readFile(join(workDir, "AGENTS.md"), "utf-8");
     expect(flowContent).toContain("name: example flow");
     expect(envContent).toContain("baseUrl:");
-    expect(agentsContent).toContain("# klaus 向け AGENTS ガイド");
-    expect(stdoutSpy.join("")).toContain("作成しました: flows/example.yaml");
-    expect(stdoutSpy.join("")).toContain("作成しました: environments/local.yaml");
-    expect(stdoutSpy.join("")).toContain("作成しました: AGENTS.md");
+    expect(agentsContent).toContain("# AGENTS guide for klaus");
+    expect(stdoutSpy.join("")).toContain("created: flows/example.yaml");
+    expect(stdoutSpy.join("")).toContain("created: environments/local.yaml");
+    expect(stdoutSpy.join("")).toContain("created: AGENTS.md");
   });
 
   it("生成される AGENTS.md にはコマンド体系・YAML スキーマ要点・exit code 表が含まれる", async () => {
@@ -51,8 +51,8 @@ describe("initCommand", () => {
     expect(agentsContent).toContain("klaus init");
     expect(agentsContent).toContain("klaus ui");
     expect(agentsContent).toContain("{{env.X}}");
-    expect(agentsContent).toContain("| 0 | 全件成功 |");
-    expect(agentsContent).toContain("| 4 | アサーション失敗 |");
+    expect(agentsContent).toContain("| 0 | all passed |");
+    expect(agentsContent).toContain("| 4 | assertion failure |");
     expect(agentsContent).toContain(".klaus/history/<YYYY-MM-DD>.jsonl");
   });
 
@@ -77,7 +77,7 @@ describe("initCommand", () => {
     expect(exitCode).toBe(0);
     const preserved = await readFile(join(workDir, "flows", "example.yaml"), "utf-8");
     expect(preserved).toBe("name: keep me\nsteps: []\n");
-    expect(stdoutSpy.join("")).toContain("スキップしました(既に存在します): flows/example.yaml");
+    expect(stdoutSpy.join("")).toContain("skipped (already exists): flows/example.yaml");
     // environments/local.yaml と AGENTS.md は既存ファイルが無いので通常どおり作成される
     await readFile(join(workDir, "environments", "local.yaml"), "utf-8");
     await readFile(join(workDir, "AGENTS.md"), "utf-8");
@@ -98,13 +98,11 @@ describe("initCommand", () => {
 
     expect(exitCode).toBe(0);
     const output = stdoutSpy.join("");
-    expect(output).toContain("スキップしました(既に存在します): flows/example.yaml");
-    expect(output).toContain("スキップしました(既に存在します): environments/local.yaml");
-    expect(output).toContain("スキップしました(既に存在します): AGENTS.md");
-    expect(output).not.toContain("作成しました:");
-    expect(output).toContain(
-      "生成対象のファイルはすべて既に存在するため、何も作成しませんでした。",
-    );
+    expect(output).toContain("skipped (already exists): flows/example.yaml");
+    expect(output).toContain("skipped (already exists): environments/local.yaml");
+    expect(output).toContain("skipped (already exists): AGENTS.md");
+    expect(output).not.toContain("created:");
+    expect(output).toContain("All target files already exist, so nothing was created.");
     // 既存の内容が保持されていること
     const preservedFlow = await readFile(join(workDir, "flows", "example.yaml"), "utf-8");
     const preservedEnv = await readFile(join(workDir, "environments", "local.yaml"), "utf-8");

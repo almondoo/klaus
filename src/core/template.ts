@@ -62,7 +62,27 @@ function resolveVariable(name: string, context: TemplateContext): string {
     return stringifyValue(context.env[name]);
   }
 
-  throw new RuntimeError(`template variable "${name}" could not be resolved`);
+  throw new RuntimeError(
+    `template variable "${name}" could not be resolved (available: ${formatAvailableVariables(context)})`,
+  );
+}
+
+/**
+ * 未解決変数のエラーメッセージに添える「その時点で解決可能な変数名一覧」を作る。
+ * 値そのものは絶対に含めない(キー名のみ。secrets の値漏えい防止)。
+ * captures / env のどちらも空の場合は "none" と表示する。
+ */
+function formatAvailableVariables(context: TemplateContext): string {
+  const envNames = Object.keys(context.env);
+  const captureNames = Object.keys(context.captures);
+  const parts: string[] = [];
+  if (envNames.length > 0) {
+    parts.push(`env: ${envNames.join(", ")}`);
+  }
+  if (captureNames.length > 0) {
+    parts.push(`captures: ${captureNames.join(", ")}`);
+  }
+  return parts.length > 0 ? parts.join("; ") : "none";
 }
 
 /**

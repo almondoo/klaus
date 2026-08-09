@@ -178,6 +178,142 @@ describe("stepSchema / ws", () => {
   });
 });
 
+describe("strict object schemas / unknown keys", () => {
+  it("フロー直下に未知キーがあると検証エラーになる", () => {
+    expect(() =>
+      flowSchema.parse({
+        name: "flow",
+        unknownTopLevel: true,
+        steps: [{ name: "step1", request: { method: "GET", url: "https://example.com" } }],
+      }),
+    ).toThrow();
+  });
+
+  it("step 直下の未知キー(typo 含む)は検証エラーになる", () => {
+    expect(() =>
+      flowSchema.parse({
+        name: "flow",
+        steps: [
+          {
+            name: "step1",
+            request: { method: "GET", url: "https://example.com" },
+            // "assert" の typo
+            asssert: { status: 200 },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("request 直下の未知キーは検証エラーになる", () => {
+    expect(() =>
+      flowSchema.parse({
+        name: "flow",
+        steps: [
+          {
+            name: "step1",
+            request: { method: "GET", url: "https://example.com", extraField: "x" },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it("assert 直下の未知キーは検証エラーになる", () => {
+    expect(() =>
+      flowSchema.parse({
+        name: "flow",
+        steps: [
+          {
+            name: "step1",
+            request: { method: "GET", url: "https://example.com" },
+            assert: { status: 200, unexpectedKey: true },
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  // 残りのネスト箇所も一律 strict であることをフロー経由で網羅する(機構は共通のため代表値で確認)
+  it.each([
+    ["ws 直下", { name: "s", ws: { url: "ws://example.com", send: [], extraKey: 1 } }],
+    [
+      "sse オプション直下",
+      {
+        name: "s",
+        request: { method: "GET", url: "https://example.com" },
+        sse: { maxEvents: 1, extraKey: 1 },
+      },
+    ],
+    [
+      "graphql 直下",
+      {
+        name: "s",
+        request: {
+          url: "https://example.com",
+          graphql: { query: "query { ok }", extraKey: 1 },
+        },
+      },
+    ],
+    [
+      "assert.headers の要素",
+      {
+        name: "s",
+        request: { method: "GET", url: "https://example.com" },
+        assert: { headers: [{ name: "content-type", contains: "json", extraKey: 1 }] },
+      },
+    ],
+    [
+      "assert.body の要素",
+      {
+        name: "s",
+        request: { method: "GET", url: "https://example.com" },
+        assert: { body: [{ path: "$.ok", equals: true, extraKey: 1 }] },
+      },
+    ],
+    [
+      "assert.duration 直下",
+      {
+        name: "s",
+        request: { method: "GET", url: "https://example.com" },
+        assert: { duration: { maxMs: 100, extraKey: 1 } },
+      },
+    ],
+    [
+      "assert.events の要素",
+      {
+        name: "s",
+        request: { method: "GET", url: "https://example.com" },
+        sse: {},
+        assert: { events: [{ index: 0, extraKey: 1 }] },
+      },
+    ],
+  ])("%s の未知キーは検証エラーになる", (_label, step) => {
+    expect(() => flowSchema.parse({ name: "flow", steps: [step] })).toThrow();
+  });
+
+  it("headers/query/capture は Record として自由なキーを許可する(strict 化の対象外)", () => {
+    const result = flowSchema.parse({
+      name: "flow",
+      steps: [
+        {
+          name: "step1",
+          request: {
+            method: "GET",
+            url: "https://example.com",
+            headers: { "X-Any-Header": "value" },
+            query: { anyKey: "value" },
+          },
+          capture: { anyVarName: "$.foo" },
+        },
+      ],
+    });
+
+    expect(result.steps[0]?.request?.headers).toEqual({ "X-Any-Header": "value" });
+    expect(result.steps[0]?.capture).toEqual({ anyVarName: "$.foo" });
+  });
+});
+
 describe("environmentSchema", () => {
   it("Record<string,string> を受け入れる", () => {
     const result = environmentSchema.parse({ baseUrl: "http://localhost:3000", token: "abc" });

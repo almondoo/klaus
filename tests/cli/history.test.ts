@@ -168,6 +168,26 @@ describe("historyListCommand / historyShowCommand", () => {
       expect(lines[0]).toBe("step    status");
       expect(lines).toContain("get-me  failed");
     });
+
+    it("テキスト表では数値・配列のセルもそれぞれ文字列化される(formatCell の分岐)", async () => {
+      const originalIsTTY = process.stdout.isTTY;
+      process.stdout.isTTY = true;
+      try {
+        await historyListCommand({ last: 20, fields: "step,durationMs,assertions" }, workDir);
+      } finally {
+        process.stdout.isTTY = originalIsTTY;
+      }
+
+      const output = stdoutSpy.join("");
+      const getMeRow = output
+        .trim()
+        .split("\n")
+        .find((line) => line.startsWith("get-me"));
+      // durationMs(数値)はそのまま文字列化される
+      expect(getMeRow).toContain("5");
+      // assertions(配列)は compact JSON 文字列化される
+      expect(getMeRow).toContain(JSON.stringify(ENTRY_GET_ME.assertions));
+    });
   });
 
   describe("historyShowCommand", () => {

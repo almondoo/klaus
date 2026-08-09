@@ -1,5 +1,5 @@
 import { execSync, spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -44,9 +44,10 @@ async function reserveClosedPort(): Promise<number> {
 function runCli(
   args: string[],
   cwd: string,
+  entryPath: string = cliPath,
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("node", [cliPath, ...args], { cwd });
+    const child = spawn("node", [entryPath, ...args], { cwd });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {
@@ -96,6 +97,21 @@ describe("cli integration", () => {
     expect(parsed.status).toBe("passed");
     expect(parsed.flows).toHaveLength(1);
     expect(parsed.flows[0].steps[0].status).toBe("passed");
+  });
+
+  it("(a2) bin シンボリックリンク経由の起動でも CLI が実行される", async () => {
+    // npm/pnpm のグローバルインストールや node_modules/.bin は dist/cli.js への
+    // シンボリックリンクを経由して起動するため、entry 判定が realpath 差異で
+    // 落ちないこと(何も出力せず exit 0 になる退行の防止)を確認する
+    const binDir = join(workDir, "bin");
+    await mkdir(binDir, { recursive: true });
+    const linkPath = join(binDir, "klaus");
+    await symlink(cliPath, linkPath);
+
+    const result = await runCli(["--version"], workDir, linkPath);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^\d+\.\d+\.\d+$/);
   });
 
   it("(b) パースエラー: exit 2 + 何も実行されない", async () => {
