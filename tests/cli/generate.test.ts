@@ -16,6 +16,8 @@ const invalidSpecPath = join(fixturesDir, "invalid-openapi.yaml");
 const sharedSchemaSpecPath = join(fixturesDir, "shared-schema-openapi.yaml");
 const swagger2SpecPath = join(fixturesDir, "swagger2-openapi.yaml");
 const openapi31SpecPath = join(fixturesDir, "openapi-3.1.yaml");
+const edgeCaseSpecPath = join(fixturesDir, "edge-case-openapi.yaml");
+const emptyOperationIdSpecPath = join(fixturesDir, "empty-operation-id-openapi.yaml");
 
 describe("generateCommand", () => {
   let workDir: string;
@@ -236,6 +238,134 @@ describe("generateCommand", () => {
       expect(output).toContain("generated: api/list-users.yaml");
       expect(output).toContain("generated: api/create-user.yaml");
       expect(output).toContain("generated: api/get-users-id.yaml");
+    } finally {
+      process.stdout.isTTY = isTtySpy;
+    }
+  });
+
+  it("path-item レベルの共有 parameters とオペレーション固有の parameters がマージされ、examples(複数形)の1件目が example 値として使われる", async () => {
+    const exitCode = await generateCommand(edgeCaseSpecPath, { json: true });
+
+    expect(exitCode).toBe(0);
+    const report = readJsonReport();
+    expect(report.errors).toEqual([]);
+    expect(report.generated).toContain("api/get-shared.yaml");
+
+    const content = await readFile(join(workDir, "api", "get-shared.yaml"), "utf-8");
+    const validation = validateFlowYaml(content);
+    expect(validation.valid).toBe(true);
+    if (!validation.valid) return;
+    // sharedQuery は path-item レベルの共有 parameters 由来、ownQuery はオペレーション固有の
+    // parameters 由来(examples の1件目の value)。両方が query にマージされている
+    expect(validation.flow.steps[0]?.request?.query).toEqual({
+      sharedQuery: "shared-value",
+      ownQuery: "own-example-value",
+    });
+  });
+
+  it("kebab-case すると既存 id と衝突する operationId には連番サフィックスが振られる", async () => {
+    const exitCode = await generateCommand(edgeCaseSpecPath, { json: true });
+
+    expect(exitCode).toBe(0);
+    const report = readJsonReport();
+    // getShared -> get-shared、"get shared" も kebab-case で get-shared になるため -2 が振られる
+    expect(report.generated).toContain("api/get-shared.yaml");
+    expect(report.generated).toContain("api/get-shared-2.yaml");
+
+    const content = await readFile(join(workDir, "api", "get-shared-2.yaml"), "utf-8");
+    const validation = validateFlowYaml(content);
+    expect(validation.valid).toBe(true);
+    if (!validation.valid) return;
+    expect(validation.flow.steps[0]?.request?.url).toBe("{{baseUrl}}/shared-alias");
+  });
+
+  it("query パラメータの example が schema.example / schema.default にしかない場合もその値が使われる", async () => {
+    await generateCommand(edgeCaseSpecPath, { json: true });
+
+    const schemaExampleContent = await readFile(
+      join(workDir, "api", "get-schema-example.yaml"),
+      "utf-8",
+    );
+    const schemaExampleValidation = validateFlowYaml(schemaExampleContent);
+    expect(schemaExampleValidation.valid).toBe(true);
+    if (schemaExampleValidation.valid) {
+      expect(schemaExampleValidation.flow.steps[0]?.request?.query).toEqual({
+        filter: "schema-example-value",
+      });
+    }
+
+    const schemaDefaultContent = await readFile(
+      join(workDir, "api", "get-schema-default.yaml"),
+      "utf-8",
+    );
+    const schemaDefaultValidation = validateFlowYaml(schemaDefaultContent);
+    expect(schemaDefaultValidation.valid).toBe(true);
+    if (schemaDefaultValidation.valid) {
+      expect(schemaDefaultValidation.flow.steps[0]?.request?.query).toEqual({
+        filter: "schema-default-value",
+      });
+    }
+  });
+
+  it("query パラメータの example がオブジェクトの場合は JSON 文字列化されて request.query に入る", async () => {
+    await generateCommand(edgeCaseSpecPath, { json: true });
+
+    const content = await readFile(join(workDir, "api", "get-object-query.yaml"), "utf-8");
+    const validation = validateFlowYaml(content);
+    expect(validation.valid).toBe(true);
+    if (!validation.valid) return;
+    expect(validation.flow.steps[0]?.request?.query).toEqual({
+      filters: JSON.stringify({ active: true }),
+    });
+  });
+
+  it("example の無い required プロパティのスキーマが既知の type に一致しない場合、プレースホルダは null になる", async () => {
+    await generateCommand(edgeCaseSpecPath, { json: true });
+
+    const content = await readFile(join(workDir, "api", "create-null-body.yaml"), "utf-8");
+    const validation = validateFlowYaml(content);
+    expect(validation.valid).toBe(true);
+    if (!validation.valid) return;
+    expect(validation.flow.steps[0]?.request?.body).toEqual({ flag: null });
+  });
+
+  it("operationId が空文字列だと生成物が name.min(1) 違反になり、exit 2 かつ errors に報告される", async () => {
+    const exitCode = await generateCommand(emptyOperationIdSpecPath, { json: true });
+
+    expect(exitCode).toBe(2);
+    const report = readJsonReport();
+    expect(report.generated).toEqual([]);
+    expect(report.errors.length).toBe(1);
+    expect(report.errors[0]?.path).toBe("api/get-ping.yaml");
+    expect(report.errors[0]?.message).toContain("name:");
+  });
+
+  it("非 JSON(TTY)モードでは error のテキスト行も出力される", async () => {
+    const isTtySpy = process.stdout.isTTY;
+    process.stdout.isTTY = true;
+    try {
+      const exitCode = await generateCommand(emptyOperationIdSpecPath, { json: false });
+
+      expect(exitCode).toBe(2);
+      const output = stdoutSpy.join("");
+      expect(output).toContain("error: api/get-ping.yaml: name:");
+    } finally {
+      process.stdout.isTTY = isTtySpy;
+    }
+  });
+
+  it("非 JSON(TTY)モードでは既存ファイルの skip もテキスト行として出力される", async () => {
+    await mkdir(join(workDir, "api"), { recursive: true });
+    await writeFile(join(workDir, "api", "list-users.yaml"), "name: keep me\nsteps: []\n", "utf-8");
+
+    const isTtySpy = process.stdout.isTTY;
+    process.stdout.isTTY = true;
+    try {
+      const exitCode = await run({ json: false });
+
+      expect(exitCode).toBe(0);
+      const output = stdoutSpy.join("");
+      expect(output).toContain("skipped (already exists): api/list-users.yaml");
     } finally {
       process.stdout.isTTY = isTtySpy;
     }

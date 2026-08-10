@@ -1,0 +1,13 @@
+openapi: 3.0.3
+info:
+  title: Empty OperationId API
+  version: "1.0.0"
+paths:
+  /ping:
+    get:
+      # operationId が空文字列だと生成される flow.name も空文字列になり、flowSchema の
+      # name.min(1) に違反する(validateFlowYaml が root ではないが空でない path の issue を返す)
+      operationId: ""
+      responses:
+        "200":
+          description: OK

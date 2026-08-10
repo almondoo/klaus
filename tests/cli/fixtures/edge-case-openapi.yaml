@@ -1,0 +1,88 @@
+openapi: 3.0.3
+info:
+  title: Edge Case API
+  version: "1.0.0"
+paths:
+  /shared/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+      - name: sharedQuery
+        in: query
+        schema:
+          type: string
+          example: shared-value
+    get:
+      operationId: getShared
+      parameters:
+        - name: ownQuery
+          in: query
+          examples:
+            sample:
+              value: own-example-value
+      responses:
+        "200":
+          description: OK
+  /shared-alias:
+    get:
+      # kebab-case すると getShared と同じ "get-shared" になり、uniqueId の衝突回避を発火させる
+      operationId: get shared
+      responses:
+        "200":
+          description: OK
+  /schema-example:
+    get:
+      operationId: getSchemaExample
+      parameters:
+        - name: filter
+          in: query
+          schema:
+            type: string
+            example: schema-example-value
+      responses:
+        "200":
+          description: OK
+  /schema-default:
+    get:
+      operationId: getSchemaDefault
+      parameters:
+        - name: filter
+          in: query
+          schema:
+            type: string
+            default: schema-default-value
+      responses:
+        "200":
+          description: OK
+  /object-query:
+    get:
+      operationId: getObjectQuery
+      parameters:
+        - name: filters
+          in: query
+          example:
+            active: true
+      responses:
+        "200":
+          description: OK
+  /null-body:
+    post:
+      operationId: createNullBody
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - flag
+              properties:
+                # type を持たない(かつ properties も持たない)スキーマは buildPlaceholder の
+                # どの既知の type にも一致せず null にフォールバックする
+                flag: {}
+      responses:
+        "201":
+          description: Created

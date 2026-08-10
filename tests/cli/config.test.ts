@@ -85,6 +85,23 @@ describe("loadCliConfig", () => {
 
     await expect(loadCliConfig(root)).rejects.toThrow(ParseError);
   });
+
+  it("klaus.config.yaml と同名のディレクトリが存在する場合、読み込み時のエラーとして ParseError を投げる", async () => {
+    // existsSync はディレクトリでも true を返すため resolveConfigPath はこのパスを候補として
+    // 採用してしまうが、続く readFile がディレクトリ read(EISDIR)で失敗する経路を確認する
+    await mkdir(join(root, "klaus.config.yaml"), { recursive: true });
+
+    await expect(loadCliConfig(root)).rejects.toThrow(ParseError);
+    await expect(loadCliConfig(root)).rejects.toThrow(/failed to read file/);
+  });
+
+  it("どの祖先(.git を含む祖先・ファイルシステムルートのいずれも)にも klaus.config.yaml が無ければ undefined を返す", async () => {
+    // 実在しない絶対パスを cwd として渡す。上方探索は existsSync ベースで、対象ディレクトリ自体の
+    // 実在は問わないため、実ファイルシステムのルートまで安全に辿り着ける
+    // (tests/env.test.ts の resolveEnvironmentPath("/repo", ...) と同じ手法)。
+    const config = await loadCliConfig("/klaus-config-search-boundary-test/nested/dir");
+    expect(config).toBeUndefined();
+  });
 });
 
 describe("applyConfigToRunOptions", () => {

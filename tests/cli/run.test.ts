@@ -641,6 +641,22 @@ describe("runCommand", () => {
     }
   });
 
+  it("--text + --no-mask(mask: false)ではマスキングを介さず直接 stdout に書き出される", async () => {
+    const flowPath = join(workDir, "success-text-nomask.yaml");
+    await writeFile(
+      flowPath,
+      `name: success flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+
+    const exitCode = await runCommand([flowPath], baseOptions({ text: true, mask: false }));
+
+    expect(exitCode).toBe(0);
+    const output = stdoutSpy.join("");
+    expect(output).toContain(`success flow (${flowPath})`);
+    expect(output).toContain("PASS ok");
+  });
+
   it("--json と --text の同時指定は戻り値 1 になり stderr にエラーを出す", async () => {
     const flowPath = join(workDir, "any-json-text.yaml");
     await writeFile(flowPath, VALID_FLOW_YAML, "utf-8");

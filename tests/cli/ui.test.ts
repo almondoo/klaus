@@ -39,6 +39,48 @@ describe("openBrowser", () => {
     expect(output).toContain("could not open a browser automatically");
     expect(output).toContain("--no-open");
   });
+
+  /**
+   * commandOverride を省略すると内部の resolveOpener(プラットフォーム別のデフォルト opener)を通る。
+   * darwin(このテスト実行機の実プラットフォーム)は実在する "open" コマンドを spawn してしまい
+   * 実際にブラウザが開いてしまう(テストの副作用として望ましくない)ため、darwin 以外の
+   * プラットフォーム分岐(win32/その他)のみを process.platform の一時差し替えで検証する。
+   * いずれも対象コマンド(cmd/xdg-open)はこの macOS 上には実在しないため、ENOENT で安全に完結する。
+   */
+  it.each([
+    { platform: "win32", expectedCommand: "cmd" },
+    { platform: "linux", expectedCommand: "xdg-open" },
+  ])(
+    "commandOverride 省略時、process.platform = $platform では $expectedCommand を opener として使う(実在しないため ENOENT で警告に留まる)",
+    async ({ platform }) => {
+      stderrSpy = process.stderr.write;
+      const chunks: string[] = [];
+      let resolveWarning: () => void;
+      const warningEmitted = new Promise<void>((resolve) => {
+        resolveWarning = resolve;
+      });
+      process.stderr.write = ((chunk: string) => {
+        chunks.push(chunk.toString());
+        resolveWarning();
+        return true;
+      }) as typeof process.stderr.write;
+
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, "platform", { value: platform, configurable: true });
+      try {
+        expect(() => {
+          openBrowser("http://localhost:3000");
+        }).not.toThrow();
+
+        await warningEmitted;
+      } finally {
+        Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      }
+
+      const output = chunks.join("");
+      expect(output).toContain("could not open a browser automatically");
+    },
+  );
 });
 
 describe("ui コマンドの --port / --host 既定値", () => {

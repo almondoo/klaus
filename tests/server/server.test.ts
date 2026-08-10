@@ -1,6 +1,7 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
+import { connect } from "node:net";
 import { join } from "node:path";
 import { createParser } from "eventsource-parser";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -54,6 +55,29 @@ function requestWithHeaders(
     });
     req.on("error", reject);
     req.end();
+  });
+}
+
+/**
+ * Host ヘッダーを一切送らないリクエストを送る。node:http.request は Host ヘッダーを常に
+ * 自動付与し、HTTP/1.1 では node:http サーバー自体が Host 欠落を(アプリに届く前に)
+ * 400 として弾んでしまうため、HTTP/1.0(Host 必須ではない)のリクエスト行を生ソケットで直接書く。
+ */
+function requestWithoutHostHeader(port: number, path: string): Promise<{ status: number }> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1", () => {
+      socket.write(`GET ${path} HTTP/1.0\r\nConnection: close\r\n\r\n`);
+    });
+    let data = "";
+    socket.on("data", (chunk) => {
+      data += chunk.toString();
+    });
+    socket.on("end", () => {
+      const statusLine = data.split("\r\n")[0] ?? "";
+      const match = statusLine.match(/^HTTP\/\d\.\d (\d+)/);
+      resolve({ status: match ? Number.parseInt(match[1] as string, 10) : 0 });
+    });
+    socket.on("error", reject);
   });
 }
 
@@ -282,6 +306,11 @@ describe("klaus server", () => {
     expect(res.status).toBe(403);
   });
 
+  it("Host ヘッダー自体が無いと 403(DNS rebinding 対策、値が不一致の場合と同じ拒否)", async () => {
+    const res = await requestWithoutHostHeader(klaus.port, "/api/flows");
+    expect(res.status).toBe(403);
+  });
+
   it("GET /api/flows/detail の path が cwd 外を指す場合は 403(path traversal 拒否)", async () => {
     const res = await fetch(
       `${base}/api/flows/detail?path=${encodeURIComponent("../../etc/passwd")}`,
@@ -290,6 +319,15 @@ describe("klaus server", () => {
       },
     );
     expect(res.status).toBe(403);
+  });
+
+  it("GET /api/flows/detail: loadFlow が ParseError で失敗するフロー(スキーマ検証エラー)は 400 でエラーメッセージが返る", async () => {
+    const res = await fetch(`${base}/api/flows/detail?path=${encodeURIComponent("broken.yaml")}`, {
+      headers: { "X-Klaus-Token": klaus.token },
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error.length).toBeGreaterThan(0);
   });
 
   it("POST /api/runs: path が cwd 外を指す値だと 403(path traversal 拒否)", async () => {

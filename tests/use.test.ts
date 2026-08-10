@@ -233,6 +233,82 @@ steps:
     expect(result.errors[0]?.hint).toBeDefined();
   });
 
+  it("assert のスカラーフィールド(bodyText/duration/eventCount/messageCount/bodySchema)が両方で定義されていると全て conflicts に含まれる", async () => {
+    await writeYaml(
+      "api/ep.yaml",
+      `
+name: ep
+steps:
+  - name: check
+    request:
+      method: GET
+      url: "https://example.com/ep"
+    assert:
+      bodyText:
+        equals: referenced-text
+      duration:
+        maxMs: 1000
+      eventCount:
+        min: 1
+      messageCount:
+        min: 1
+      bodySchema:
+        type: object
+`,
+    );
+    const callerPath = await writeYaml(
+      "flows/f.yaml",
+      `
+name: f
+steps:
+  - name: step1
+    use: ../api/ep.yaml
+    assert:
+      bodyText:
+        equals: caller-text
+      duration:
+        maxMs: 2000
+      eventCount:
+        min: 2
+      messageCount:
+        min: 2
+      bodySchema:
+        type: array
+`,
+    );
+
+    const result = await validateFlowFile(callerPath);
+    expect(result.valid).toBe(false);
+    if (result.valid) return;
+    expect(result.errors).toHaveLength(1);
+    const message = result.errors[0]?.message ?? "";
+    expect(message).toContain("bodyText");
+    expect(message).toContain("duration");
+    expect(message).toContain("eventCount");
+    expect(message).toContain("messageCount");
+    expect(message).toContain("bodySchema");
+  });
+
+  it("参照先ファイルの YAML が不正な場合、use ステップは hint なしの FlowIssue で拒否される", async () => {
+    await writeYaml("api/broken.yaml", "name: broken\nsteps: [\n");
+    const callerPath = await writeYaml(
+      "flows/f.yaml",
+      `
+name: f
+steps:
+  - name: step1
+    use: ../api/broken.yaml
+`,
+    );
+
+    const result = await validateFlowFile(callerPath);
+    expect(result.valid).toBe(false);
+    if (result.valid) return;
+    expect(result.errors[0]?.path).toBe("steps.0.use");
+    expect(result.errors[0]?.message).toContain("step.use target is invalid");
+    expect(result.errors[0]?.hint).toBeUndefined();
+  });
+
   it("参照先が ws ステップの場合は hint なしで拒否される(v1 は HTTP request ステップのみ対応)", async () => {
     await writeYaml(
       "api/ws-ep.yaml",

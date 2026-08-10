@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
@@ -191,6 +191,37 @@ describe("record/replay モード", () => {
     } finally {
       process.stderr.write = originalWrite;
     }
+  });
+
+  it("カセットファイルの中身が壊れている(行が JSON として不正)場合、replayLoadError は RuntimeError でない元エラーを String() 化して包む", async () => {
+    // loadCassetteIndex は各行を JSON.parse するだけで try/catch していないため、
+    // 壊れた行があると RuntimeError ではなく素の SyntaxError が投げられる。
+    // executeFlow(resolveHttpResponse 手前の loadCassetteIndex 呼び出し)側で
+    // 「RuntimeError でなければ String(error) で包み直す」フォールバックを通す
+    await mkdir(cassetteDir, { recursive: true });
+    await writeFile(cassetteFilePath(cassetteDir), "{not valid json\n", "utf-8");
+
+    const flow = flowSchema.parse({
+      name: "broken cassette flow",
+      steps: [
+        {
+          name: "ok",
+          request: { method: "GET", url: "http://127.0.0.1:1/ok" },
+          assert: { status: 200 },
+        },
+      ],
+    });
+
+    const result = await executeFlow(flow, "broken-cassette-flow.yaml", {
+      cwd,
+      history: false,
+      recording: { mode: "replay", dir: cassetteDir },
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.steps[0]?.status).toBe("error");
+    // SyntaxError のメッセージ(JSON.parse の失敗理由)がそのまま含まれる
+    expect(result.steps[0]?.error).toMatch(/JSON|Unexpected/i);
   });
 
   it("SSE ステップ入りフローの record は明示的なエラーになる(黙って実ネットワークへ送らない)", async () => {
