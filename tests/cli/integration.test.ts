@@ -1,9 +1,9 @@
 import { execSync, spawn } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { closeServer, listenEphemeral, reserveClosedPort } from "../support/net.js";
 
 const projectRoot = join(__dirname, "..", "..");
 const cliPath = join(projectRoot, "dist", "cli.js");
@@ -19,18 +19,8 @@ async function startFixtureServer() {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "not found" }));
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
-  return { server, baseUrl: `http://127.0.0.1:${port}` };
-}
-
-/** 確実に接続不能になる(誰も listen していない)ポートを1つ確保する */
-async function reserveClosedPort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
+  const { baseUrl } = await listenEphemeral(server);
+  return { server, baseUrl };
 }
 
 /**
@@ -75,7 +65,7 @@ describe("cli integration", () => {
   }, 60000);
 
   afterAll(async () => {
-    await new Promise<void>((resolve) => fixture.server.close(() => resolve()));
+    await closeServer(fixture.server);
     if (workDir) {
       await rm(workDir, { recursive: true, force: true });
     }

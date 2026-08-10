@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import type { EnvironmentDetail } from "../api/client";
 import { getEnvironmentDetail, updateEnvironment } from "../api/client";
+import { useAsyncResource } from "./useAsyncResource";
 
 export interface UseEnvironmentDetailResult {
   detail: EnvironmentDetail | null;
@@ -18,42 +19,21 @@ export interface UseEnvironmentDetailResult {
  * name が未指定(env セレクタ未選択)の間は取得を行わない。
  */
 export function useEnvironmentDetail(name: string | undefined): UseEnvironmentDetailResult {
-  const [detail, setDetail] = useState<EnvironmentDetail | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const {
+    data: detail,
+    loading,
+    error,
+    reload,
+    setData: setDetail,
+  } = useAsyncResource<EnvironmentDetail | null>(
+    () => getEnvironmentDetail(name ?? ""),
+    null,
+    [name],
+    { initialLoading: false, enabled: name !== undefined, disabledReset: "all" },
+  );
+
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
-
-  // reloadKey は値を参照せず、変化させることで再取得をトリガーするためだけに使う
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey は再実行トリガー専用(値自体は effect 内で未使用)
-  useEffect(() => {
-    if (!name) {
-      setDetail(null);
-      setError(null);
-      setLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-
-    getEnvironmentDetail(name)
-      .then((data) => {
-        if (!cancelled) setDetail(data);
-      })
-      .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [name, reloadKey]);
 
   const save = useCallback(
     async (values: Record<string, string>): Promise<boolean> => {
@@ -71,16 +51,8 @@ export function useEnvironmentDetail(name: string | undefined): UseEnvironmentDe
         setSaving(false);
       }
     },
-    [name],
+    [name, setDetail],
   );
 
-  return {
-    detail,
-    loading,
-    error,
-    saving,
-    saveError,
-    save,
-    reload: () => setReloadKey((k) => k + 1),
-  };
+  return { detail, loading, error, saving, saveError, save, reload };
 }

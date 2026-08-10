@@ -222,6 +222,39 @@ export function captureValues(
   return result;
 }
 
+/**
+ * HistoryEntry の共通フィールド(v/runId/flow/step/startedAt/durationMs/status)を
+ * まとめて組み立てる。executeStep(WS/SSE/HTTP の各分岐)・executeFlow(skipped 分岐)の
+ * 4 箇所で同じフィールド列挙が重複していたため、ここに切り出して呼び出し側は
+ * request/response/events/assertions など分岐固有のフィールドだけを spread で追加する。
+ * assertions は HEAD の JSONL キー順(request/response/events の後)を維持するため、
+ * ここには含めず各呼び出し側で最後に明示的に追加する。
+ */
+function buildHistoryBase(
+  runId: string,
+  flow: string,
+  step: string,
+  startedAt: string,
+  durationMs: number,
+  status: "passed" | "failed" | "skipped",
+): Pick<HistoryEntry, "v" | "runId" | "flow" | "step" | "startedAt" | "durationMs" | "status"> {
+  return { v: 1, runId, flow, step, startedAt, durationMs, status };
+}
+
+/**
+ * StepResult の共通フィールド(name/status/startedAt/durationMs)をまとめて組み立てる。
+ * buildHistoryBase と対になる StepResult 側のヘルパー(同じ4箇所で重複していた)。
+ * assertions は buildHistoryBase と同様、キー順維持のため各呼び出し側で最後に追加する。
+ */
+function buildStepResultBase(
+  name: string,
+  startedAt: string,
+  durationMs: number,
+  status: "passed" | "failed" | "skipped",
+): Pick<StepResult, "name" | "status" | "startedAt" | "durationMs"> {
+  return { name, status, startedAt, durationMs };
+}
+
 type HistorySink = (entry: HistoryEntry) => void | Promise<void>;
 
 /**
@@ -303,10 +336,7 @@ async function executeStep(
       const ok = assertions.every((a) => a.ok);
 
       const stepResult: StepResult = {
-        name: step.name,
-        status: ok ? "passed" : "failed",
-        startedAt,
-        durationMs: wsResult.durationMs,
+        ...buildStepResultBase(step.name, startedAt, wsResult.durationMs, ok ? "passed" : "failed"),
         request: requestSnapshot,
         wsMessages: wsResult.messages,
         assertions,
@@ -317,13 +347,14 @@ async function executeStep(
         result: stepResult,
         captured: {},
         historyEntry: {
-          v: 1,
-          runId,
-          flow: flowName,
-          step: step.name,
-          startedAt,
-          durationMs: wsResult.durationMs,
-          status: ok ? "passed" : "failed",
+          ...buildHistoryBase(
+            runId,
+            flowName,
+            step.name,
+            startedAt,
+            wsResult.durationMs,
+            ok ? "passed" : "failed",
+          ),
           request: requestSnapshot,
           // response 相当として受信メッセージを body に格納する(status は HTTP の 101 Switching Protocols 相当)
           response: {
@@ -378,10 +409,12 @@ async function executeStep(
       };
 
       const stepResult: StepResult = {
-        name: step.name,
-        status: ok ? "passed" : "failed",
-        startedAt,
-        durationMs: sseResult.durationMs,
+        ...buildStepResultBase(
+          step.name,
+          startedAt,
+          sseResult.durationMs,
+          ok ? "passed" : "failed",
+        ),
         request: requestSnapshot,
         response: responseSnapshot,
         events: sseResult.events,
@@ -393,13 +426,14 @@ async function executeStep(
         result: stepResult,
         captured: {},
         historyEntry: {
-          v: 1,
-          runId,
-          flow: flowName,
-          step: step.name,
-          startedAt,
-          durationMs: sseResult.durationMs,
-          status: ok ? "passed" : "failed",
+          ...buildHistoryBase(
+            runId,
+            flowName,
+            step.name,
+            startedAt,
+            sseResult.durationMs,
+            ok ? "passed" : "failed",
+          ),
           request: requestSnapshot,
           response: responseSnapshot,
           // 受信イベントは response.body に二重保持せず events に格納する(StepResult と同じ方針)
@@ -432,10 +466,7 @@ async function executeStep(
     };
 
     const stepResult: StepResult = {
-      name: step.name,
-      status: ok ? "passed" : "failed",
-      startedAt,
-      durationMs: response.durationMs,
+      ...buildStepResultBase(step.name, startedAt, response.durationMs, ok ? "passed" : "failed"),
       request: requestSnapshot,
       response: responseSnapshot,
       assertions,
@@ -445,13 +476,14 @@ async function executeStep(
       result: stepResult,
       captured,
       historyEntry: {
-        v: 1,
-        runId,
-        flow: flowName,
-        step: step.name,
-        startedAt,
-        durationMs: response.durationMs,
-        status: ok ? "passed" : "failed",
+        ...buildHistoryBase(
+          runId,
+          flowName,
+          step.name,
+          startedAt,
+          response.durationMs,
+          ok ? "passed" : "failed",
+        ),
         request: requestSnapshot,
         response: responseSnapshot,
         assertions,
@@ -573,22 +605,13 @@ export async function executeFlow(
     if (skipRest) {
       const skippedStartedAt = new Date().toISOString();
       result = {
-        name: step.name,
-        status: "skipped",
-        startedAt: skippedStartedAt,
-        durationMs: 0,
+        ...buildStepResultBase(step.name, skippedStartedAt, 0, "skipped"),
         assertions: [],
         error: "skipped because a previous step failed",
       };
       // skipped ステップはリクエストを送っていないため request/response を持たない
       historyEntry = {
-        v: 1,
-        runId,
-        flow: flow.name,
-        step: step.name,
-        startedAt: skippedStartedAt,
-        durationMs: 0,
-        status: "skipped",
+        ...buildHistoryBase(runId, flow.name, step.name, skippedStartedAt, 0, "skipped"),
         assertions: [],
       };
     } else {

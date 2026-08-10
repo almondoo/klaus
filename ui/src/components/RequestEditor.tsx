@@ -1,16 +1,12 @@
 import { Play, Plus, Trash2 } from "lucide-react";
-import { useRef, useState } from "react";
+import { useState } from "react";
 import type { SingleRequestRequestBody } from "@/api/client";
+import { LabeledSelect } from "@/components/LabeledSelect";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SelectItem } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { useRowId } from "@/hooks/useRowId";
 import type { KeyValueRow } from "@/utils/request";
 import { parseRequestBody, rowsToRecord } from "@/utils/request";
 
@@ -30,14 +26,19 @@ export interface RequestEditorProps {
  * (実行結果自体は useSingleRequest が App.tsx で保持するため、タブを行き来しても消えない)。
  */
 export function RequestEditor({ onExecute, executing }: RequestEditorProps) {
+  const makeRowId = useRowId();
+
   const [method, setMethod] = useState("GET");
   const [url, setUrl] = useState("");
-  const [headerRows, setHeaderRows] = useState<KeyValueRow[]>([{ id: "h-0", key: "", value: "" }]);
-  const [queryRows, setQueryRows] = useState<KeyValueRow[]>([{ id: "q-0", key: "", value: "" }]);
+  // 初期行の id もリテラルではなく makeRowId から採番する
+  // (リテラル "h-0" とカウンタ 0 始まりの組み合わせだと最初の行追加で id が衝突するため)
+  const [headerRows, setHeaderRows] = useState<KeyValueRow[]>(() => [
+    { id: makeRowId("h"), key: "", value: "" },
+  ]);
+  const [queryRows, setQueryRows] = useState<KeyValueRow[]>(() => [
+    { id: makeRowId("q"), key: "", value: "" },
+  ]);
   const [bodyText, setBodyText] = useState("");
-
-  const nextRowIdRef = useRef(1);
-  const makeRowId = (prefix: "h" | "q") => `${prefix}-${nextRowIdRef.current++}`;
 
   const canExecute = url.trim() !== "" && !executing;
 
@@ -61,23 +62,20 @@ export function RequestEditor({ onExecute, executing }: RequestEditorProps) {
   return (
     <form onSubmit={handleSubmit} className="flex flex-col gap-4">
       <div className="flex gap-2">
-        {/* Select は独自コンポーネントで <label> の暗黙的な関連付けを静的解析で検証できないため、
-            aria-labelledby で明示的に紐付ける(biome の lint/a11y/noLabelWithoutControl 対策) */}
-        <span id="request-editor-method-label" className="sr-only">
-          メソッド
-        </span>
-        <Select value={method} onValueChange={setMethod}>
-          <SelectTrigger className="w-28 font-mono" aria-labelledby="request-editor-method-label">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {METHODS.map((m) => (
-              <SelectItem key={m} value={m}>
-                {m}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <LabeledSelect
+          labelId="request-editor-method-label"
+          label="メソッド"
+          srOnlyLabel
+          triggerClassName="w-28 font-mono"
+          value={method}
+          onValueChange={setMethod}
+        >
+          {METHODS.map((m) => (
+            <SelectItem key={m} value={m}>
+              {m}
+            </SelectItem>
+          ))}
+        </LabeledSelect>
 
         <div className="flex-1">
           <label htmlFor="request-editor-url" className="sr-only">

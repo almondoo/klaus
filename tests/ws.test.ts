@@ -1,9 +1,9 @@
-import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
 import { RuntimeError } from "../src/core/errors.js";
 import { connectWebSocket } from "../src/core/ws.js";
+import { closeServer, reserveClosedPort } from "./support/net.js";
 
 /** 受信したメッセージをそのまま送り返すエコーサーバー */
 function startEchoWsServer() {
@@ -47,7 +47,7 @@ describe("connectWebSocket", () => {
 
   afterEach(async () => {
     if (activeWss) {
-      await new Promise<void>((resolve) => activeWss?.close(() => resolve()));
+      await closeServer(activeWss);
       activeWss = undefined;
     }
   });
@@ -121,11 +121,7 @@ describe("connectWebSocket", () => {
   }, 8000);
 
   it("接続不能なら RuntimeError になる", async () => {
-    // 誰も listen していない、確実に接続不能なポートを1つ確保する
-    const portServer = createServer();
-    await new Promise<void>((resolve) => portServer.listen(0, "127.0.0.1", resolve));
-    const closedPort = (portServer.address() as AddressInfo).port;
-    await new Promise<void>((resolve) => portServer.close(() => resolve()));
+    const closedPort = await reserveClosedPort();
 
     await expect(
       connectWebSocket({ url: `ws://127.0.0.1:${closedPort}`, maxDurationMs: 3000 }),

@@ -5,6 +5,7 @@
  */
 import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
+import { getCookie, setCookie } from "hono/cookie";
 import { loadFlow, ParseError } from "../core/index.js";
 import {
   handleGetEnvironmentDetail,
@@ -48,19 +49,6 @@ function timingSafeTokenEqual(a: string, b: string): boolean {
   return timingSafeEqual(bufA, bufB);
 }
 
-/** `key=value; key2=value2` 形式の Cookie ヘッダーを解析する */
-function parseCookies(header: string): Record<string, string> {
-  const result: Record<string, string> = {};
-  for (const part of header.split(";")) {
-    const eq = part.indexOf("=");
-    if (eq === -1) continue;
-    const key = part.slice(0, eq).trim();
-    const value = part.slice(eq + 1).trim();
-    if (key) result[key] = decodeURIComponent(value);
-  }
-  return result;
-}
-
 export function createApp(options: CreateAppOptions): Hono {
   const { cwd, token, port, staticDir, host = "127.0.0.1" } = options;
   const app = new Hono();
@@ -92,7 +80,7 @@ export function createApp(options: CreateAppOptions): Hono {
   app.use("/", async (c, next) => {
     const tokenParam = c.req.query("token");
     if (tokenParam && timingSafeTokenEqual(tokenParam, token)) {
-      c.header("Set-Cookie", `klaus_token=${token}; Path=/; SameSite=Strict; HttpOnly`);
+      setCookie(c, "klaus_token", token, { path: "/", sameSite: "Strict", httpOnly: true });
     }
     await next();
   });
@@ -110,8 +98,8 @@ export function createApp(options: CreateAppOptions): Hono {
   // Origin ヘッダーが存在する場合は同一オリジンのみ許可する
   app.use("/api/*", async (c, next) => {
     if (c.req.method === "POST" || c.req.method === "PUT" || c.req.method === "DELETE") {
-      const cookies = parseCookies(c.req.header("cookie") ?? "");
-      if (!cookies.klaus_token || !timingSafeTokenEqual(cookies.klaus_token, token)) {
+      const cookieToken = getCookie(c, "klaus_token");
+      if (!cookieToken || !timingSafeTokenEqual(cookieToken, token)) {
         return c.text("Forbidden: CSRF check failed (cookie)", 403);
       }
       const origin = c.req.header("origin");

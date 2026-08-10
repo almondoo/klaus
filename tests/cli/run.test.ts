@@ -1,9 +1,10 @@
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { type RunCommandOptions, runCommand } from "../../src/cli/run.js";
+import { historyFilePath } from "../../src/core/history.js";
+import { closeServer, listenEphemeral, reserveClosedPort } from "../support/net.js";
 
 // loadFlow/runFlows が ParseError 以外を投げた場合、runCommand が catch せずそのまま呼び出し元へ
 // 伝播させる契約(run.ts の JSDoc に明記)をテストするため、実装は素通しのままフックできるようにする。
@@ -46,18 +47,8 @@ async function startFixtureServer() {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "not found" }));
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
-  return { server, baseUrl: `http://127.0.0.1:${port}` };
-}
-
-/** 確実に接続不能になる(誰も listen していない)ポートを1つ確保する */
-async function reserveClosedPort(): Promise<number> {
-  const server = createServer();
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
-  await new Promise<void>((resolve) => server.close(() => resolve()));
-  return port;
+  const { baseUrl } = await listenEphemeral(server);
+  return { server, baseUrl };
 }
 
 describe("runCommand", () => {
@@ -74,7 +65,7 @@ describe("runCommand", () => {
   });
 
   afterAll(async () => {
-    await new Promise<void>((resolve) => fixture.server.close(() => resolve()));
+    await closeServer(fixture.server);
   });
 
   beforeEach(async () => {
@@ -514,11 +505,7 @@ describe("runCommand", () => {
       const exitCode = await runCommand([flowPath], baseOptions({ history: true }));
 
       expect(exitCode).toBe(0);
-      const today = new Date().toISOString().slice(0, 10);
-      const historyContent = await readFile(
-        join(workDir, ".klaus", "history", `${today}.jsonl`),
-        "utf-8",
-      );
+      const historyContent = await readFile(historyFilePath(workDir), "utf-8");
       expect(historyContent).toContain('"flow":"success flow"');
       const report = readJson() as { flows: Array<{ steps: Array<{ historyRef?: unknown }> }> };
       expect(report.flows[0]?.steps[0]?.historyRef).toBeDefined();

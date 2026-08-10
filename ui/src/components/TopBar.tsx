@@ -1,13 +1,8 @@
 import { ArrowLeft, History, Menu, Pencil, Play, Send } from "lucide-react";
 import type { EnvironmentListEntry } from "@/api/client";
+import { LabeledSelect } from "@/components/LabeledSelect";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SelectItem } from "@/components/ui/select";
 
 export interface TopBarProps {
   mode: "request" | "runner" | "history";
@@ -74,27 +69,24 @@ export function TopBar({
       <div className="flex items-center gap-3">
         {mode !== "history" && (
           <>
-            {/* Select は独自コンポーネントで <label> の暗黙的な関連付けを静的解析で検証できないため、
-                aria-labelledby で明示的に紐付ける(biome の lint/a11y/noLabelWithoutControl 対策)。
-                選択中の環境は単発実行モードでも実行に使われるため、runner に限らず常に表示する */}
+            {/* 選択中の環境は単発実行モードでも実行に使われるため、runner に限らず常に表示する */}
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
-              <span id="topbar-env-label">環境</span>
-              <Select
+              <LabeledSelect
+                labelId="topbar-env-label"
+                label="環境"
+                triggerSize="sm"
+                triggerClassName="font-mono"
+                placeholder="(なし)"
                 value={selectedEnv}
                 onValueChange={onEnvChange}
                 disabled={environments.length === 0}
               >
-                <SelectTrigger size="sm" className="font-mono" aria-labelledby="topbar-env-label">
-                  <SelectValue placeholder="(なし)" />
-                </SelectTrigger>
-                <SelectContent>
-                  {environments.map((env) => (
-                    <SelectItem key={env.name} value={env.name}>
-                      {env.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+                {environments.map((env) => (
+                  <SelectItem key={env.name} value={env.name}>
+                    {env.name}
+                  </SelectItem>
+                ))}
+              </LabeledSelect>
               <Button
                 type="button"
                 variant={envEditorOpen ? "secondary" : "ghost"}

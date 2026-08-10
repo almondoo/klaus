@@ -8,7 +8,14 @@ import type { SSEMessage, SSEStreamingApi } from "hono/streaming";
 import { streamSSE } from "hono/streaming";
 import type { FlowResult } from "../../core/index.js";
 import { executeFlow, loadFlow, ParseError } from "../../core/index.js";
-import type { RunRequestBody } from "../types.js";
+import { parseJsonBody } from "../json-body.js";
+import type {
+  RunRequestBody,
+  RunResultPayload,
+  StepResultPayload,
+  StepStartPayload,
+} from "../types.js";
+import { ENV_NAME_PATTERN } from "./environments.js";
 import { resolveWithinCwd } from "./flows.js";
 
 /**
@@ -49,10 +56,8 @@ function createSafeSseWriter(stream: SSEStreamingApi): (message: SSEMessage) => 
 
 /** POST /api/runs: フローを実行し、SSE で step-start/step-result/run-result を配信する */
 export async function handleRunRequest(c: Context, cwd: string): Promise<Response> {
-  let body: RunRequestBody;
-  try {
-    body = (await c.req.json()) as RunRequestBody;
-  } catch {
+  const body = await parseJsonBody<RunRequestBody>(c);
+  if (body === undefined) {
     return c.json({ error: "invalid JSON body" }, 400);
   }
   if (!body || typeof body.path !== "string" || body.path.length === 0) {
@@ -65,7 +70,7 @@ export async function handleRunRequest(c: Context, cwd: string): Promise<Respons
   }
   // env は environments/<name>.yaml に展開されるため、パス区切り・親参照を含む値を拒否する
   // (path と同じく untrusted 入力。cwd 外の *.yaml 読み出し防止)
-  if (body.env !== undefined && !/^[A-Za-z0-9_-]+$/.test(body.env)) {
+  if (body.env !== undefined && !ENV_NAME_PATTERN.test(body.env)) {
     return c.text("Forbidden: invalid env name", 403);
   }
   const requestedPath = body.path;
@@ -82,20 +87,20 @@ export async function handleRunRequest(c: Context, cwd: string): Promise<Respons
         // UI からの実行でも履歴書き込みは既定どおり有効にする(明示しておく)
         history: true,
         onStepStart: async (context) => {
-          await safeWriteSSE({
-            event: "step-start",
-            data: JSON.stringify({ flow: context.flow, file: context.file, step: context.step }),
-          });
+          const payload: StepStartPayload = {
+            flow: context.flow,
+            file: context.file,
+            step: context.step,
+          };
+          await safeWriteSSE({ event: "step-start", data: JSON.stringify(payload) });
         },
         onStepComplete: async (context) => {
-          await safeWriteSSE({
-            event: "step-result",
-            data: JSON.stringify({
-              flow: context.flow,
-              file: context.file,
-              result: context.result,
-            }),
-          });
+          const payload: StepResultPayload = {
+            flow: context.flow,
+            file: context.file,
+            result: context.result,
+          };
+          await safeWriteSSE({ event: "step-result", data: JSON.stringify(payload) });
         },
         // ステップの成否に影響しない警告(履歴書き込み失敗など)はサーバーログ(stderr)へ流す
         onWarning: (message) => {
@@ -125,9 +130,7 @@ export async function handleRunRequest(c: Context, cwd: string): Promise<Respons
       };
     }
 
-    await safeWriteSSE({
-      event: "run-result",
-      data: JSON.stringify({ flow: flowResult }),
-    });
+    const runResultPayload: RunResultPayload = { flow: flowResult };
+    await safeWriteSSE({ event: "run-result", data: JSON.stringify(runResultPayload) });
   });
 }

@@ -8,6 +8,7 @@ import type { HistoryEntry } from "../src/core/history.js";
 import { historyFilePath } from "../src/core/history.js";
 import { executeFlow, runFlows } from "../src/core/runner.js";
 import { flowSchema } from "../src/core/schema.js";
+import { closeServer, listenEphemeral, reserveClosedPort } from "./support/net.js";
 
 async function startAuthServer() {
   const server = createServer((req, res) => {
@@ -42,9 +43,8 @@ async function startAuthServer() {
     });
   });
 
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
-  return { server, baseUrl: `http://127.0.0.1:${port}` };
+  const { baseUrl } = await listenEphemeral(server);
+  return { server, baseUrl };
 }
 
 describe("executeFlow", () => {
@@ -58,7 +58,7 @@ describe("executeFlow", () => {
   });
 
   afterAll(async () => {
-    await new Promise<void>((resolve) => ctx.server.close(() => resolve()));
+    await closeServer(ctx.server);
   });
 
   afterEach(async () => {
@@ -456,16 +456,21 @@ describe("executeFlow", () => {
     expect(warnings[0]).toContain("boom");
   });
 
-  it("SSE ステップを含むフローの通し実行: events が格納され response.body は undefined、capture は無視される", async () => {
-    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
-
+  /** SSE イベントを1件だけ送ってすぐ終了する最小限のテストサーバー(以下2つの it で共通利用) */
+  async function startSseFixtureServer() {
     const sseServer = createServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       res.write('event: message\ndata: {"foo":"bar"}\n\n');
       res.end();
     });
-    await new Promise<void>((resolve) => sseServer.listen(0, "127.0.0.1", resolve));
-    const ssePort = (sseServer.address() as AddressInfo).port;
+    const { port } = await listenEphemeral(sseServer);
+    return { sseServer, ssePort: port };
+  }
+
+  it("SSE ステップを含むフローの通し実行: events が格納され response.body は undefined、capture は無視される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+
+    const { sseServer, ssePort } = await startSseFixtureServer();
 
     try {
       const flow = flowSchema.parse({
@@ -503,20 +508,14 @@ describe("executeFlow", () => {
       expect(result.steps[1]?.status).toBe("error");
       expect(result.steps[1]?.error).toContain("ignored");
     } finally {
-      await new Promise<void>((resolve) => sseServer.close(() => resolve()));
+      await closeServer(sseServer);
     }
   });
 
   it("SSE ステップの履歴エントリには events が記録され、response.body は undefined のままになる", async () => {
     cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
 
-    const sseServer = createServer((_req, res) => {
-      res.writeHead(200, { "Content-Type": "text/event-stream" });
-      res.write('event: message\ndata: {"foo":"bar"}\n\n');
-      res.end();
-    });
-    await new Promise<void>((resolve) => sseServer.listen(0, "127.0.0.1", resolve));
-    const ssePort = (sseServer.address() as AddressInfo).port;
+    const { sseServer, ssePort } = await startSseFixtureServer();
 
     try {
       const flow = flowSchema.parse({
@@ -549,7 +548,7 @@ describe("executeFlow", () => {
       ]);
       expect(captured[0]?.response?.body).toBeUndefined();
     } finally {
-      await new Promise<void>((resolve) => sseServer.close(() => resolve()));
+      await closeServer(sseServer);
     }
   });
 
@@ -599,9 +598,8 @@ describe("executeFlow", () => {
           res.end();
         });
       });
-      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-      const port = (server.address() as AddressInfo).port;
-      return { server, baseUrl: `http://127.0.0.1:${port}` };
+      const { baseUrl } = await listenEphemeral(server);
+      return { server, baseUrl };
     }
 
     it("{{env.X}} で解決した値は request/response/SSE events から *** にマスクされ、4文字未満の値はマスクされない。カスタムシンクにもマスク済みで渡る(一方、実行結果 (FlowResult) はライブ値のまま保持される)", async () => {
@@ -683,7 +681,7 @@ describe("executeFlow", () => {
         const echoLiveAssertion = echoStep?.assertions.find((a) => a.kind === "bodyText.contains");
         expect(echoLiveAssertion?.expected).toBe(SECRET_VALUE);
       } finally {
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await closeServer(server);
       }
     });
 
@@ -732,7 +730,7 @@ describe("executeFlow", () => {
         );
         expect(liveAssertion?.expected).toBe(SECRET_VALUE);
       } finally {
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await closeServer(server);
       }
     });
 
@@ -768,7 +766,7 @@ describe("executeFlow", () => {
         expect(entry.response.body.receivedSecret).toBe("***");
         expect(entry.response.body.body).toEqual({ secret: "***" });
       } finally {
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await closeServer(server);
       }
     });
 
@@ -784,9 +782,7 @@ describe("executeFlow", () => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ url: req.url }));
       });
-      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-      const port = (server.address() as AddressInfo).port;
-      const baseUrl = `http://127.0.0.1:${port}`;
+      const { baseUrl } = await listenEphemeral(server);
 
       try {
         const flow = flowSchema.parse({
@@ -826,7 +822,7 @@ describe("executeFlow", () => {
         expect(responseBody.url).not.toContain(encodeURIComponent(QUERY_SECRET_VALUE));
       } finally {
         delete process.env[QUERY_SECRET_KEY];
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await closeServer(server);
       }
     });
   });
@@ -913,8 +909,7 @@ describe("request.query", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ url: req.url }));
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const port = (server.address() as AddressInfo).port;
+    const { port } = await listenEphemeral(server);
 
     try {
       const flow = flowSchema.parse({
@@ -947,7 +942,7 @@ describe("request.query", () => {
       expect(receivedUrl.searchParams.get("page")).toBe("2");
       expect(receivedUrl.searchParams.get("q")).toBe("hello world");
     } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeServer(server);
     }
   });
 
@@ -958,8 +953,7 @@ describe("request.query", () => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ url: req.url }));
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const port = (server.address() as AddressInfo).port;
+    const { port } = await listenEphemeral(server);
 
     try {
       const flow = flowSchema.parse({
@@ -977,7 +971,7 @@ describe("request.query", () => {
 
       expect(result.steps[0]?.request?.url).toBe(`http://127.0.0.1:${port}/search?page=1`);
     } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeServer(server);
     }
   });
 });
@@ -993,7 +987,7 @@ describe("runFlows", () => {
   });
 
   afterAll(async () => {
-    await new Promise<void>((resolve) => ctx.server.close(() => resolve()));
+    await closeServer(ctx.server);
   });
 
   afterEach(async () => {
@@ -1005,11 +999,7 @@ describe("runFlows", () => {
   it("failed のフローと error のフローが混在すると RunResult.status は error になる(error > failed 優先)", async () => {
     cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
 
-    // 誰も listen していない、確実に接続不能なポートを1つ確保する
-    const portServer = createServer();
-    await new Promise<void>((resolve) => portServer.listen(0, "127.0.0.1", resolve));
-    const closedPort = (portServer.address() as AddressInfo).port;
-    await new Promise<void>((resolve) => portServer.close(() => resolve()));
+    const closedPort = await reserveClosedPort();
 
     const failingFlowPath = join(cwd, "failing.yaml");
     await writeFile(
@@ -1105,7 +1095,7 @@ describe("ws steps", () => {
       expect(entry.response.body).toEqual(["ping"]);
       expect(entry.response.status).toBe(101);
     } finally {
-      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await closeServer(wss);
     }
   });
 
@@ -1149,7 +1139,7 @@ describe("ws steps", () => {
       });
       expect(failingResult.steps[0]?.status).toBe("failed");
     } finally {
-      await new Promise<void>((resolve) => wss.close(() => resolve()));
+      await closeServer(wss);
     }
   });
 });

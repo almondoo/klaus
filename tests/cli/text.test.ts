@@ -9,17 +9,7 @@ import {
   truncate,
 } from "../../src/cli/reporters/text.js";
 import type { RunResult, StepResult } from "../../src/core/index.js";
-
-function buildStep(overrides: Partial<StepResult>): StepResult {
-  return {
-    name: "step",
-    status: "passed",
-    startedAt: new Date().toISOString(),
-    durationMs: 12,
-    assertions: [],
-    ...overrides,
-  };
-}
+import { buildStep } from "./reporters-fixtures.js";
 
 describe("truncate", () => {
   it("上限以下ならそのまま返す", () => {

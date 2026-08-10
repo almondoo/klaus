@@ -1,5 +1,6 @@
-import { access, mkdir, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { fileExists } from "./fs-utils.js";
 
 /**
  * `klaus init` サブコマンドの実装。
@@ -127,15 +128,6 @@ const SCAFFOLD_FILES: ScaffoldFile[] = [
   { relativePath: join("environments", "local.yaml"), content: LOCAL_ENVIRONMENT_YAML },
   { relativePath: "AGENTS.md", content: AGENTS_MD },
 ];
-
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * init コマンド本体。

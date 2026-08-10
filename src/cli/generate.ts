@@ -4,14 +4,16 @@
  * 単発チェックのフロー定義 YAML を1ファイルずつ生成する。生成物はあくまで骨組み(examples/api/*.yaml と
  * 同じ形の最小構成)であり、アサーションの充実や認証ヘッダーの追加は利用者側での加筆を前提とする。
  */
-import { access, mkdir, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, join } from "node:path";
 // @apidevtools/swagger-parser は devDependencies(tsup が dist にバンドルする実行時依存として import。
 // yaml と同じ既定パターン)。$ref を解決した(dereference 済みの)ドキュメントを扱うため、
 // 生成ロジック側では $ref を一切気にしなくてよい。
 import SwaggerParser from "@apidevtools/swagger-parser";
 import { stringify as stringifyYaml } from "yaml";
 import { type FlowIssue, validateFlowYaml } from "../core/index.js";
+import { fileExists, toDisplayPath } from "./fs-utils.js";
+import { isJsonOutputMode } from "./reporters/text.js";
 
 /** generate コマンドのオプション(commander から渡される値を正規化した形) */
 export interface GenerateCommandOptions {
@@ -307,15 +309,6 @@ function buildFlowYaml(operation: GeneratedOperation): string {
   return `${SCHEMA_COMMENT}\n${yamlBody}`;
 }
 
-async function fileExists(path: string): Promise<boolean> {
-  try {
-    await access(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 /** FlowIssue の配列を1行のメッセージにまとめる(validate コマンドの表示と同じ形式を踏襲) */
 function formatFlowIssues(issues: FlowIssue[]): string {
   return issues.map((issue) => `${issue.path || "(root)"}: ${issue.message}`).join("; ");
@@ -376,7 +369,7 @@ export async function generateCommand(
 ): Promise<number> {
   const cwd = process.cwd();
   const outDir = options.outDir ?? DEFAULT_OUT_DIR;
-  const useJson = options.json === true || !process.stdout.isTTY;
+  const useJson = isJsonOutputMode(options.json);
 
   let document: OpenApiDocument;
   try {
@@ -407,7 +400,7 @@ export async function generateCommand(
     const fullPath = isAbsolute(outDir)
       ? join(outDir, `${operation.id}.yaml`)
       : join(cwd, outDir, `${operation.id}.yaml`);
-    const displayPath = relative(cwd, fullPath).split(sep).join("/");
+    const displayPath = toDisplayPath(cwd, fullPath);
 
     if (await fileExists(fullPath)) {
       skipped.push(displayPath);

@@ -9,7 +9,7 @@ import type {
   WsMessage,
 } from "../../core/index.js";
 import { historyDateFromTimestamp } from "../../core/index.js";
-import { truncate } from "./text.js";
+import { summarizeSteps, truncate } from "./text.js";
 
 /**
  * JSON モードの出力ペイロード(v2)。zod スキーマとして定義し、型は z.infer で導出する
@@ -301,10 +301,7 @@ function buildSummary(runResult: RunResult): JsonSummary {
   return {
     flows: runResult.flows.length,
     steps: steps.length,
-    passed: steps.filter((s) => s.status === "passed").length,
-    failed: steps.filter((s) => s.status === "failed").length,
-    error: steps.filter((s) => s.status === "error").length,
-    skipped: steps.filter((s) => s.status === "skipped").length,
+    ...summarizeSteps(steps),
   };
 }
 

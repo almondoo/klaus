@@ -1,13 +1,8 @@
 import { Fragment, useMemo, useState } from "react";
 import type { FlowListEntry } from "@/api/client";
+import { LabeledSelect } from "@/components/LabeledSelect";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { SelectItem } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table,
@@ -36,6 +31,24 @@ const ALL_FLOWS = "__all__";
 // 初回読み込み中に表示するスケルトン行の数(固定長の文字列配列を key に使う。理由は Sidebar.tsx 参照)
 const SKELETON_ROWS = ["row-1", "row-2", "row-3", "row-4", "row-5"];
 
+/**
+ * <tr> はテーブル構造上 <button> にできないため、tabIndex + onKeyDown + aria-expanded で
+ * キーボード操作可能な行開閉トグルとして振る舞わせるための共通 props を返す。
+ */
+function rowToggleProps(expanded: boolean, toggle: () => void) {
+  return {
+    tabIndex: 0,
+    "aria-expanded": expanded,
+    onClick: toggle,
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        toggle();
+      }
+    },
+  };
+}
+
 /** 履歴ブラウザ: 新しい順テーブル(run 単位グルーピング → ステップ詳細ドリルダウン) */
 export function HistoryBrowser({ flows }: HistoryBrowserProps) {
   const [flowFilter, setFlowFilter] = useState("");
@@ -52,26 +65,22 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
   return (
     <div className="flex flex-col gap-3 p-6">
       <div className="flex gap-3">
-        {/* Select は独自コンポーネントで <label> の暗黙的な関連付けを静的解析で検証できないため、
-            aria-labelledby で明示的に紐付ける(biome の lint/a11y/noLabelWithoutControl 対策) */}
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <span id="history-flow-label">フロー</span>
-          <Select
+          <LabeledSelect
+            labelId="history-flow-label"
+            label="フロー"
+            triggerSize="sm"
+            triggerClassName="font-mono"
             value={flowFilter || ALL_FLOWS}
             onValueChange={(v) => setFlowFilter(v === ALL_FLOWS ? "" : v)}
           >
-            <SelectTrigger size="sm" className="font-mono" aria-labelledby="history-flow-label">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL_FLOWS}>すべて</SelectItem>
-              {flowNames.map((name) => (
-                <SelectItem key={name} value={name}>
-                  {name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+            <SelectItem value={ALL_FLOWS}>すべて</SelectItem>
+            {flowNames.map((name) => (
+              <SelectItem key={name} value={name}>
+                {name}
+              </SelectItem>
+            ))}
+          </LabeledSelect>
         </div>
       </div>
 
@@ -112,18 +121,11 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                 const runExpanded = expandedRun === group.runId;
                 return (
                   <Fragment key={group.runId}>
-                    {/* <tr> はテーブル構造上 <button> にできないため、tabIndex + onKeyDown + aria-expanded でキーボード操作性を担保する */}
                     <TableRow
                       className={cn("h-9 cursor-pointer hover:bg-muted", i % 2 === 1 && "bg-muted")}
-                      tabIndex={0}
-                      aria-expanded={runExpanded}
-                      onClick={() => setExpandedRun(runExpanded ? null : group.runId)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          setExpandedRun(runExpanded ? null : group.runId);
-                        }
-                      }}
+                      {...rowToggleProps(runExpanded, () =>
+                        setExpandedRun(runExpanded ? null : group.runId),
+                      )}
                     >
                       <TableCell>
                         <StatusBadge status={group.status} />
@@ -155,15 +157,9 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                           <Fragment key={stepKey}>
                             <TableRow
                               className="h-9 cursor-pointer bg-card hover:bg-muted"
-                              tabIndex={0}
-                              aria-expanded={stepExpanded}
-                              onClick={() => setExpandedStep(stepExpanded ? null : stepKey)}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") {
-                                  e.preventDefault();
-                                  setExpandedStep(stepExpanded ? null : stepKey);
-                                }
-                              }}
+                              {...rowToggleProps(stepExpanded, () =>
+                                setExpandedStep(stepExpanded ? null : stepKey),
+                              )}
                             >
                               <TableCell>
                                 <StatusBadge status={stepStatus} />

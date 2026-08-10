@@ -1,6 +1,5 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
-import type { AddressInfo } from "node:net";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { createParser } from "eventsource-parser";
@@ -10,6 +9,7 @@ import { historyFilePath } from "../../src/core/index.js";
 import { createApp } from "../../src/server/app.js";
 import type { StartServerResult } from "../../src/server/index.js";
 import { startServer } from "../../src/server/index.js";
+import { closeServer, listenEphemeral } from "../support/net.js";
 
 /**
  * 偽の Host ヘッダーを送るためのヘルパー。
@@ -106,9 +106,8 @@ async function startFixtureServer() {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "not found" }));
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
-  return { server, baseUrl: `http://127.0.0.1:${port}` };
+  const { baseUrl } = await listenEphemeral(server);
+  return { server, baseUrl };
 }
 
 /** SSE レスポンスを読み切り、event/data の列を配列で返す */
@@ -284,7 +283,7 @@ describe("klaus server", () => {
 
   afterAll(async () => {
     await klaus.close();
-    await new Promise<void>((resolve) => fixture.server.close(() => resolve()));
+    await closeServer(fixture.server);
     await rm(workDir, { recursive: true, force: true });
   });
 

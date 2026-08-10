@@ -5,17 +5,9 @@
 import { readFile } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { collectYamlFiles, isFlowCandidate, ParseError, parseFlowYaml } from "../../core/index.js";
+import { collectYamlFiles, flowSchema, formatZodError, isFlowCandidate } from "../../core/index.js";
 import type { Step } from "../../core/schema.js";
 import type { FlowListEntry } from "../types.js";
-
-/** ParseError のメッセージから "filePath: " の重複プレフィックスを取り除く(path は別フィールドで返すため) */
-function formatParseErrorReason(error: ParseError): string {
-  if (error.filePath && error.message.startsWith(`${error.filePath}: `)) {
-    return error.message.slice(error.filePath.length + 2);
-  }
-  return error.message;
-}
 
 /**
  * cwd 以下のフロー候補 YAML(最上位に `steps` キーを持つもの)を走査し、パース結果を一覧化する。
@@ -45,12 +37,15 @@ export async function listFlows(cwd: string): Promise<FlowListEntry[]> {
     if (!isFlowCandidate(raw)) continue;
 
     const relPath = relative(cwd, filePath).split(sep).join("/");
-    try {
-      // loadFlow と同じパース経路(parseFlowYaml)を使う。ファイルは既に読み込み済みなので再読込は避ける
-      const flow = parseFlowYaml(content, filePath);
+    // parseFlowYaml と同じスキーマ(flowSchema)で検証するが、YAML パース結果(raw)は
+    // 上で isFlowCandidate 判定用に取得済みのものを再利用し、二重パースを避ける
+    const parsed = flowSchema.safeParse(raw);
+    if (parsed.success) {
+      const flow = parsed.data;
       results.push({ path: relPath, name: flow.name, stepCount: flow.steps.length });
-    } catch (error) {
-      const message = error instanceof ParseError ? formatParseErrorReason(error) : String(error);
+    } else {
+      // parseFlowYaml(core/loader.ts の toParseError)が ZodError から生成するメッセージと同じ形式にする
+      const message = `schema validation failed: ${formatZodError(parsed.error)}`;
       results.push({ path: relPath, error: message });
     }
   }

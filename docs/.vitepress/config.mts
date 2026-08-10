@@ -1,6 +1,11 @@
 import { defineConfig } from "vitepress";
 import llmstxt from "vitepress-plugin-llms";
 
+// 英語(root ロケール)のサイト説明。root の docs/index.md は description frontmatter を
+// 持たないため、locales.root と llmstxt の両方でこの値を明示指定する
+const siteDescriptionEn =
+  "A CLI tool for verifying local HTTP APIs. Request definitions are managed as plain YAML in git, with execution, assertions, and history management.";
+
 // klaus ドキュメントサイトの VitePress 設定。
 // サイトのソースは docs/ のみ(ui/docs/ 配下は GitHub 上の絶対 URL でリンクする)。
 // 多言語化: root = 英語(デフォルト)、/ja/ = 日本語。
@@ -21,16 +26,14 @@ export default defineConfig({
     plugins: [
       // llms.txt / llms-full.txt を生成する(issue #48)。
       // README の推奨に従いエージェント向けドキュメントは英語ユーザー向けページのみを対象にする。
-      // ignoreFiles で ja 側ページ(/ja/**)・非公開の dev ページ(dev/**, en/dev/**)を除外し、
+      // dev/** と en/** は srcExclude で既にビルド対象外(プラグインに到達しない)ため、
+      // ここでは公開サイトに含まれる ja 側ページ(/ja/**)だけを除外すればよい。
       // srcDir (docs/) 基準の相対パスを維持することで正しい URL を保つ
       llmstxt({
-        ignoreFiles: ["ja/**", "dev/**", "en/**"],
+        ignoreFiles: ["ja/**"],
         // GitHub Pages 上の絶対 URL にする(base "/klaus/" は vitepressConfig.base から自動付与される)
         domain: "https://almondoo.github.io",
-        // ルートの docs/index.md (en) は description frontmatter を持たないため、
-        // 明示指定する
-        description:
-          "A CLI tool for verifying local HTTP APIs. Request definitions are managed as plain YAML in git, with execution, assertions, and history management.",
+        description: siteDescriptionEn,
       }),
     ],
   },
@@ -50,8 +53,7 @@ export default defineConfig({
     root: {
       label: "English",
       lang: "en",
-      description:
-        "A CLI tool for verifying local HTTP APIs. Request definitions are managed as plain YAML in git, with execution, assertions, and history management.",
+      description: siteDescriptionEn,
       themeConfig: {
         nav: [{ text: "Guide", link: "/guide/getting-started" }],
 

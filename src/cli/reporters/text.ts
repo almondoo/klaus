@@ -47,6 +47,15 @@ export function truncate(text: string, max: number = MAX_DETAIL_LENGTH): string 
   return `${text.slice(0, max)}...(truncated)`;
 }
 
+/**
+ * --json 明示指定、または非 TTY(パイプ・CI 等)なら JSON 出力モードとみなす。
+ * validate/generate/history の各コマンドで共通の TTY 判定規約(run コマンドは record/replay 絡みで
+ * 別ロジックのため対象外)。
+ */
+export function isJsonOutputMode(json?: boolean): boolean {
+  return json === true || !process.stdout.isTTY;
+}
+
 /** フロー切り替わり時のヘッダー行(フロー名・ファイル) */
 export function formatFlowHeader(flowName: string, file: string): string {
   return `${flowName} (${file})`;
@@ -81,14 +90,29 @@ export function formatStepLine(result: StepResult, useColor: boolean): string {
   return colorize(`  ERROR ${result.name}: ${message}`, "red", useColor);
 }
 
+/** ステップ配列を4状態(passed/failed/error/skipped)で集計した結果 */
+export interface StepsSummary {
+  passed: number;
+  failed: number;
+  error: number;
+  skipped: number;
+}
+
+/** ステップ配列から4状態(passed/failed/error/skipped)の件数を集計する(text/json 両レポーターで共有) */
+export function summarizeSteps(steps: StepResult[]): StepsSummary {
+  return {
+    passed: steps.filter((s) => s.status === "passed").length,
+    failed: steps.filter((s) => s.status === "failed").length,
+    error: steps.filter((s) => s.status === "error").length,
+    skipped: steps.filter((s) => s.status === "skipped").length,
+  };
+}
+
 /** 全フロー完了後のサマリー行 */
 export function formatSummary(runResult: RunResult): string {
   const flowsCount = runResult.flows.length;
   const steps = runResult.flows.flatMap((flow) => flow.steps);
-  const passed = steps.filter((s) => s.status === "passed").length;
-  const failed = steps.filter((s) => s.status === "failed").length;
-  const errored = steps.filter((s) => s.status === "error").length;
-  const skipped = steps.filter((s) => s.status === "skipped").length;
+  const { passed, failed, error: errored, skipped } = summarizeSteps(steps);
 
   const parts = [`${passed} passed`];
   if (failed > 0) parts.push(`${failed} failed`);

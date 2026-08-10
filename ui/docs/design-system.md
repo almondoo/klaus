@@ -9,7 +9,7 @@
 |---|---|---|
 | CSS フレームワーク | Tailwind CSS v4(CSS-first) | `@tailwindcss/vite` プラグイン。`tailwind.config.js` を持たない(後述) |
 | コンポーネント | shadcn/ui(`style: "new-york"`) | `ui/components.json`: `rsc: false` / `tsx: true` / `baseColor: "slate"` / `cssVariables: true` / `prefix: ""` |
-| プリミティブ | Radix UI | `@radix-ui/react-{collapsible,progress,scroll-area,select,separator,slot,tooltip}`(`ui/package.json`) |
+| プリミティブ | Radix UI | `@radix-ui/react-{collapsible,progress,scroll-area,select,slot,tooltip}`(`ui/package.json`) |
 | アイコン | lucide-react | `components.json` の `iconLibrary: "lucide"`。全コンポーネントが `lucide-react` から import |
 | クラス結合 | `cn()`(`ui/src/lib/utils.ts`) | `clsx` + `tailwind-merge` の shadcn 標準パターン。後勝ちで Tailwind クラスをマージ |
 | バリアント定義 | `class-variance-authority`(cva) | `Button` / `Badge` で使用 |

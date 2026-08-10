@@ -2,8 +2,9 @@
  * `klaus validate` サブコマンドの実装。
  * 実行・ネットワークアクセスは一切せず、フロー定義 YAML のスキーマ検証のみを行う。
  */
-import { relative, sep } from "node:path";
 import { discoverFlowCandidates, type FlowIssue, validateFlowFile } from "../core/index.js";
+import { toDisplayPath } from "./fs-utils.js";
+import { isJsonOutputMode } from "./reporters/text.js";
 
 /** validate コマンドのオプション(commander から渡される値を正規化した形) */
 export interface ValidateCommandOptions {
@@ -51,20 +52,21 @@ export async function validateCommand(
       ? files.map((file) => ({ readPath: file, displayPath: file }))
       : (await discoverFlowFiles(cwd)).map((absolutePath) => ({
           readPath: absolutePath,
-          displayPath: relative(cwd, absolutePath).split(sep).join("/"),
+          displayPath: toDisplayPath(cwd, absolutePath),
         }));
 
-  const reports: ValidateFileReport[] = [];
-  for (const target of targets) {
-    const result = await validateFlowFile(target.readPath);
-    reports.push(
-      result.valid
+  // validateFlowFile は読み込み専用(共有の変更可能な状態を持たない)ため並列実行してよい。
+  // Promise.all は入力順を保つので出力(表示順)は元のシーケンシャル実行と変わらない
+  const reports: ValidateFileReport[] = await Promise.all(
+    targets.map(async (target) => {
+      const result = await validateFlowFile(target.readPath);
+      return result.valid
         ? { path: target.displayPath, valid: true, errors: [] }
-        : { path: target.displayPath, valid: false, errors: result.errors },
-    );
-  }
+        : { path: target.displayPath, valid: false, errors: result.errors };
+    }),
+  );
 
-  const useJson = options.json === true || !process.stdout.isTTY;
+  const useJson = isJsonOutputMode(options.json);
   if (useJson) {
     const report: ValidateJsonReport = { version: 1, files: reports };
     process.stdout.write(`${JSON.stringify(report)}\n`);
