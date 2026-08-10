@@ -16,11 +16,13 @@ Takes no options. Generates a minimal starting point in the current directory.
 
 | Generated file | Contents |
 |---|---|
-| `flows/example.yaml` | A single GET to `https://example.com` with a status-200 assertion (with English comments) |
+| `api/example.yaml` | A single GET to `https://example.com` with a status-200 assertion (with English comments) |
 | `environments/local.yaml` | A minimal environment file with a `baseUrl` |
-| `AGENTS.md` | A guide for AI coding agents, compressing the command set, YAML schema essentials, and the exit code table into about 50 lines |
+| `AGENTS.md` | A guide for AI coding agents, compressing the command set, YAML schema essentials, assert operating guidance, exit code table, and the api/flows directory convention into about 50 lines |
 
-Existing files are never overwritten — they're skipped, with a message printed to stdout. Any needed directories are created automatically. Always exits 0. If at least one file was generated, a hint for the next command is printed at the end: `klaus run flows/example.yaml -e local`
+Existing files are never overwritten — they're skipped, with a message printed to stdout. Any needed directories are created automatically. Always exits 0. If at least one file was generated, a hint for the next command is printed at the end: `klaus run api/example.yaml -e local`
+
+`AGENTS.md` also includes notes for agent execution environments: don't launch `klaus ui` casually — run it in the background with explicit timeout management if you do — and OpenAI Codex CLI disables sandbox network access by default, which can make `klaus run`'s HTTP requests fail (set `network_access = true` under `[sandbox_workspace_write]` in `~/.codex/config.toml` to allow them).
 
 ## klaus run
 
@@ -34,15 +36,22 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 |---|---|---|
 | `--env <name>` | Overrides the flow definition's `env:` | the flow's `env:` |
 | `--json` | Forces JSON output even on a TTY | — |
+| `--text` | Forces text output even when not a TTY (cannot be combined with `--json`) | — |
 | `--report junit` | Generates a JUnit XML report | — |
 | `--report-file <path>` | Output path for the report | `klaus-report.xml` |
 | `--no-history` | Disables writing to the history JSONL | history enabled |
+| `--no-mask` | Disables secret masking in stdout output (JSON/text) | masking enabled |
+| `--record <dir>` | Record mode: sends real HTTP requests and saves masked request/response pairs to a cassette in `<dir>` | — |
+| `--replay <dir>` | Replay mode: serves HTTP responses from the cassette in `<dir>` instead of the network (unrecorded requests fail with exit code 3). Cannot be combined with `--record` | — |
+| `--allow-protected` | Allow running against an environment file marked `$protected: true` (otherwise refused with exit code 3) | — |
 
-Passing a value other than `junit` to `--report` prints an error to stderr and exits with 1.
+Passing a value other than `junit` to `--report` prints an error to stderr and exits with 1. Passing `--json` and `--text` together also prints an error to stderr and exits with 1 (nothing is run).
+
+`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` can have their defaults set via `klaus.config.yaml`. See [Default CLI options](config.md).
 
 ## Output Modes
 
-- **Auto-detection**: text if stdout is a TTY, JSON if non-TTY (pipe / agent execution / CI). `--json` forces JSON even on a TTY
+- **Auto-detection**: text if stdout is a TTY, JSON if non-TTY (pipe / agent execution / CI). `--json` forces JSON even when non-TTY, and `--text` forces text even when not a TTY (the two cannot be combined)
 - **Result data goes to stdout; diagnostic messages (parse errors, warnings) go to stderr** — the two are kept separate
 
 ### Text Output (for humans)
@@ -60,7 +69,7 @@ auth flow (/path/to/auth-flow.yaml)
 ```
 
 - Line types: `PASS` / `FAIL` (the failed assertion's expected/actual, with the response body truncated to about 500 characters) / `SKIP` (with a reason) / `ERROR` (the runtime error message)
-- On a TTY, output is ANSI-colored (pass=green / fail=red / skip=yellow). No color when non-TTY or with `--json`
+- On a TTY, output is ANSI-colored (pass=green / fail=red / skip=yellow). No color with `--json`. The `NO_COLOR` (disable colors) and `FORCE_COLOR` (enable colors even off-TTY; `FORCE_COLOR=0` disables) environment variables are also honored, but making `FORCE_COLOR` take effect off-TTY requires `--text` to force text output in the first place (without it, non-TTY defaults to JSON output, which never reaches the colored text path)
 - Control characters found in `FAIL` detail lines and `ERROR` messages (sourced from the response body) are converted to visible escapes (`\n` / `\r` / `\t` / `\xNN`) before being printed. Newlines are included in this so that a response body can't be used to forge a fake `PASS` line or otherwise spoof terminal output
 
 ### JSON Output (for machines)
@@ -110,7 +119,8 @@ full detail (request/response snapshots, assertions, etc).
 ```
 
 - **Truncation**: the `body` of request/response snapshots in the detail (JSON bodies are stringified first), the `data` of SSE `events`, and the `data` of WS `wsMessages` are all truncated to about 500 characters (same rule as the text output). The full untruncated JSON body is only available from history
-- Secret masking and control-character escaping (as done in text output and JUnit reports) are **not** applied here — values are printed as-is. Use the history side (`klaus history show`) or `--report junit` when masked values are needed
+- Secrets sourced from <code v-pre>{{env.X}}</code> are masked by default (same rules as the history JSONL and `--report junit`, URL-encoded forms included (encodeURIComponent, form-urlencoded, and the encodeURI form used to approximate WHATWG URL normalization) as well as JSON-escaped forms; see [Execution History](history.md) for details). Pass `--no-mask` to disable masking for this JSON output only (the history JSONL and JUnit file output are always masked)
+- Control-character escaping (as done in text output and JUnit reports) is **not** applied here — values are printed as-is
 - **historyRef**: when history recording is enabled (i.e. `--no-history` was not passed), every step (including passed ones) gets a `historyRef: { date, runId, step }`. Fetch the full detail with `klaus history show <runId> --step <step>` (see [klaus history](#klaus-history) / [Execution History](history.md)). `historyRef` is omitted entirely when run with `--no-history`
 - For SSE / WebSocket steps, `response.body` is absent; received data instead goes into the `events` (SSE) / `wsMessages` (WS) fields
 
@@ -118,7 +128,7 @@ full detail (request/response snapshots, assertions, etc).
 
 With `--report junit`, an XML file is written to `--report-file` where each flow becomes a `<testsuite>` and each step a `<testcase>`. It can be combined with either the text or JSON stdout output independently. Special characters are XML-escaped.
 
-Secrets sourced from <code v-pre>{{env.X}}</code> are masked using the same rules as history (encoded forms included; see [Execution History](history.md) for details), and control characters sourced from the response body are converted to visible escapes (`\xNN`), except for the tab/LF/CR that XML 1.0 permits. **Neither of these applies to the stdout text / JSON output** (including `--json`) — only artifacts written to disk (the history JSONL and the JUnit report) are covered; live run output returned to the caller is not.
+Secrets sourced from <code v-pre>{{env.X}}</code> are masked using the same rules as history (URL-encoded forms included (encodeURIComponent, form-urlencoded, and the encodeURI form used to approximate WHATWG URL normalization) as well as JSON-escaped forms; see [Execution History](history.md) for details). This masking is also applied by default to the stdout text / JSON output (including `--json`). Pass `--no-mask` to disable masking on the stdout side only — the history JSONL and JUnit file output are always masked and are unaffected by `--no-mask`. Control characters sourced from the response body are converted to visible escapes (`\xNN`), except for the tab/LF/CR that XML 1.0 permits. **This control-character escaping applies only to the JUnit report and text output; it is not applied to the JSON output** (including `--json`).
 
 ## Exit code
 
@@ -200,11 +210,11 @@ klaus schema [-t <target>]
 
 | Option | Description | Default |
 |---|---|---|
-| `-t`, `--target <target>` | The schema to print: `flow` (the flow definition YAML) or `run-report` (the `run --json` output payload) | `flow` |
+| `-t`, `--target <target>` | The schema to print: `flow` (the flow definition YAML), `run-report` (the `run --json` output payload), or `config` ([klaus.config.yaml](config.md)) | `flow` |
 
 Prints the JSON Schema (generated from the zod schema, 2-space pretty-printed) to stdout only — nothing is written to disk.
 
-Both schemas are also published as static files: `https://almondoo.github.io/klaus/schema/flow.schema.json` and `https://almondoo.github.io/klaus/schema/run-report.schema.json`, and bundled in the npm package at `node_modules/@almondoo/klaus/dist/schema/*.json`.
+Each schema is also published as a static file: `https://almondoo.github.io/klaus/schema/flow.schema.json`, `https://almondoo.github.io/klaus/schema/run-report.schema.json`, and `https://almondoo.github.io/klaus/schema/klaus-config.schema.json`, and bundled in the npm package at `node_modules/@almondoo/klaus/dist/schema/*.json`.
 
 The `version` field of the `run --json` payload is a plain literal (currently `2`), independent of the package version. It is bumped only when a change to this schema would break existing consumers (a field is removed, a field's type changes, or its meaning changes) — purely additive changes such as a new optional field do not bump it. Consumers should branch on `version` rather than assume the current shape is permanent.
 
@@ -213,17 +223,35 @@ The `request`/`ws` exclusivity and requiredness, the `body`/`graphql` exclusivit
 ## klaus ui
 
 ```
-klaus ui [-p <n>] [--no-open]
+klaus ui [-p <n>] [-H <host>] [--no-open]
 ```
 
 | Option | Description | Default |
 |---|---|---|
-| `-p`, `--port <n>` | The port to listen on | automatically selects a free port |
+| `-p`, `--port <n>` | The port to listen on | `4884` (fixed) |
+| `-H`, `--host <host>` | The host to listen on | `127.0.0.1` |
 | `--no-open` | Suppresses automatically opening the browser | opens automatically |
 
 On startup, a URL with a token (`http://127.0.0.1:<port>/?token=…`) is printed to stdout and opened in the default browser. Press Ctrl+C to stop it. For the server's features, security model, and HTTP API, see [localhost UI](ui.md).
 
+`--port` / `--host` / `--no-open` can have their defaults set via `klaus.config.yaml`. See [Default CLI options](config.md).
+
 On a shared multi-user host, this token-bearing URL is passed as an argument to the browser-launch command, so it may be readable by other local users via the process list. On such hosts, pass `--no-open` and open the printed URL yourself instead.
+
+### Using it with docker-compose
+
+To use `klaus ui` inside a container, keep the default port (`4884`) so the port mapping can be pinned, and pass `--host 0.0.0.0` so it's reachable from outside the container.
+
+```yaml
+services:
+  klaus:
+    image: your-klaus-image
+    command: ["klaus", "ui", "--host", "0.0.0.0", "--no-open"]
+    ports:
+      - "4884:4884"
+```
+
+`--host 0.0.0.0` makes the server reachable from other hosts on the network (the printed URL still shows `127.0.0.1` as an openable address, with a `(listening on 0.0.0.0)` note appended). Anyone who knows the token-bearing URL can access the UI/API, so be careful about handling it: don't expose it to untrusted networks and don't share the URL.
 
 ## klaus history
 

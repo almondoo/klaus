@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   assertBody,
+  assertBodySchema,
   assertBodyText,
   assertDuration,
   assertEventCount,
@@ -142,6 +143,62 @@ describe("assertBody", () => {
   });
 });
 
+describe("assertBodySchema", () => {
+  it("スキーマに適合すれば ok:true の結果を1件返す", () => {
+    const results = assertBodySchema(
+      { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"] },
+      { ok: true },
+    );
+    expect(results).toHaveLength(1);
+    expect(results[0]?.ok).toBe(true);
+    expect(results[0]?.kind).toBe("bodySchema");
+  });
+
+  it("複数の違反があれば違反ごとに AssertionResult を返し、message に instancePath を含める", () => {
+    const results = assertBodySchema(
+      {
+        type: "object",
+        properties: { name: { type: "string" }, age: { type: "number" } },
+        required: ["name", "age"],
+      },
+      { name: 123, age: "old" },
+    );
+    expect(results.length).toBeGreaterThanOrEqual(2);
+    expect(results.every((r) => r.ok === false)).toBe(true);
+    expect(results.some((r) => r.message.includes("/name"))).toBe(true);
+    expect(results.some((r) => r.message.includes("/age"))).toBe(true);
+  });
+
+  it("不正なスキーマはコンパイルエラーとして ok:false で報告される(例外を投げない)", () => {
+    const results = assertBodySchema({ type: "not-a-real-type" }, { ok: true });
+    expect(results).toHaveLength(1);
+    expect(results[0]?.ok).toBe(false);
+    expect(results[0]?.kind).toBe("bodySchema");
+    expect(results[0]?.message).toMatch(/invalid JSON Schema/);
+  });
+
+  it("body が undefined(WS ステップ等)なら ok:false で報告される", () => {
+    const results = assertBodySchema({ type: "object" }, undefined);
+    expect(results).toHaveLength(1);
+    expect(results[0]?.ok).toBe(false);
+    expect(results[0]?.kind).toBe("bodySchema");
+  });
+
+  it("body が存在するが JSON でない場合、生の文字列がそのまま ajv 検証にかけられる(スキーマが string型なら ok:true)", () => {
+    const results = assertBodySchema({ type: "string" }, "hello world");
+    expect(results).toHaveLength(1);
+    expect(results[0]?.ok).toBe(true);
+    expect(results[0]?.kind).toBe("bodySchema");
+  });
+
+  it("body が存在するが JSON でない場合、生の文字列がそのまま ajv 検証にかけられる(スキーマが object型なら ok:false。undefined 時の強制 ok:false 分岐とは異なる)", () => {
+    const results = assertBodySchema({ type: "object" }, "hello world");
+    expect(results).toHaveLength(1);
+    expect(results[0]?.ok).toBe(false);
+    expect(results[0]?.kind).toBe("bodySchema");
+  });
+});
+
 describe("assertBodyText", () => {
   it("生テキストに対して equals / contains / regex を評価する", () => {
     const results = assertBodyText({ contains: "hello", regex: "^hello" }, "hello world");
@@ -235,6 +292,14 @@ describe("evaluateAssertions", () => {
         durationMs: 1,
       }),
     ).toEqual([]);
+  });
+
+  it("bodySchema を含めて評価される", () => {
+    const results = evaluateAssertions(
+      { status: 200, bodySchema: { type: "object", required: ["ok"] } },
+      { status: 200, headers: {}, body: { ok: true }, bodyText: "", durationMs: 1 },
+    );
+    expect(results.some((r) => r.kind === "bodySchema" && r.ok)).toBe(true);
   });
 
   it("複数種類のアサーションをまとめて評価する", () => {

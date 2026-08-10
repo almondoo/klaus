@@ -3,12 +3,15 @@ import { dirname, join } from "node:path";
 
 /**
  * `klaus init` サブコマンドの実装。
- * カレントディレクトリに flows/environments の最小構成(サンプル1件ずつ)を生成する。
+ * カレントディレクトリに api/environments の最小構成(サンプル1件ずつ)を生成する。
+ * サンプルは単発チェック(1 ステップ)のため、api/=単発チェック・flows/=シナリオという
+ * ディレクトリ規約(examples/README.md 参照)に合わせて api/ 配下に置く。
  * 既存ファイルは上書きしない(スキップして stdout に報告するのみ)。
  */
 
 /** 生成するサンプルのフロー定義。src/core/schema.ts の flowSchema / requestSchema を満たす最小形 */
-const EXAMPLE_FLOW_YAML = `# klaus flow definition file. Has a name and one or more steps
+const EXAMPLE_FLOW_YAML = `# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
+# klaus flow definition file. Has a name and one or more steps
 name: example flow
 steps:
   # 1 step = 1 request. name must be unique within the flow
@@ -20,7 +23,7 @@ steps:
       status: 200 # verify the response HTTP status code
 `;
 
-/** 生成するサンプルの環境ファイル。src/core/schema.ts の environmentSchema(string -> string)を満たす最小形 */
+/** 生成するサンプルの環境ファイル。src/core/schema.ts の environmentSchema(string -> string、予約キー $protected 以外)を満たす最小形 */
 const LOCAL_ENVIRONMENT_YAML = `# Environment variable file referenced by klaus run --env local (all values are strings)
 # Flows can reference these as {{baseUrl}}. Add or change keys freely as needed
 baseUrl: https://example.com
@@ -43,6 +46,7 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
   - \`--json\`: force JSON output even when running on a TTY
   - \`--report junit\` / \`--report-file <path>\`: also write a JUnit XML report
   - \`--no-history\`: disable writing to the execution history (.klaus/history/*.jsonl)
+  - \`--allow-protected\`: required to run against an environment marked \`$protected: true\` (otherwise refused with exit code 3)
 - \`klaus validate [files...]\`: schema-validate flow YAML without executing (with no arguments, discovers and validates all flows; errors carry a fix-example hint)
 - \`klaus schema\`: print the flow YAML's JSON Schema to stdout (useful for editor completion and improving flow generation accuracy)
 - \`klaus history\`: list execution history (\`--flow <name>\` / \`--failed\` / \`--last <n>\` / \`--fields <csv>\`; the default output is a summary without bodies)
@@ -61,6 +65,18 @@ Non-TTY output (pipes, CI, agent execution, etc.) is automatically JSON. Result 
 - capture: extract variables from the response body via JSONPath (e.g. \`{ token: "$.data.token" }\`)
 - \`{{var}}\` resolution order: (1) the step's capture variables, then (2) values from environments. \`{{env.X}}\` references OS environment variable X (a runtime error if undefined)
 
+## Assert operating guidance
+
+- \`assert\` is optional, but without it a request that sends and gets a response passes (exit 0) even on HTTP 500.
+- In an AI verification loop (implement → run → fix → rerun), always write at least \`assert.status\` — exit code 4 only works as a failure signal when an assert exists.
+- Recommended two-phase flow: explore without \`assert\` and observe via \`klaus history show\`, then lock in assertions before entering the verification loop.
+
+## Notes for agent environments
+
+- \`klaus ui\` starts a server and then waits forever; agents should not launch it by default. If you do launch it, run it in the background with an explicit timeout.
+- OpenAI Codex CLI disables sandbox network access by default, which makes \`klaus run\`'s HTTP requests fail. Set \`network_access = true\` under \`[sandbox_workspace_write]\` in \`~/.codex/config.toml\` to allow them.
+- Mark environment files you don't want an agent to run against by default (e.g. production) with \`$protected: true\` in the environment YAML. \`klaus run\` then refuses to run against that environment (exit code 3) unless \`--allow-protected\` is explicitly passed. \`klaus ui\` / the server API never pass this flag, so protected environments are always refused there.
+
 ## Exit codes
 
 | code | meaning |
@@ -77,9 +93,14 @@ Decision rule: all files are parse-validated before execution; if even one fails
 
 Execution results are automatically appended to \`.klaus/history/<YYYY-MM-DD>.jsonl\` (disable with \`--no-history\`). Values referenced via \`{{env.X}}\` etc. are treated as secrets and recorded in history masked as "***".
 
+## Directory convention
+
+klaus doesn't care where flow YAML files live, but by convention: \`api/\` holds single-step checks of one endpoint, and \`flows/\` holds multi-step scenarios that chain requests via \`capture\`. Place new files accordingly.
+
 ## Minimal flow example
 
 \`\`\`yaml
+# api/example.yaml
 name: example flow
 steps:
   - name: get-example
@@ -99,7 +120,7 @@ interface ScaffoldFile {
   content: string;
 }
 
-const EXAMPLE_FLOW_RELATIVE_PATH = join("flows", "example.yaml");
+const EXAMPLE_FLOW_RELATIVE_PATH = join("api", "example.yaml");
 
 const SCAFFOLD_FILES: ScaffoldFile[] = [
   { relativePath: EXAMPLE_FLOW_RELATIVE_PATH, content: EXAMPLE_FLOW_YAML },

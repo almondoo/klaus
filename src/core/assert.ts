@@ -1,3 +1,4 @@
+import Ajv2020 from "ajv/dist/2020";
 import { JSONPath } from "jsonpath-plus";
 import type {
   AssertDef,
@@ -197,6 +198,63 @@ export function assertBody(defs: BodyAssertion[] | undefined, json: unknown): As
     pushMatchResults(results, "body", `body path "${def.path}"`, def, exists, value);
   }
   return results;
+}
+
+/**
+ * body(JSON)に対する JSON Schema(draft 2020-12)ベースのアサーション。
+ * ajv のコンパイル・検証は例外を投げず、失敗時は ok:false の AssertionResult として返す。
+ * 検証失敗時は違反ごとに個別の AssertionResult を返す(複数違反の一括報告)。
+ */
+export function assertBodySchema(
+  schema: Record<string, unknown> | undefined,
+  body: unknown,
+): AssertionResult[] {
+  if (!schema) return [];
+  if (body === undefined) {
+    return [
+      {
+        ok: false,
+        kind: "bodySchema",
+        message: "bodySchema assertion requires a JSON body, but the response has none",
+      },
+    ];
+  }
+
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  let validate: ReturnType<Ajv2020["compile"]>;
+  try {
+    validate = ajv.compile(schema);
+  } catch (err) {
+    return [
+      {
+        ok: false,
+        kind: "bodySchema",
+        message: `invalid JSON Schema: ${err instanceof Error ? err.message : String(err)}`,
+      },
+    ];
+  }
+
+  const ok = validate(body);
+  if (ok) {
+    return [
+      {
+        ok: true,
+        kind: "bodySchema",
+        message: "body matches JSON Schema",
+      },
+    ];
+  }
+
+  return (validate.errors ?? []).map((error) => {
+    const instancePath = error.instancePath || "(root)";
+    return {
+      ok: false,
+      kind: "bodySchema",
+      expected: error.params,
+      actual: error.data,
+      message: `${instancePath} ${error.message ?? "does not match schema"}`,
+    };
+  });
 }
 
 /** 生テキストに対するアサーション */
@@ -411,6 +469,7 @@ export function evaluateAssertions(
     ...assertStatus(def.status, context.status),
     ...assertHeaders(def.headers, context.headers),
     ...assertBody(def.body, context.body),
+    ...assertBodySchema(def.bodySchema, context.body),
     ...assertBodyText(def.bodyText, context.bodyText),
     ...assertDuration(def.duration, context.durationMs),
     ...assertEventCount(def.eventCount, context.events ?? []),

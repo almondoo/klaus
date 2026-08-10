@@ -183,6 +183,10 @@ Specify `ws:` instead of `request` on a step. Each message in `send` is sent seq
 
 All requests / responses / durations are appended one step per line to `.klaus/history/<date>.jsonl` (the schema is versioned via the `v` field). Whether to manage this under git is up to the project (`.gitignore` is recommended when handling responses that contain secrets).
 
+## Agent Skill (Claude Code / Codex)
+
+An Agent Skill document is bundled as `skills/klaus/SKILL.md`. Copy it to `~/.claude/skills/klaus/` (Claude Code) or `~/.agents/skills/klaus/` (Codex) so agents can learn how to write flow YAML and what each exit code means without reading the source. See [Agent Skill (Claude Code / Codex)](https://almondoo.github.io/klaus/en/guide/agent-skill) for setup instructions.
+
 ## Development
 
 ```bash

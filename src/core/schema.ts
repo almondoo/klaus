@@ -198,6 +198,12 @@ export const assertSchema = z.strictObject({
     .array(messageAssertionSchema)
     .optional()
     .describe("List of per-message assertions (WS steps only)."),
+  bodySchema: z
+    .record(z.string(), z.unknown())
+    .optional()
+    .describe(
+      "JSON Schema (draft 2020-12) object to validate the JSON-parsed response body against. Each violation is reported as a separate assertion result.",
+    ),
 });
 export type AssertDef = z.infer<typeof assertSchema>;
 
@@ -332,20 +338,36 @@ export const wsSchema = z
   });
 export type WsDef = z.infer<typeof wsSchema>;
 
-/** ステップ定義。request / ws のいずれか一方を必ず指定する */
+/**
+ * ステップ定義。request / ws / use のいずれか一方を必ず指定する(use は request/ws/sse と排他)。
+ * use を指定した場合、実際の request/sse は loader.ts のロード時に参照先ファイルから取り込まれる
+ * (materialize)ため、スキーマとしては request/ws を要求しない(ロード経路を持たない
+ * validateFlowYaml から見ると、use ステップは request 無しでも valid になる)。
+ */
 export const stepSchema = z
   .strictObject({
     name: z.string().min(1).describe("Step name. Must be non-empty and unique within the flow."),
     request: requestSchema
       .optional()
-      .describe("HTTP request definition. Exactly one of `request` or `ws` must be set."),
+      .describe("HTTP request definition. Exactly one of `request`, `ws`, or `use` must be set."),
     ws: wsSchema
       .optional()
-      .describe("WebSocket connection definition. Exactly one of `request` or `ws` must be set."),
+      .describe(
+        "WebSocket connection definition. Exactly one of `request`, `ws`, or `use` must be set.",
+      ),
     sse: sseOptionsSchema
       .optional()
       .describe(
         "If set, treat the response as a Server-Sent Events stream and collect events using these options.",
+      ),
+    use: z
+      .string()
+      .optional()
+      .describe(
+        "Path (relative to this flow file) to a single-step flow file to reuse as this step's " +
+          "request/sse/assert. Mutually exclusive with `request`, `ws`, and `sse`. `name` and `capture` " +
+          "always come from this step; `assert` (if set here) is merged additively with the referenced " +
+          "step's assert.",
       ),
     capture: z
       .record(z.string(), z.string())
@@ -363,7 +385,15 @@ export const stepSchema = z
         path: ["ws"],
       });
     }
-    if (step.request === undefined && step.ws === undefined) {
+    if (step.use !== undefined) {
+      if (step.request !== undefined || step.ws !== undefined || step.sse !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          message: "step.use is mutually exclusive with request/ws/sse",
+          path: ["use"],
+        });
+      }
+    } else if (step.request === undefined && step.ws === undefined) {
       ctx.addIssue({
         code: "custom",
         message: "either step.request or step.ws is required",
@@ -403,10 +433,82 @@ export const flowSchema = z
   });
 export type Flow = z.infer<typeof flowSchema>;
 
-/** 環境ファイル(environments/<name>.yaml)。値はテンプレート可の文字列 */
+/**
+ * 環境ファイル(environments/<name>.yaml)。値はテンプレート可の文字列。
+ * `$protected` は予約キーで、true の場合はこの環境への run をデフォルトで拒否する
+ * (--allow-protected を明示した場合のみ実行可能。src/core/runner.ts 参照)。
+ * テンプレート変数展開の対象からは除外する(src/core/env.ts の toTemplateVariables)。
+ */
 export const environmentSchema = z
-  .record(z.string(), z.string())
+  .object({
+    $protected: z
+      .boolean()
+      .optional()
+      .describe(
+        "Reserved key. When true, running against this environment is refused unless --allow-protected is passed.",
+      ),
+  })
+  .catchall(z.string())
   .describe(
-    "Environment variables map (variable name to string value). Values may themselves be templates.",
+    "Environment variables map (variable name to string value). Values may themselves be templates. " +
+      "The reserved key $protected (boolean) marks the environment as protected.",
   );
 export type Environment = z.infer<typeof environmentSchema>;
+
+/**
+ * klaus.config.yaml(CLI オプションの既定値ファイル)のスキーマ。
+ * `run` / `ui` サブコマンドのオプションのうち、既定値として設定してよいものだけを列挙する。
+ * 意図的に含めないオプション:
+ * - `--allow-protected`(config で既定 true にするとガードレールが形骸化するため)
+ * - `--record` / `--replay`(実行モードは呼び出しごとに明示させる)
+ * - `--json` / `--text`(出力モードも呼び出しごとに明示させる)
+ * 除外理由の詳細は docs/guide/config.md を参照。
+ */
+export const configSchema = z.strictObject({
+  run: z
+    .strictObject({
+      env: z.string().optional().describe("Default value for `klaus run --env <name>`."),
+      report: z
+        .literal("junit")
+        .optional()
+        .describe('Default value for `klaus run --report <type>`. Only "junit" is supported.'),
+      reportFile: z
+        .string()
+        .optional()
+        .describe("Default value for `klaus run --report-file <path>`."),
+      history: z
+        .boolean()
+        .optional()
+        .describe(
+          "Default for whether execution history is written. Equivalent to omitting --no-history (true) or passing it (false).",
+        ),
+      mask: z
+        .boolean()
+        .optional()
+        .describe(
+          "Default for whether secret masking is applied to stdout. Equivalent to omitting --no-mask (true) or passing it (false).",
+        ),
+    })
+    .optional()
+    .describe("Default values for `klaus run` options."),
+  ui: z
+    .strictObject({
+      port: z
+        .number()
+        .int()
+        .min(1)
+        .max(65535)
+        .optional()
+        .describe("Default value for `klaus ui --port <n>`."),
+      host: z.string().optional().describe("Default value for `klaus ui --host <host>`."),
+      open: z
+        .boolean()
+        .optional()
+        .describe(
+          "Default for whether a browser is opened automatically. Equivalent to omitting --no-open (true) or passing it (false).",
+        ),
+    })
+    .optional()
+    .describe("Default values for `klaus ui` options."),
+});
+export type CliConfig = z.infer<typeof configSchema>;

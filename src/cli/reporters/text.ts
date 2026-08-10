@@ -16,6 +16,23 @@ const ANSI = {
 
 type AnsiColor = keyof typeof ANSI;
 
+/**
+ * NO_COLOR / FORCE_COLOR 環境変数を踏まえて色出力の有無を判定する(判定ロジックはここに集約する)。
+ * 優先順位:
+ * 1. FORCE_COLOR が定義されていれば最優先("0" / "false" は無効化扱い。chalk が使う supports-color の慣習)
+ * 2. NO_COLOR が定義され空文字以外 → false(no-color.org の仕様)
+ * 3. どちらもなければ isTTY に従う
+ */
+export function resolveUseColor(isTTY: boolean): boolean {
+  const forceColor = process.env.FORCE_COLOR;
+  if (forceColor !== undefined) return forceColor !== "0" && forceColor !== "false";
+
+  const noColor = process.env.NO_COLOR;
+  if (noColor !== undefined && noColor !== "") return false;
+
+  return isTTY;
+}
+
 /** useColor が真のときだけ ANSI エスケープで色付けする */
 function colorize(text: string, color: AnsiColor, useColor: boolean): string {
   if (!useColor) return text;

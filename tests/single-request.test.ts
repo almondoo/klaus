@@ -121,6 +121,27 @@ describe("executeSingleRequest", () => {
     expect(result.request?.url).toBe(`${ctx.baseUrl}/ping`);
   });
 
+  it("$protected: true の環境は server/UI 経由(allowProtected を渡さない)では常に拒否される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+    await mkdir(join(cwd, "environments"), { recursive: true });
+    await writeFile(
+      join(cwd, "environments", "prod.yaml"),
+      `$protected: true\nbaseUrl: ${ctx.baseUrl}\n`,
+      "utf-8",
+    );
+
+    const { result } = await executeSingleRequest({
+      request: { method: "GET", url: "{{baseUrl}}/ping" },
+      cwd,
+      envName: "prod",
+      history: false,
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("prod");
+    expect(result.error).toContain("--allow-protected");
+  });
+
   it("request.query が URL にマージされて送信される", async () => {
     cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
 

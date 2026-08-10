@@ -5,7 +5,7 @@
  * (npm パッケージ同梱物の書き出しは schema-gen.ts が別途行う)。
  */
 import { z } from "zod";
-import { flowSchema } from "../core/index.js";
+import { configSchema, flowSchema } from "../core/index.js";
 import { jsonReportSchema } from "./reporters/json.js";
 
 /**
@@ -78,16 +78,28 @@ export function buildRunReportJsonSchema(): Record<string, unknown> {
 }
 
 /**
+ * configSchema(klaus.config.yaml, src/core/schema.ts)の JSON Schema 表現を生成する。
+ * transform を含まないため flow 側と異なり io オプションは不要。
+ */
+export function buildConfigJsonSchema(): Record<string, unknown> {
+  return z.toJSONSchema(configSchema) as Record<string, unknown>;
+}
+
+/**
  * `klaus schema` が出力する対象。
  * "flow": フロー定義 YAML のスキーマ(既定)。"run-report": `klaus run --json` 出力のスキーマ。
- * target を引数で受け取れるようにしてあるだけで、CLI 側(src/cli/index.ts)の
- * サブコマンド引数配線は未実施(統合時対応。詳細は最終報告を参照)。
+ * "config": klaus.config.yaml(CLI オプションの既定値ファイル)のスキーマ。
  */
-export type SchemaTarget = "flow" | "run-report";
+export type SchemaTarget = "flow" | "run-report" | "config";
 
 /** schema コマンド本体。JSON Schema を stdout に書き出すだけ。常に exit 0 */
 export async function schemaCommand(target: SchemaTarget = "flow"): Promise<number> {
-  const json = target === "run-report" ? buildRunReportJsonSchema() : buildFlowJsonSchema();
+  const json =
+    target === "run-report"
+      ? buildRunReportJsonSchema()
+      : target === "config"
+        ? buildConfigJsonSchema()
+        : buildFlowJsonSchema();
   process.stdout.write(`${JSON.stringify(json, null, 2)}\n`);
   return 0;
 }

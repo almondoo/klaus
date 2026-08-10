@@ -3,11 +3,14 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   EnvironmentNotFoundError,
+  isProtectedEnvironment,
   loadEnvironment,
   resolveEnvironmentPath,
   saveEnvironment,
+  toTemplateVariables,
 } from "../src/core/env.js";
 import { ParseError } from "../src/core/errors.js";
+import { environmentSchema } from "../src/core/schema.js";
 
 describe("resolveEnvironmentPath", () => {
   it("cwd 基準で environments/<name>.yaml を解決する", () => {
@@ -188,6 +191,36 @@ describe("loadEnvironment", () => {
   });
 });
 
+describe("isProtectedEnvironment / toTemplateVariables", () => {
+  // Environment は environmentSchema(オブジェクト + catchall)の推論型のため、$protected(boolean)を
+  // 含むオブジェクトリテラルをそのまま渡すと索引シグネチャ(string)との不整合で型検査に失敗する。
+  // 実行時の検証を担う environmentSchema.parse(引数は unknown)経由で Environment 値を作る。
+  it("$protected: true の環境を保護対象と判定する", () => {
+    const environment = environmentSchema.parse({
+      $protected: true,
+      baseUrl: "http://localhost:3000",
+    });
+    expect(isProtectedEnvironment(environment)).toBe(true);
+  });
+
+  it("$protected が無い/false の環境は保護対象と判定しない", () => {
+    expect(
+      isProtectedEnvironment(environmentSchema.parse({ baseUrl: "http://localhost:3000" })),
+    ).toBe(false);
+    expect(isProtectedEnvironment(environmentSchema.parse({ $protected: false }))).toBe(false);
+  });
+
+  it("toTemplateVariables は $protected を変数マップから除外する", () => {
+    const environment = environmentSchema.parse({
+      $protected: true,
+      baseUrl: "http://localhost:3000",
+    });
+    const variables = toTemplateVariables(environment);
+    expect(variables).toEqual({ baseUrl: "http://localhost:3000" });
+    expect(Object.hasOwn(variables, "$protected")).toBe(false);
+  });
+});
+
 describe("saveEnvironment", () => {
   const tmpRoot = join(process.cwd(), "tmp");
   let dir: string;
@@ -238,5 +271,21 @@ describe("saveEnvironment", () => {
     await expect(saveEnvironment(dir, "missing", { baseUrl: "x" })).rejects.toThrow(
       EnvironmentNotFoundError,
     );
+  });
+
+  it("$protected: true の既存ファイルに対して values に $protected が無くても削除しない(保護の黙った解除を防ぐ)", async () => {
+    await writeFile(
+      join(dir, "environments", "protected.yaml"),
+      "$protected: true\nbaseUrl: http://localhost:3000\napiKey: old-secret\n",
+      "utf-8",
+    );
+
+    // UI 編集経路を模し、$protected を含まない values(apiKey は削除、baseUrl は更新)を渡す
+    await saveEnvironment(dir, "protected", { baseUrl: "http://localhost:4000" });
+
+    const content = await readFile(join(dir, "environments", "protected.yaml"), "utf-8");
+    expect(content).toContain("$protected: true");
+    expect(content).toContain("baseUrl: http://localhost:4000");
+    expect(content).not.toContain("apiKey");
   });
 });

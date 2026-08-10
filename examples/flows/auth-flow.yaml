@@ -1,0 +1,20 @@
+# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
+name: 認証フロー
+env: local          # examples/environments/local.yaml を参照(--env で上書き可)
+steps:
+  - name: login
+    use: ../api/login-check.yaml            # api/login-check.yaml の request/assert をそのまま再利用(use: はこのファイル基準の相対パス)
+    capture:
+      token: "$.token"                       # レスポンスの JSONPath をキャプチャ(name/capture は呼び出し側のもの)
+
+  - name: get-me
+    request:
+      method: GET
+      url: "{{baseUrl}}/me"
+      headers:
+        Authorization: "Bearer {{token}}"    # 前ステップのキャプチャを埋め込み
+    assert:
+      status: 200
+      body:
+        - path: "$.email"
+          equals: "{{testEmail}}"            # アサーションの期待値にも埋め込める

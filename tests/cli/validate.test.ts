@@ -91,6 +91,9 @@ steps:
       expect.objectContaining({
         path: "steps.0.request.method",
         hint: "example: method: GET",
+        // method キー自体は存在しないため、親ノード(request)の行にフォールバックして解決される
+        line: 6,
+        column: 7,
       }),
     );
   });
@@ -141,7 +144,8 @@ steps:
       const output = stdoutSpy.join("");
       expect(output).toContain(`OK   ${goodPath}\n`);
       expect(output).toContain(`NG   ${badPath}\n`);
-      expect(output).toContain("- steps.0.request: ");
+      // unrecognized_keys issue は request オブジェクト自身の位置(request: 配下の最初のキー = method の行)を指す
+      expect(output).toContain("- steps.0.request (line 6): ");
       expect(output).toContain('unknown key(s) "bogus" at "steps.0.request"');
       expect(output).toContain("check for a typo, or remove the key(s) if unused");
       // YAML 構文エラーは path が無いため "(root)" にフォールバックし、hint 行は出力されない

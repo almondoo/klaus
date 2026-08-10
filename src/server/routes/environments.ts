@@ -8,6 +8,7 @@ import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Context } from "hono";
+import { toTemplateVariables } from "../../core/env.js";
 import {
   captureValues,
   EnvironmentNotFoundError,
@@ -60,7 +61,11 @@ export async function handleGetEnvironmentDetail(
     return c.json({ error: `environment not found: ${name}` }, 404);
   }
 
-  const values = await loadEnvironmentFile(path);
+  const environment = await loadEnvironmentFile(path);
+  // $protected は予約キー(boolean)であり、UI の環境エディタは全行を編集行として往復させるため、
+  // そのまま返すと無関係なキーの編集でも保存 PUT が values の型検証(string map)で 400 になる。
+  // ここで除外し、UI からは常に不可視・不変(ファイル直接編集専用)にする。
+  const values = toTemplateVariables(environment);
   const detail: EnvironmentDetail = { name, values };
   return c.json(detail);
 }
@@ -93,6 +98,12 @@ export async function handlePutEnvironment(
     if (typeof value !== "string") {
       return c.json({ error: "values must be a map of string to string" }, 400);
     }
+  }
+  // $protected は予約キー。GET では values から除外して返しているため、クライアントが
+  // それを含めて送ってくるのは異常系(壊れたクライアント/意図的な改ざん)のみ。
+  // API 経由での編集は許可せず、ファイル直接編集のみを正としてここで拒否する。
+  if (Object.hasOwn(body.values, "$protected")) {
+    return c.json({ error: "$protected is a reserved key and cannot be edited via this API" }, 400);
   }
 
   try {

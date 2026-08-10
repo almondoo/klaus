@@ -6,6 +6,9 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
+import { ParseError } from "../core/index.js";
+import { applyConfigToRunOptions, applyConfigToUiOptions, loadCliConfig } from "./config.js";
+import { type GenerateCommandOptions, generateCommand } from "./generate.js";
 import {
   DEFAULT_HISTORY_FIELDS,
   type HistoryListOptions,
@@ -67,6 +70,7 @@ program
     "environment name (references environments/<name>.yaml and overrides the flow definition's env)",
   )
   .option("--json", "force JSON output (prints JSON even when running on a TTY)")
+  .option("--text", "force text output (prints text even when stdout is not a TTY)")
   .option("--report <type>", "output an additional report format (only junit is supported for now)")
   .option(
     "--report-file <path>",
@@ -74,6 +78,19 @@ program
     "klaus-report.xml",
   )
   .option("--no-history", "disable writing to the execution history (.klaus/history/*.jsonl)")
+  .option("--no-mask", "disable secret masking in stdout output (JSON/text)")
+  .option(
+    "--record <dir>",
+    "record mode: send real HTTP requests and save request/response pairs (masked) to a cassette in <dir>",
+  )
+  .option(
+    "--replay <dir>",
+    "replay mode: serve HTTP responses from the cassette in <dir> instead of the network (unrecorded requests fail with exit code 3); cannot be combined with --record",
+  )
+  .option(
+    "--allow-protected",
+    "allow running against an environment marked $protected: true (refused with exit code 3 otherwise)",
+  )
   .addHelpText(
     "after",
     `
@@ -81,14 +98,42 @@ Docs: https://almondoo.github.io/klaus/ (English docs are under /en/)
 Exit codes: 0=success / 1=unexpected error / 2=invalid definition / 3=runtime error / 4=assertion failure
 `,
   )
-  .action(async (files: string[], options: RunCommandOptions) => {
-    if (options.report !== undefined && options.report !== "junit") {
-      process.stderr.write(`klaus: unknown report type "${options.report}" (supported: junit)\n`);
-      process.exitCode = 1;
-      return;
-    }
+  .action(async (files: string[], options: RunCommandOptions, command: Command) => {
     try {
-      process.exitCode = await runCommand(files, options);
+      // klaus.config.yaml(存在すれば)を読み込み、CLI で明示指定されなかったオプションにのみ
+      // config 側の既定値を適用する(優先順位: CLI 明示 > config > 組み込み既定)。
+      let config: Awaited<ReturnType<typeof loadCliConfig>>;
+      try {
+        config = await loadCliConfig(process.cwd());
+      } catch (error) {
+        if (error instanceof ParseError) {
+          process.stderr.write(`klaus: parse error: ${error.message}\n`);
+          process.exitCode = 2;
+          return;
+        }
+        throw error;
+      }
+      const mergedOptions = applyConfigToRunOptions(
+        options,
+        {
+          env: command.getOptionValueSource("env"),
+          report: command.getOptionValueSource("report"),
+          reportFile: command.getOptionValueSource("reportFile"),
+          history: command.getOptionValueSource("history"),
+          mask: command.getOptionValueSource("mask"),
+        },
+        config,
+      );
+
+      if (mergedOptions.report !== undefined && mergedOptions.report !== "junit") {
+        process.stderr.write(
+          `klaus: unknown report type "${mergedOptions.report}" (supported: junit)\n`,
+        );
+        process.exitCode = 1;
+        return;
+      }
+
+      process.exitCode = await runCommand(files, mergedOptions);
     } catch (error) {
       // 予期しない例外は exit 1(パースエラー=2 / 実行時エラー=3 / アサーション失敗=4 とは区別する)
       const message = error instanceof Error ? error.message : String(error);
@@ -100,17 +145,48 @@ Exit codes: 0=success / 1=unexpected error / 2=invalid definition / 3=runtime er
 program
   .command("ui")
   .description("launch the localhost Web UI (runner + viewer)")
-  .option("-p, --port <n>", "port to listen on (an ephemeral port is used if omitted)", (value) => {
-    const parsed = Number.parseInt(value, 10);
-    if (Number.isNaN(parsed)) {
-      throw new Error(`invalid --port value: ${value}`);
-    }
-    return parsed;
-  })
+  .option(
+    "-p, --port <n>",
+    "port to listen on",
+    (value) => {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isNaN(parsed)) {
+        throw new Error(`invalid --port value: ${value}`);
+      }
+      return parsed;
+    },
+    4884,
+  )
+  .option(
+    "-H, --host <host>",
+    "host to bind to (use 0.0.0.0 to allow connections from outside, e.g. from a docker-compose host)",
+    "127.0.0.1",
+  )
   .option("--no-open", "do not automatically open a browser on startup")
-  .action(async (options: UiCommandOptions) => {
+  .action(async (options: UiCommandOptions, command: Command) => {
     try {
-      await uiCommand(options);
+      let config: Awaited<ReturnType<typeof loadCliConfig>>;
+      try {
+        config = await loadCliConfig(process.cwd());
+      } catch (error) {
+        if (error instanceof ParseError) {
+          process.stderr.write(`klaus: parse error: ${error.message}\n`);
+          process.exitCode = 2;
+          return;
+        }
+        throw error;
+      }
+      const mergedOptions = applyConfigToUiOptions(
+        options,
+        {
+          port: command.getOptionValueSource("port"),
+          host: command.getOptionValueSource("host"),
+          open: command.getOptionValueSource("open"),
+        },
+        config,
+      );
+
+      await uiCommand(mergedOptions);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`klaus: unexpected error: ${message}\n`);
@@ -139,20 +215,46 @@ program
 program
   .command("schema")
   .description(
-    "print the JSON Schema for the flow definition YAML (or the run --json output) to stdout",
+    "print the JSON Schema for the flow definition YAML (or the run --json output, or klaus.config.yaml) to stdout",
   )
-  .option("-t, --target <target>", 'schema to print: "flow" (default) or "run-report"', "flow")
+  .option(
+    "-t, --target <target>",
+    'schema to print: "flow" (default), "run-report", or "config"',
+    "flow",
+  )
   .action(async (options: { target: string }) => {
-    // target は 2 値のみ許可(不正値は commander では検証されないためここで弾く)
-    if (options.target !== "flow" && options.target !== "run-report") {
+    // target は 3 値のみ許可(不正値は commander では検証されないためここで弾く)
+    if (
+      options.target !== "flow" &&
+      options.target !== "run-report" &&
+      options.target !== "config"
+    ) {
       process.stderr.write(
-        `klaus: invalid --target "${options.target}" (expected "flow" or "run-report")\n`,
+        `klaus: invalid --target "${options.target}" (expected "flow", "run-report", or "config")\n`,
       );
       process.exitCode = 1;
       return;
     }
     try {
       process.exitCode = await schemaCommand(options.target);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`klaus: unexpected error: ${message}\n`);
+      process.exitCode = 1;
+    }
+  });
+
+program
+  .command("generate")
+  .description(
+    "generate skeleton flow definition YAML files (one per operation) from an OpenAPI spec",
+  )
+  .argument("<spec>", "OpenAPI spec file (.yaml/.yml/.json)")
+  .option("--out-dir <dir>", "output directory for generated flow YAML files", "api")
+  .option("--json", "force JSON output (prints JSON even when running on a TTY)")
+  .action(async (spec: string, options: GenerateCommandOptions) => {
+    try {
+      process.exitCode = await generateCommand(spec, options);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`klaus: unexpected error: ${message}\n`);

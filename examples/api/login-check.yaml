@@ -1,0 +1,22 @@
+# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
+name: ログイン API 単体チェック
+# 1 ステップ = API 単体の動作確認という書き方。
+# シナリオ(複数ステップで前後関係を検証)ではなく、1つのエンドポイントが
+# 期待通りに応答するかだけを素早く確かめたいときはこの形で十分。
+env: local          # examples/environments/local.yaml を参照(--env で上書き可)
+steps:
+  - name: login
+    request:
+      method: POST
+      url: "{{baseUrl}}/login"
+      headers:
+        Content-Type: application/json
+      body:
+        email: "{{testEmail}}"
+        # シークレットは環境ファイルに直書きせず OS 環境変数を参照する:
+        #   password: "{{env.TEST_PASSWORD}}"
+    assert:
+      status: 200
+      body:
+        - path: "$.token"
+          exists: true

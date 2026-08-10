@@ -16,11 +16,13 @@ klaus init
 
 | 生成されるファイル | 内容 |
 |---|---|
-| `flows/example.yaml` | `https://example.com` への GET 1件、ステータス200のアサーション(英語コメント付き) |
+| `api/example.yaml` | `https://example.com` への GET 1件、ステータス200のアサーション(英語コメント付き) |
 | `environments/local.yaml` | `baseUrl` を持つ最小の環境ファイル |
-| `AGENTS.md` | AI コーディングエージェント向けに、コマンド体系・YAML スキーマ要点・exit code 表を約50行に圧縮したガイド(英語) |
+| `AGENTS.md` | AI コーディングエージェント向けに、コマンド体系・YAML スキーマ要点・assert の運用指針・exit code 表・api/flows のディレクトリ規約を約50行に圧縮したガイド(英語) |
 
-既存ファイルは上書きせずスキップし、その旨を stdout に表示する。必要なディレクトリは自動で作成される。常に exit 0。1件以上生成した場合、最後に次のコマンドのヒントを表示する: `klaus run flows/example.yaml -e local`
+既存ファイルは上書きせずスキップし、その旨を stdout に表示する。必要なディレクトリは自動で作成される。常に exit 0。1件以上生成した場合、最後に次のコマンドのヒントを表示する: `klaus run api/example.yaml -e local`
+
+`AGENTS.md` には、エージェント実行環境向けの注意点として、`klaus ui` を安易に起動せずバックグラウンド実行+タイムアウト管理を行うべきこと、および OpenAI Codex CLI はサンドボックスのネットワークアクセスが既定で無効なため `klaus run` の HTTP リクエストが失敗する場合があること(`~/.codex/config.toml` の `[sandbox_workspace_write] network_access = true` で解除)も含まれる。
 
 ## klaus run
 
@@ -34,15 +36,22 @@ klaus run <files...> [options]
 |---|---|---|
 | `--env <name>` | フロー定義の `env:` 指定を上書き | フローの `env:` |
 | `--json` | TTY でも JSON 出力を強制 | — |
+| `--text` | 非 TTY でも text 出力を強制(`--json` とは併用不可) | — |
 | `--report junit` | JUnit XML レポートを生成 | — |
 | `--report-file <path>` | レポートの出力先 | `klaus-report.xml` |
 | `--no-history` | 履歴 JSONL への書き込みを無効化 | 履歴有効 |
+| `--no-mask` | stdout(JSON/text 出力とも)へのシークレットマスキングを無効化 | マスク有効 |
+| `--record <dir>` | record モード: 実際に HTTP リクエストを送信し、マスク済みの request/response ペアを `<dir>` のカセットに保存する | — |
+| `--replay <dir>` | replay モード: 実ネットワークではなく `<dir>` のカセットから HTTP レスポンスを再生する(記録外リクエストは exit code 3 で失敗する)。`--record` とは併用不可 | — |
+| `--allow-protected` | `$protected: true` の環境ファイルへの実行を許可する(未指定時は exit code 3 で拒否) | — |
 
-`--report` に `junit` 以外の値を渡すと stderr にエラーを出して exit 1。
+`--report` に `junit` 以外の値を渡すと stderr にエラーを出して exit 1。`--json` と `--text` を同時に指定した場合も同様に stderr にエラーを出して exit 1(何も実行しない)。
+
+`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` は `klaus.config.yaml` で既定値を設定できる。詳細は [CLI オプションの既定値](config.md) を参照。
 
 ## 出力モード
 
-- **自動判定**: stdout が TTY なら text、非 TTY(パイプ / エージェント実行 / CI)なら JSON。`--json` で TTY でも JSON を強制できる
+- **自動判定**: stdout が TTY なら text、非 TTY(パイプ / エージェント実行 / CI)なら JSON。`--json` で非 TTY でも JSON を強制、`--text` で TTY でなくても text を強制できる(両者は同時指定不可)
 - **結果データは stdout、診断メッセージ(パースエラー・警告)は stderr** に分離される
 
 ### text 出力(人間向け)
@@ -60,7 +69,7 @@ klaus run <files...> [options]
 ```
 
 - 行種別: `PASS` / `FAIL`(失敗アサーションの expected/actual、レスポンスボディは約500文字で切り詰め)/ `SKIP`(理由付き)/ `ERROR`(runtime エラーのメッセージ)
-- TTY では ANSI 色付き(pass=緑 / fail=赤 / skip=黄)。非 TTY・`--json` 時は色なし
+- TTY では ANSI 色付き(pass=緑 / fail=赤 / skip=黄)。`--json` 時は常に色なし。環境変数 `NO_COLOR`(色を無効化)/ `FORCE_COLOR`(非 TTY でも色付け。`FORCE_COLOR=0` は無効化)にも対応。ただし非 TTY で `FORCE_COLOR` を効かせるには text 出力自体を強制する `--text` の併用が必要(非 TTY のままでは既定で JSON 出力になり、色付き text 経路に到達しない)
 - `FAIL` の詳細行・`ERROR` のメッセージ(レスポンス本文由来)に含まれる制御文字は、可視エスケープ(`\n` / `\r` / `\t` / `\xNN`)に変換されたうえで出力される。改行も対象にしているのは、レスポンス本文に改行を仕込んで偽の `PASS` 行を捏造したり出力を隠したりする端末出力の偽装を防ぐため
 
 ### JSON 出力(機械向け)
@@ -110,7 +119,8 @@ request/response スナップショットや assertions などの詳細を持つ
 ```
 
 - **truncate**: 詳細に含まれる request/response の `body`(JSON ボディは文字列化してから)、SSE `events` の `data`、WS `wsMessages` の `data` はいずれも約500文字で切り詰める(text 出力の切り詰めと同じ規則)。JSON ボディの構造そのままの全文は履歴側にしか無い
-- シークレットのマスク・制御文字の可視エスケープ(text 出力や JUnit レポートで行われるもの)はここには適用されず、生の値のまま出力される。マスク済みの値が必要な場合は履歴側(`klaus history show`)または `--report junit` を使う
+- <code v-pre>{{env.X}}</code> 由来のシークレットは既定でマスクされる(履歴 JSONL・`--report junit` と同じ規則。URL エンコード形(encodeURIComponent 形・form-urlencoded 形・WHATWG URL 正規化に近い encodeURI 形)・JSON エスケープ形も対象。詳細は [実行履歴](history.md) を参照)。`--no-mask` を付けるとこの JSON 出力のマスクだけを無効化できる(履歴 JSONL・JUnit ファイル出力は常にマスクされる)
+- 制御文字の可視エスケープ(text 出力や JUnit レポートで行われるもの)はここには適用されず、生の値のまま出力される
 - **historyRef**: 履歴記録が有効な実行(`--no-history` を付けていない)では、各ステップ(passed 含む)に `historyRef: { date, runId, step }` が付く。全文が必要な場合は `klaus history show <runId> --step <step>` で取得する(詳細は [klaus history](#klaus-history) / [実行履歴](history.md) を参照)。`--no-history` 実行時は `historyRef` を省略する
 - SSE / WebSocket ステップでは `response.body` は無く、受信データは `events`(SSE)/ `wsMessages`(WS)フィールドに入る
 
@@ -118,7 +128,7 @@ request/response スナップショットや assertions などの詳細を持つ
 
 `--report junit` で flow = `<testsuite>`、step = `<testcase>` の XML を `--report-file` に書き出す。stdout の text / JSON 出力とは独立して併用できる。特殊文字は XML エスケープされる。
 
-<code v-pre>{{env.X}}</code> 由来のシークレットは履歴 JSONL と同じ規則でマスクされ(エンコード形も対象。詳細は [実行履歴](history.md) を参照)、レスポンス本文由来の制御文字は XML 1.0 が許容するタブ・LF・CR 以外を可視エスケープ(`\xNN`)に変換したうえで書き出される。**この2点は stdout の text / JSON 出力(`--json` を含む)には適用されない** — ファイルとして残る成果物(履歴 JSONL・JUnit レポート)のみが対象で、呼び出し元へ返るライブ実行結果は対象外。
+<code v-pre>{{env.X}}</code> 由来のシークレットは履歴 JSONL と同じ規則でマスクされる(URL エンコード形(encodeURIComponent 形・form-urlencoded 形・WHATWG URL 正規化に近い encodeURI 形)・JSON エスケープ形も対象。詳細は [実行履歴](history.md) を参照)。このマスクは stdout の text / JSON 出力(`--json` を含む)にも既定で適用される。`--no-mask` を付けると stdout 側のマスクだけを無効化できる — 履歴 JSONL・JUnit ファイル出力は常にマスクされ、`--no-mask` の影響を受けない。レスポンス本文由来の制御文字は XML 1.0 が許容するタブ・LF・CR 以外を可視エスケープ(`\xNN`)に変換したうえで書き出される。**この制御文字の可視エスケープは JUnit レポートと text 出力にのみ適用され、JSON 出力(`--json` を含む)には適用されない。**
 
 ## exit code
 
@@ -200,11 +210,11 @@ klaus schema [-t <target>]
 
 | オプション | 説明 | デフォルト |
 |---|---|---|
-| `-t`, `--target <target>` | 出力するスキーマ。`flow`(フロー定義 YAML)または `run-report`(`run --json` の出力ペイロード) | `flow` |
+| `-t`, `--target <target>` | 出力するスキーマ。`flow`(フロー定義 YAML)、`run-report`(`run --json` の出力ペイロード)、`config`([klaus.config.yaml](config.md)) | `flow` |
 
 JSON Schema(zod スキーマから生成、2スペース pretty print)を stdout に出力するだけで、ファイルへの書き出しはしない。
 
-両スキーマは静的ファイルとしても公開されている: `https://almondoo.github.io/klaus/schema/flow.schema.json` / `https://almondoo.github.io/klaus/schema/run-report.schema.json`。npm パッケージにも `node_modules/@almondoo/klaus/dist/schema/*.json` として同梱される。
+各スキーマは静的ファイルとしても公開されている: `https://almondoo.github.io/klaus/schema/flow.schema.json` / `https://almondoo.github.io/klaus/schema/run-report.schema.json` / `https://almondoo.github.io/klaus/schema/klaus-config.schema.json`。npm パッケージにも `node_modules/@almondoo/klaus/dist/schema/*.json` として同梱される。
 
 `run --json` の `version` フィールドは package.json のバージョンとは独立した単なるリテラル値(現在は `2`)。このスキーマの後方互換を壊す変更(フィールド削除・型変更・意味変更)をする場合のみ値を上げる(オプショナルフィールドの追加のような後方互換な変更では上げない)。利用側は現在の形が不変とは仮定せず、`version` を見て分岐すること。
 
@@ -213,17 +223,35 @@ JSON Schema(zod スキーマから生成、2スペース pretty print)を stdout
 ## klaus ui
 
 ```
-klaus ui [-p <n>] [--no-open]
+klaus ui [-p <n>] [-H <host>] [--no-open]
 ```
 
 | オプション | 説明 | デフォルト |
 |---|---|---|
-| `-p`, `--port <n>` | 待ち受けポート | 空きポート自動選択 |
+| `-p`, `--port <n>` | 待ち受けポート | `4884`(固定) |
+| `-H`, `--host <host>` | 待ち受けホスト | `127.0.0.1` |
 | `--no-open` | ブラウザの自動起動を抑止 | 自動起動する |
 
 起動するとトークン付き URL(`http://127.0.0.1:<port>/?token=…`)を stdout に表示し、デフォルトブラウザで開く。Ctrl+C で終了。サーバーの機能・セキュリティモデル・HTTP API は [localhost UI](ui.md) を参照。
 
+`--port` / `--host` / `--no-open` は `klaus.config.yaml` で既定値を設定できる。詳細は [CLI オプションの既定値](config.md) を参照。
+
 共有のマルチユーザーホストでは、このトークン付き URL がブラウザ起動コマンドの引数として渡るため、他のローカルユーザーからプロセス一覧経由で読める可能性がある。そうした環境では `--no-open` を指定し、表示された URL を自分で開くこと。
+
+### docker-compose での利用
+
+コンテナ内で `klaus ui` を使う場合、ポートマッピングを固定するために既定ポート(`4884`)をそのまま使い、コンテナ外(ホスト側)から到達できるよう `--host 0.0.0.0` を指定する。
+
+```yaml
+services:
+  klaus:
+    image: your-klaus-image
+    command: ["klaus", "ui", "--host", "0.0.0.0", "--no-open"]
+    ports:
+      - "4884:4884"
+```
+
+`--host 0.0.0.0` を指定するとネットワーク内の他ホストからも接続できるようになる(表示される URL は開ける URL として `127.0.0.1` のまま示され、末尾に `(listening on 0.0.0.0)` の注記が付く)。トークン付き URL を知っていれば誰でも UI・API にアクセスできてしまうため、信頼できないネットワークに公開しない、URL を共有しない、など取り扱いに注意すること。
 
 ## klaus history
 

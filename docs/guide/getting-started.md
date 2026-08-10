@@ -19,10 +19,10 @@ npm install -g @almondoo/klaus
 klaus init
 ```
 
-カレントディレクトリに `flows/example.yaml`(`https://example.com` への GET 1件を検証するサンプルフロー)と `environments/local.yaml`(`baseUrl` を持つ最小の環境ファイル)を生成する。オプションはない。既存ファイルは上書きせずスキップし、必要なディレクトリは自動で作成される。生成後は次のコマンドのヒントが表示される。
+カレントディレクトリに `api/example.yaml`(`https://example.com` への GET 1件を検証するサンプルフロー)と `environments/local.yaml`(`baseUrl` を持つ最小の環境ファイル)を生成する。オプションはない。既存ファイルは上書きせずスキップし、必要なディレクトリは自動で作成される。生成後は次のコマンドのヒントが表示される。
 
 ```bash
-klaus run flows/example.yaml -e local
+klaus run api/example.yaml -e local
 ```
 
 以降のセクションでは、この雛形の中身を理解するためにフロー定義を手動で書く手順を説明する。

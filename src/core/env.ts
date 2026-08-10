@@ -7,6 +7,23 @@ import { loadEnvironmentFile } from "./loader.js";
 import type { Environment } from "./schema.js";
 
 /**
+ * 環境が保護対象($protected: true)かどうかを判定する。
+ */
+export function isProtectedEnvironment(environment: Environment): boolean {
+  return environment.$protected === true;
+}
+
+/**
+ * テンプレート変数展開用に、予約キー $protected を除いた変数マップを返す。
+ * {{$protected}} のような形でテンプレートから参照できてしまわないよう、
+ * runner.ts で TemplateContext を組み立てる直前に必ずこれを通す。
+ */
+export function toTemplateVariables(environment: Environment): Record<string, string> {
+  const { $protected: _protected, ...variables } = environment;
+  return variables;
+}
+
+/**
  * envDir/`${envName}.yaml` の解決結果が envDir の外を指していないか検証する。
  * envName に `..` やセパレータ・絶対パスが含まれる場合に検知する(path traversal 防止。
  * UI サーバー経由では env がリクエストボディ由来の untrusted 入力になるため必須)。
@@ -22,15 +39,19 @@ function assertWithinEnvironmentsDir(envDir: string, resolvedPath: string, envNa
 }
 
 /**
- * 上方探索で cwd(startDir)より上の祖先ディレクトリに見つかった environments/<name>.yaml を
- * 信頼してよいかを検証する。git の safe.directory と同じ考え方で、startDir 自身は利用者が
- * 選んだ作業ディレクトリなので対象外とし、それより上の祖先だけを検査する(共有ホストで
- * 攻撃者が仕込んだ環境ファイルを、リポジトリ外で作業しているだけで黙って読み込んでしまう
- * ことを防ぐため)。信頼できないと判断した場合は ParseError で fail closed に拒否する。
- * ファイルシステムへの追加アクセスを避けるため、existsSync で候補の存在が確認できた
- * 場合にのみ呼び出すこと。
+ * 上方探索で cwd(startDir)より上の祖先ディレクトリに見つかった設定系ファイル
+ * (environments/<name>.yaml、klaus.config.yaml 等)を信頼してよいかを検証する。
+ * git の safe.directory と同じ考え方で、startDir 自身は利用者が選んだ作業ディレクトリなので
+ * 対象外とし、それより上の祖先だけを検査する(共有ホストで攻撃者が仕込んだファイルを、
+ * リポジトリ外で作業しているだけで黙って読み込んでしまうことを防ぐため)。信頼できないと
+ * 判断した場合は ParseError で fail closed に拒否する。ファイルシステムへの追加アクセスを
+ * 避けるため、existsSync で候補の存在が確認できた場合にのみ呼び出すこと。
+ * dir にはファイルの直接の親ディレクトリ(environments/ 等の探索対象ディレクトリ自身、
+ * あるいは klaus.config.yaml のようにディレクトリ直下に置く場合はそのディレクトリ)を渡す。
+ * src/cli/config.ts(klaus.config.yaml の上方探索)からも再利用するため export している
+ * (env 側の呼び出し・挙動・テストは不変)。
  */
-function assertTrustedAncestorEnvironmentsSource(envDir: string, candidatePath: string): void {
+export function assertTrustedAncestorSource(dir: string, candidatePath: string): void {
   // Windows には process.getuid が存在せず、パーミッションビットの意味論も ACL モデルとは
   // 異なるため、POSIX 前提の mode 判定をそのまま適用すると誤判定になる。ここでは検査自体を
   // スキップし、従来どおり採用する。
@@ -38,12 +59,12 @@ function assertTrustedAncestorEnvironmentsSource(envDir: string, candidatePath: 
     return;
   }
 
-  for (const target of [envDir, candidatePath]) {
+  for (const target of [dir, candidatePath]) {
     const stat = statSync(target);
     if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
       throw new ParseError(
-        "refusing to load an environment file from an ancestor directory owned by another user " +
-          "(create the environment file inside your project directory instead)",
+        "refusing to load a file from an ancestor directory owned by another user " +
+          "(create the file inside your project directory instead)",
         candidatePath,
       );
     }
@@ -56,8 +77,8 @@ function assertTrustedAncestorEnvironmentsSource(envDir: string, candidatePath: 
     // ので、攻撃者がファイルを置き換える経路(所有者が攻撃者になる)は塞がっている。
     if ((stat.mode & 0o002) !== 0) {
       throw new ParseError(
-        "refusing to load an environment file from an ancestor directory that is writable by other users " +
-          "(create the environment file inside your project directory instead)",
+        "refusing to load a file from an ancestor directory that is writable by other users " +
+          "(create the file inside your project directory instead)",
         candidatePath,
       );
     }
@@ -75,7 +96,7 @@ function assertTrustedAncestorEnvironmentsSource(envDir: string, candidatePath: 
  *   境界チェックを行う。envName が不正な場合はその時点で ParseError を投げ、以降の探索は
  *   一切行わない(untrusted な envName でファイルシステムを探査させないため)。
  * - cwd より上の祖先ディレクトリで候補が見つかった場合は、そのディレクトリと候補ファイルの
- *   所有者・パーミッションを検査する(assertTrustedAncestorEnvironmentsSource)。信頼できない
+ *   所有者・パーミッションを検査する(assertTrustedAncestorSource)。信頼できない
  *   祖先だった場合は、探索を継続せずその場で ParseError を投げて fail closed に拒否する
  *   (黙って別の候補を探すと、利用者にとって最終的に何が読まれたのか分からなくなるため)。
  *   cwd 自身の environments/ はこの検査の対象外(利用者自身が選んだ作業ディレクトリのため)。
@@ -99,7 +120,7 @@ export function resolveEnvironmentPath(cwd: string, envName: string): string {
 
     if (existsSync(candidatePath)) {
       if (dir !== startDir) {
-        assertTrustedAncestorEnvironmentsSource(envDir, candidatePath);
+        assertTrustedAncestorSource(envDir, candidatePath);
       }
       return candidatePath;
     }
@@ -156,6 +177,9 @@ export class EnvironmentNotFoundError extends KlausError {
  *   既存のコメント・書式を保持する(全置換の stringify は使わない)。
  * - values に無い既存キーは削除し、values にあるキーは追加・更新する。
  * - 対象ファイルが存在しない場合は EnvironmentNotFoundError を投げる(新規作成はスコープ外)。
+ * - 予約キー $protected は削除対象から除外する(呼び出し元(UI 編集エンドポイント)が扱う
+ *   values には含まれない設計のため、既存ファイルに $protected: true があっても
+ *   黙って保護が剥がれることのないよう、ここでも保持する)。
  */
 export async function saveEnvironment(
   cwd: string,
@@ -172,7 +196,7 @@ export async function saveEnvironment(
 
   const existing = (doc.toJSON() as Record<string, unknown> | null) ?? {};
   for (const key of Object.keys(existing)) {
-    if (!(key in values)) {
+    if (!(key in values) && key !== "$protected") {
       doc.delete(key);
     }
   }

@@ -1,10 +1,13 @@
 import { defineConfig } from "tsup";
 
-// サプライチェーン対策として実行時依存(7 パッケージ)を dist にバンドルする。
+// サプライチェーン対策として実行時依存(9 パッケージ)を dist にバンドルする。
 // これにより公開物(npm tarball)が依存パッケージのその後の改変や取り下げの影響を受けなくなる。
-// hono はサブパスインポート(hono/streaming)があるため正規表現で配下を含めてマッチさせる。
+// hono はサブパスインポート(hono/streaming)、ajv はサブパスインポート(ajv/dist/2020)が
+// あるため正規表現で配下を含めてマッチさせる。
 // Node 組み込みモジュールは対象外(esbuild が自動的に external 扱いする)。
 const noExternal: (string | RegExp)[] = [
+  /^@apidevtools\/swagger-parser$/,
+  /^ajv(\/.*)?$/,
   "commander",
   "eventsource-parser",
   /^hono(\/.*)?$/,

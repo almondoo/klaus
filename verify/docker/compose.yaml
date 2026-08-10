@@ -42,6 +42,12 @@ services:
         condition: service_healthy
     networks:
       - verify
+    # klaus ui 用。ホストのブラウザから http://127.0.0.1:4884/?token=... で開く。
+    # コンテナ内の 127.0.0.1 バインドには外から届かないため、コンテナ内では
+    # `klaus ui --host 0.0.0.0`(ポートは既定 4884)で起動すること。
+    # ホスト側も 127.0.0.1 に限定し、LAN へは公開しない。
+    ports:
+      - "127.0.0.1:4884:4884"
     # 常駐させるため sleep で待機し、klaus の実行は docker compose exec で行う。
     # 状態(.klaus/history など)は verify-down まで保持される。
     entrypoint: ["sleep", "infinity"]

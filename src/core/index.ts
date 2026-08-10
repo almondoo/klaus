@@ -16,8 +16,18 @@ export {
   assertStatus,
   evaluateAssertions,
 } from "./assert.js";
+export type { CassetteEntry } from "./cassette.js";
+export {
+  appendCassetteEntry,
+  buildCassetteEntry,
+  cassetteEntryToHttpResponse,
+  cassetteFilePath,
+  findCassetteEntry,
+  loadCassetteIndex,
+} from "./cassette.js";
 export { collectYamlFiles, discoverFlowCandidates, isFlowCandidate } from "./discovery.js";
 export {
+  assertTrustedAncestorSource,
   EnvironmentNotFoundError,
   loadEnvironment,
   resolveEnvironmentPath,
@@ -30,6 +40,7 @@ export {
   expandSecretVariants,
   historyDateFromTimestamp,
   historyFilePath,
+  maskDeep,
   maskString,
 } from "./history.js";
 export type { GetHistoryQuery, HistoryPage } from "./history-query.js";
@@ -63,6 +74,7 @@ export type {
   AssertDef,
   BodyAssertion,
   BodyTextAssertion,
+  CliConfig,
   DurationAssertion,
   Environment,
   EventAssertion,
@@ -82,6 +94,7 @@ export {
   assertSchema,
   bodyAssertionSchema,
   bodyTextAssertionSchema,
+  configSchema,
   durationAssertionSchema,
   environmentSchema,
   eventAssertionSchema,

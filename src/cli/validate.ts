@@ -85,7 +85,8 @@ function printText(reports: ValidateFileReport[]): void {
     }
     process.stdout.write(`NG   ${report.path}\n`);
     for (const error of report.errors) {
-      const location = error.path || "(root)";
+      const path = error.path || "(root)";
+      const location = error.line !== undefined ? `${path} (line ${error.line})` : path;
       process.stdout.write(`  - ${location}: ${error.message}\n`);
       if (error.hint) {
         process.stdout.write(`    ${error.hint}\n`);

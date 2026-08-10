@@ -13,10 +13,13 @@ import { bridgeHonoApp } from "./node-bridge.js";
 
 export interface StartServerOptions {
   // 呼び出し元(CLI の --port 未指定時など)から明示的に undefined が渡ることがあるため許容する
-  /** 未指定ならエフェメラルポート(OS が空きポートを自動選択)を使う */
+  /** 未指定ならエフェメラルポート(OS が空きポートを自動選択)を使う(テストの並列実行が随意ポートに依存しているため、この既定は CLI 層の固定ポート化とは独立に維持する) */
   port?: number | undefined;
   /** フロー探索・実行の基準ディレクトリ。既定は process.cwd() */
   cwd?: string;
+  // 呼び出し元(CLI の --host 未指定時など)から明示的に undefined が渡ることがあるため許容する
+  /** バインド先ホスト。未指定なら "127.0.0.1"(既定、これまでと同じ挙動)。"0.0.0.0" 等を指定するとコンテナ外など他ホストからの接続も受け付けられる */
+  host?: string | undefined;
 }
 
 export interface StartServerResult {
@@ -37,13 +40,14 @@ function resolveStaticDir(): string {
 
 /**
  * klaus UI サーバーを起動する。
- * バインドは 127.0.0.1 固定(設定でも変更不可)。
+ * バインド先は既定で 127.0.0.1(host 未指定時)。host オプションで変更できる(例: "0.0.0.0")。
  * Host ヘッダー検証には実際に割り当てられたポート番号が必要なため、
  * 先に listen してポートを確定させてから Hono アプリを構築する(この間のリクエスト取りこぼしを防ぐため、
  * リクエストハンドラは差し替え可能な間接参照を経由させる)。
  */
 export async function startServer(options: StartServerOptions = {}): Promise<StartServerResult> {
   const cwd = options.cwd ?? process.cwd();
+  const bindHost = options.host ?? "127.0.0.1";
   const token = randomBytes(32).toString("hex");
   const staticDir = resolveStaticDir();
 
@@ -62,7 +66,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(options.port ?? 0, "127.0.0.1", () => resolve());
+    server.listen(options.port ?? 0, bindHost, () => resolve());
   });
 
   const address = server.address();
@@ -71,10 +75,13 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
   }
   const port = address.port;
 
-  const app = createApp({ cwd, token, port, staticDir });
+  const app = createApp({ cwd, token, port, staticDir, host: bindHost });
   currentHandler = bridgeHonoApp(app, `127.0.0.1:${port}`);
 
-  const url = `http://127.0.0.1:${port}/?token=${token}`;
+  // 表示・接続用 URL は 127.0.0.1 を使う("0.0.0.0" はワイルドカードバインドであり、
+  // ブラウザで直接開けない環境があるため。ローカルからは 0.0.0.0 バインドでも 127.0.0.1 で到達できる)
+  const displayHost = bindHost === "0.0.0.0" ? "127.0.0.1" : bindHost;
+  const url = `http://${displayHost}:${port}/?token=${token}`;
 
   const close = async (): Promise<void> => {
     for (const socket of sockets) socket.destroy();

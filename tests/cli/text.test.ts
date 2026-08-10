@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   createTextReporter,
   formatFlowHeader,
   formatStepLine,
   formatSummary,
   MAX_DETAIL_LENGTH,
+  resolveUseColor,
   truncate,
 } from "../../src/cli/reporters/text.js";
 import type { RunResult, StepResult } from "../../src/core/index.js";
@@ -31,6 +32,49 @@ describe("truncate", () => {
     expect(result.length).toBeLessThan(long.length);
     expect(result.startsWith("a".repeat(MAX_DETAIL_LENGTH))).toBe(true);
     expect(result).toContain("...(truncated)");
+  });
+});
+
+describe("resolveUseColor", () => {
+  const originalNoColor = process.env.NO_COLOR;
+  const originalForceColor = process.env.FORCE_COLOR;
+
+  afterEach(() => {
+    if (originalNoColor === undefined) delete process.env.NO_COLOR;
+    else process.env.NO_COLOR = originalNoColor;
+    if (originalForceColor === undefined) delete process.env.FORCE_COLOR;
+    else process.env.FORCE_COLOR = originalForceColor;
+  });
+
+  it("NO_COLOR=1 のときは TTY でも false になる", () => {
+    process.env.NO_COLOR = "1";
+    delete process.env.FORCE_COLOR;
+    expect(resolveUseColor(true)).toBe(false);
+  });
+
+  it("FORCE_COLOR=1 のときは非 TTY でも true になる(最優先)", () => {
+    process.env.FORCE_COLOR = "1";
+    delete process.env.NO_COLOR;
+    expect(resolveUseColor(false)).toBe(true);
+  });
+
+  it("FORCE_COLOR=0 のときは false になる(chalk の慣習に合わせ無効化扱い)", () => {
+    process.env.FORCE_COLOR = "0";
+    delete process.env.NO_COLOR;
+    expect(resolveUseColor(true)).toBe(false);
+  });
+
+  it("FORCE_COLOR=false のときも false になる(supports-color の慣習)", () => {
+    process.env.FORCE_COLOR = "false";
+    delete process.env.NO_COLOR;
+    expect(resolveUseColor(true)).toBe(false);
+  });
+
+  it("どちらも未定義のときは isTTY にそのまま従う", () => {
+    delete process.env.NO_COLOR;
+    delete process.env.FORCE_COLOR;
+    expect(resolveUseColor(true)).toBe(true);
+    expect(resolveUseColor(false)).toBe(false);
   });
 });
 

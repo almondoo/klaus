@@ -50,12 +50,20 @@ export function maskString(value: string, secrets: readonly string[]): string {
 }
 
 /**
- * シークレットの生値に加えて、URL に埋め込まれる際に取り得るエンコード済み表現を展開する。
+ * シークレットの生値に加えて、URL に埋め込まれる際に取り得るエンコード済み表現、および
+ * JSON 文字列化された際のエスケープ済み表現を展開する。
  * runner.ts の applyQueryParams は URLSearchParams.set() 経由で値をパーセントエンコードして
  * URL 文字列を組み立てるため、生の値のままでは maskString の単純な部分一致が失敗し、
  * エンコード形(例: "aB%2Bcd%2FEf%3D%3D")が履歴に平文で残ってしまう。
  * form-urlencoded な body など、URL 以外のフィールドでも同様のズレが起こり得るため、
  * url だけを特別扱いせず、マスク対象の全フィールドに対してこの展開済みリストを使う。
+ * さらに、request.url テンプレートへ secret を直接埋め込んだ場合(applyQueryParams を経由しない)は、
+ * undici の送信処理が行う WHATWG URL 正規化により、生の値とも encodeURIComponent 形とも異なる形
+ * (例: 生の値 `p@ss w/rd+key=99!` に対して `p@ss%20w/rd+key=99!`)に変換されてレスポンスへエコーされ
+ * うるため、その正規化と近い挙動を持つ encodeURI(secret) 形も加える(生の値と異なる場合のみ)。
+ * 同様に、assert.ts の等価アサーション失敗メッセージは JSON.stringify(expected) の結果を
+ * そのまま文字列へ埋め込むため、`"` や `\`、制御文字を含むシークレットはエスケープされた形
+ * (例: 生の値 `ab"cd` に対して `ab\"cd`)でメッセージ中に現れる。この形も生の値と異なる場合のみ加える。
  *
  * MIN_SECRET_LENGTH の判定は生の値に対してのみ行う(生の値が4文字未満ならどのバリアントも対象外)。
  * 返すリストは長い順に並べる。短いバリアントを先に置換すると、それが長いバリアントの一部を
@@ -71,12 +79,27 @@ export function expandSecretVariants(secrets: readonly string[]): string[] {
     // encodeURIComponent とは空白(%20 と +)や !'()~ の扱いが異なるため、
     // 実際に applyQueryParams が URL を組むのと同じ実装から導出して取りこぼしを防ぐ。
     variants.add(new URLSearchParams({ v: secret }).toString().slice(2));
+    // WHATWG URL 正規化形。encodeURI は encodeURIComponent よりエンコード対象が狭く
+    // (; , / ? : @ & = + $ - _ . ! ~ * ' ( ) # は非エンコード)、URL に直書きされた secret が
+    // 送信時に undici の URL 正規化を経て取る形に近い。生の値と同じ場合は Set が重複を無視する。
+    variants.add(encodeURI(secret));
+    // JSON.stringify によるエスケープ形。ダブルクォート・バックスラッシュ・制御文字を
+    // 含むシークレットのみ生の値と異なる文字列になるため、その場合だけ加える。
+    const jsonEscaped = JSON.stringify(secret).slice(1, -1);
+    if (jsonEscaped !== secret) {
+      variants.add(jsonEscaped);
+    }
   }
   return Array.from(variants).sort((a, b) => b.length - a.length);
 }
 
-/** 任意の JSON 互換値を深く辿り、文字列だけを秘密情報マスクする(template.ts の renderDeep と対称の実装) */
-function maskDeep<T>(value: T, secrets: readonly string[]): T {
+/**
+ * 任意の JSON 互換値を深く辿り、文字列だけを秘密情報マスクする(template.ts の renderDeep と対称の実装)。
+ * 元の value は変異させず、新しいオブジェクト・配列を組み立てて返す(プリミティブはそのまま)。
+ * maskHistoryEntry 内部の各フィールドマスクに加えて、CLI の JSON 経路(src/cli/run.ts)が
+ * formatJson でシリアライズする前に RunResult 全体をマスクする用途でも使うため公開する。
+ */
+export function maskDeep<T>(value: T, secrets: readonly string[]): T {
   if (typeof value === "string") {
     return maskString(value, secrets) as unknown as T;
   }
