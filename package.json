@@ -47,7 +47,8 @@
     "dist/ui/**/*.js",
     "dist/ui/**/*.woff",
     "dist/ui/**/*.woff2",
-    "THIRD_PARTY_LICENSES.md"
+    "THIRD_PARTY_LICENSES.md",
+    "skills/**/*.md"
   ],
   "publishConfig": {
     "access": "public"
@@ -71,10 +72,12 @@
     "zod": "^4"
   },
   "devDependencies": {
+    "@apidevtools/swagger-parser": "^12.1.0",
     "@biomejs/biome": "^2",
     "@types/node": "^26.1.1",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "^4.1.10",
+    "ajv": "^8.20.0",
     "commander": "^15",
     "eventsource-parser": "^3.1.0",
     "hono": "^4.13.1",
@@ -83,6 +86,7 @@
     "typescript": "^5.9",
     "undici": "^8",
     "vitepress": "^1.6.4",
+    "vitepress-plugin-llms": "^1.13.4",
     "vitest": "^4",
     "ws": "^8.21.3",
     "yaml": "^2.9.0"
