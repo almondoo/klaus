@@ -173,6 +173,25 @@ describe("maskHistoryEntry", () => {
     expect(masked.request?.url).toBe("http://localhost/x?token=***");
   });
 
+  it("記号と空白を含むシークレットが WHATWG URL 正規化形(encodeURI 形)で url に現れても *** に置換する(#42)", () => {
+    // request.url テンプレートへ直書きされた secret は、undici の URL 正規化により
+    // encodeURIComponent とは異なる encodeURI 相当の形(空白のみ %20 化、@ / + = ! は非エンコード)
+    // でリクエスト行に載る。ここでは実際の undici 送信を経ず、その形を直接 url に埋め込んで再現する。
+    const secret = "p@ss w/rd+key=99!";
+    const normalized = encodeURI(secret);
+    const entry = {
+      ...base,
+      request: {
+        method: "GET",
+        url: `http://localhost/echo?token=${normalized}`,
+        headers: {},
+      },
+    };
+
+    const masked = maskHistoryEntry(entry, [secret]);
+    expect(masked.request?.url).toBe("http://localhost/echo?token=***");
+  });
+
   it("4文字未満のシークレットは生形・エンコード形のどちらもマスクしない(既存境界の維持)", () => {
     const secret = "a b"; // 3文字(空白を含む)
     const entry = {
@@ -231,6 +250,26 @@ describe("maskHistoryEntry", () => {
     );
     // 元の配列・要素は変更されない(StepResult と共有しているため)
     expect(assertions[0]?.expected).toBe("Bearer secret-token-1");
+  });
+
+  it('`"` を含むシークレットが JSON.stringify のエスケープ形(assert.ts の失敗メッセージ由来)でもマスクする', () => {
+    // assert.ts の等価アサーション失敗メッセージは JSON.stringify(expected) をそのまま埋め込むため、
+    // `"` を含むシークレットはエスケープ済みの形(ab\"cd5)でメッセージに現れ、生の値のままでは一致しない。
+    const secret = 'ab"cd5';
+    const assertions = [
+      {
+        ok: false,
+        kind: "bodyText.equals",
+        expected: secret,
+        actual: "other",
+        message: `body text: expected ${JSON.stringify(secret)} but got ${JSON.stringify("other")}`,
+      },
+    ];
+    const entry = { ...base, assertions };
+
+    const masked = maskHistoryEntry(entry, [secret]);
+    expect(masked.assertions[0]?.message).toBe('body text: expected "***" but got "other"');
+    expect(masked.assertions[0]?.expected).toBe("***");
   });
 
   it("assertions の expected・actual がオブジェクト/配列でも深く辿ってマスクする", () => {
