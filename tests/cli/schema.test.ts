@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  buildConfigJsonSchema,
   buildFlowJsonSchema,
   buildRunReportJsonSchema,
   schemaCommand,
@@ -19,6 +20,19 @@ describe("buildFlowJsonSchema", () => {
     expect(json.properties.name).toBeDefined();
     expect(json.properties.steps.items.properties.request).toBeDefined();
     expect(json.properties.steps.items.properties.ws).toBeDefined();
+    // steps.items.use: フローファイル参照(materialize)によるステップ再利用
+    expect(json.properties.steps.items.properties.use).toBeDefined();
+  });
+
+  it("assert.bodySchema プロパティを含む(レスポンスボディの JSON Schema 検証)", () => {
+    const json = buildFlowJsonSchema() as {
+      properties: {
+        steps: {
+          items: { properties: { assert: { properties: Record<string, unknown> } } };
+        };
+      };
+    };
+    expect(json.properties.steps.items.properties.assert.properties.bodySchema).toBeDefined();
   });
 
   it("superRefine 由来の排他制約が description の注記として含まれる", () => {
@@ -79,6 +93,31 @@ describe("buildRunReportJsonSchema", () => {
   });
 });
 
+describe("buildConfigJsonSchema", () => {
+  it("JSON として parse できる JSON Schema を返す", () => {
+    const json = buildConfigJsonSchema();
+    const parsed = JSON.parse(JSON.stringify(json));
+    expect(parsed.type).toBe("object");
+  });
+
+  it("run/ui など主要プロパティを含む", () => {
+    const json = buildConfigJsonSchema() as {
+      properties: {
+        run: { properties: Record<string, unknown> };
+        ui: { properties: Record<string, unknown> };
+      };
+    };
+    expect(json.properties.run.properties.env).toBeDefined();
+    expect(json.properties.run.properties.report).toBeDefined();
+    expect(json.properties.run.properties.reportFile).toBeDefined();
+    expect(json.properties.run.properties.history).toBeDefined();
+    expect(json.properties.run.properties.mask).toBeDefined();
+    expect(json.properties.ui.properties.port).toBeDefined();
+    expect(json.properties.ui.properties.host).toBeDefined();
+    expect(json.properties.ui.properties.open).toBeDefined();
+  });
+});
+
 describe("schemaCommand / target", () => {
   let stdoutSpy: string[];
   let writeSpy: typeof process.stdout.write;
@@ -108,5 +147,13 @@ describe("schemaCommand / target", () => {
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdoutSpy.join(""));
     expect(parsed.properties.summary).toBeDefined();
+  });
+
+  it('target: "config" 指定時は klaus.config.yaml のスキーマを出力する', async () => {
+    const exitCode = await schemaCommand("config");
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdoutSpy.join(""));
+    expect(parsed.properties.run).toBeDefined();
+    expect(parsed.properties.ui).toBeDefined();
   });
 });
