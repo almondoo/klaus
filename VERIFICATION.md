@@ -8,7 +8,7 @@
 pnpm install
 pnpm lint          # biome — エラー0
 pnpm typecheck     # tsc — エラー0
-pnpm test          # root: 16ファイル118テスト全pass
+pnpm test          # root: 33ファイル468テスト全pass
 pnpm --filter @almondoo/klaus-ui test   # ui: 10テスト全pass
 pnpm build:all     # dist/ に index.js / cli.js / server.js / ui/ が揃う
 ls dist dist/ui    # 確認

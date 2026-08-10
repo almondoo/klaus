@@ -1,60 +1,60 @@
-# record / replay モード
+# record / replay mode
 
-`klaus run` に `--record <dir>` または `--replay <dir>` を渡すと、HTTP リクエスト/レスポンスをファイル(カセット)経由でやり取りするモードになる。ネットワークが遮断されたサンドボックス内での検証や、破壊的な API(決済・送信系など)を毎回実際には叩かずに検証したい場合に使う。
+Passing `--record <dir>` or `--replay <dir>` to `klaus run` switches HTTP request/response handling to go through a file (a cassette) instead of always hitting the network directly. This is useful for verifying flows inside network-isolated sandboxes, or for exercising destructive APIs (payments, outbound messages, etc.) without actually triggering them every run.
 
-- **record モード(`--record <dir>`)**: 実際にリクエストを送信しつつ、レスポンスを secrets でマスクしたうえで `<dir>` のカセットファイルに追記する。
-- **replay モード(`--replay <dir>`)**: ネットワークへは一切出ず、`<dir>` のカセットから応答を再生する。
+- **record mode (`--record <dir>`)**: sends real HTTP requests and, after masking secrets in the response, appends it to a cassette file in `<dir>`.
+- **replay mode (`--replay <dir>`)**: never touches the network; responses are served from the cassette in `<dir>`.
 
-`--record` と `--replay` は同時指定できない(両方指定すると stderr にメッセージを出して exit code 1 になり、何も実行されない)。
+`--record` and `--replay` cannot be combined (passing both prints a message to stderr, exits with code 1, and runs nothing).
 
-## カセット形式
+## Cassette format
 
-カセットは `<dir>/cassette.jsonl`(単一ファイルの JSON Lines)に固定される。1行 = 1リクエスト分のレスポンスで、スキーマは次のとおり(`v: 1`)。
+A cassette is always a single file at `<dir>/cassette.jsonl` (JSON Lines). Each line holds one recorded response, with the schema below (`v: 1`).
 
 ```jsonc
 {
   "v": 1,
-  "method": "GET",              // 大文字化した HTTP メソッド
-  "url": "http://…",            // レンダリング済み URL(マスク済み)
+  "method": "GET",              // uppercased HTTP method
+  "url": "http://…",            // rendered URL (already masked)
   "status": 200,
   "headers": { … },
-  "bodyText": "…"                // レスポンス本文の生テキスト
+  "bodyText": "…"                // raw response body text
 }
 ```
 
-- `url` は record 時点で secrets によりマスクされたうえで保存されるため、平文のシークレットはカセットファイルに残らない。マスク規則は[実行履歴](history.md)や `--report junit` と同じ(<code v-pre>{{env.X}}</code> で解決した値と、その URL エンコード形・form-urlencoded 形・JSON エスケープ形が対象)。
-- `bodyText` も同様にマスクしてから保存する。
-- `headers`(レスポンスヘッダー)も含め、エントリ全体に同じマスク処理(maskDeep)を適用するため、レスポンスヘッダーに含まれるシークレットも同様にマスクされる。
-- replay 時は `bodyText` の Content-Type が `application/json` を含む場合のみ JSON としてパースし直す(それ以外はテキストのまま返す)。パースに失敗した場合もテキストのままフォールバックする。
+- `url` is masked using the resolved secrets at record time before being written, so plaintext secrets never end up in the cassette file. The masking rules match the [Execution History](history.md) and `--report junit` (values resolved via <code v-pre>{{env.X}}</code>, including their URL-encoded, form-urlencoded, and JSON-escaped forms).
+- `bodyText` is masked the same way before being written.
+- The same masking (maskDeep) is applied to the whole entry, including `headers` (the response headers), so secrets found in response headers are masked too.
+- During replay, `bodyText` is re-parsed as JSON only when the recorded Content-Type includes `application/json` (otherwise it's returned as text); parse failures also fall back to text.
 
-## マッチング規則
+## Matching rule
 
-replay 時は、実行中のステップの **method + マスク済み URL の完全一致** で、カセット中のエントリを検索する。
+During replay, the cassette is looked up by an **exact match on method + masked URL** for the step currently being executed.
 
-- record と replay は**同じ env / secrets** で行うことを前提にしている(URL のマスクは実行時に判明している secrets を使ってから比較するため、record と replay で解決される secrets が異なると一致しなくなる)。
-- カセットに同一キー(method + URL)の行が複数あっても、**先に記録された行**が採用される。同じキーへの複数回のリクエストは常に同じ応答を返す(非消費型。呼び出し順で使い切られたりはしない)。
-- カセットに一致するエントリが無いリクエストは、明確なエラーとしてステップが `error` になり、CLI の exit code は **3** になる。エラーメッセージには一致しなかったキー(マスク済み)と、`--record <dir>` で再記録する案内が含まれる。
-- `--replay` 指定時にカセットファイル自体が読み込めない(存在しない・壊れている等)場合も、実際に最初の HTTP ステップが実行されたタイミングで同じ exit code 3 のエラーになる。
+- Recording and replaying are assumed to happen with the **same env / secrets** (the URL is masked with whatever secrets are known at execution time before comparing, so a mismatch between the secrets resolved during record vs. replay will break matching).
+- If multiple lines share the same key (method + URL), the **first recorded line** wins. Repeated requests to the same key always return the same response (non-consuming — entries are not "used up" in request order).
+- A request that doesn't match any cassette entry fails its step with a clear `error`, and the CLI exits with code **3**. The error message includes the (masked) key that failed to match and a hint to re-record with `--record <dir>`.
+- If `--replay` is given but the cassette file itself can't be loaded (missing, unreadable, etc.), the same exit code 3 error is raised, deferred until the first HTTP step is actually executed.
 
-## SSE / WebSocket ステップは非対応
+## SSE / WebSocket steps are not supported
 
-`--record` / `--replay` 指定時、SSE(Accept: text/event-stream または `sse` ブロックを持つステップ)や WebSocket(`ws` ブロックを持つステップ)が含まれるフローを実行すると、そのステップは明示的な `error` になる。黙って実ネットワークへ素通しすることはない。record/replay の対象は HTTP ステップのみ(GraphQL over HTTP を含む)。
+When `--record` / `--replay` is given, a flow that includes an SSE step (Accept: text/event-stream, or a step with an `sse` block) or a WebSocket step (a step with a `ws` block) fails that step with an explicit `error` instead of silently falling through to the real network. record/replay only covers HTTP steps (including GraphQL over HTTP).
 
-## 実行履歴・その他出力への影響
+## Effect on history and other output
 
-record/replay モードでも、`.klaus/history/*.jsonl` への書き込みは(`--no-history` を付けない限り)従来どおり行われる。stdout の text/JSON 出力、`--report junit`、secrets のマスキング(`--no-mask`)といった他のオプションの挙動もモードの有無に関わらず変わらない。
+Even in record/replay mode, writes to `.klaus/history/*.jsonl` still happen as usual (unless `--no-history` is passed). Other options — stdout text/JSON output, `--report junit`, secret masking (`--no-mask`) — behave the same regardless of the mode.
 
-## ユースケース
+## Use cases
 
-- **ネットワークを遮断したサンドボックスでの検証**: CI やエージェント実行環境がネットワークにアクセスできない場合でも、事前にローカルや別環境で record したカセットを使って `--replay` すれば、リクエスト/アサーションのロジックを検証できる。
-- **破壊的な API の再実行防止**: 決済・メール送信・リソース削除など、実行のたびに副作用を伴う API を検証したい場合、一度だけ record し、以降は `--replay` で同じ応答を使い回すことで、副作用を伴う呼び出しを最小限に抑えられる。
+- **Verification inside a network-isolated sandbox**: when a CI or agent execution environment has no network access, you can record a cassette ahead of time (locally or in another environment) and then `--replay` it to still validate request/assertion logic.
+- **Avoiding re-running destructive APIs**: for APIs with side effects on every call (payments, sending emails, deleting resources), record once and then `--replay` the same responses afterward, keeping calls with real side effects to a minimum.
 
-## 使用例
+## Example
 
 ```bash
-# 1. 実際にリクエストを送りながらカセットを記録する
+# 1. Record a cassette while sending real requests
 klaus run api/create-user.yaml --record ./cassettes
 
-# 2. 以降はネットワークに出ずに同じ検証を再生する
+# 2. Replay the same checks afterward with no network access
 klaus run api/create-user.yaml --replay ./cassettes
 ```

@@ -1,47 +1,47 @@
-# OpenAPI からのフロー生成
+# Generating Flows from OpenAPI
 
-`klaus generate` は OpenAPI 3.x の定義ファイルから、各オペレーション(`paths` × HTTP メソッド)ごとに単発チェックのフロー定義 YAML を生成する。既存プロジェクトに klaus を導入する際、`api/` 配下の初期セットをゼロから手で書かずに済む。
+`klaus generate` generates a skeleton single-step flow definition YAML for each operation (`paths` × HTTP method) in an OpenAPI 3.x definition file. When adopting klaus in an existing project, this saves you from hand-writing the initial set of files under `api/` from scratch.
 
-対応入力は OpenAPI 3.x(`requestBody` / `parameter.schema` 等の 3.x 形状)のみ。Swagger 2.0(`in: body` パラメータやトップレベルの `type` / `default` 等のフラットな形状)を渡した場合は生成を行わず exit code 2 のエラーになる(`openapi 3.x` に変換してから使用すること)。
+Only OpenAPI 3.x input is supported (the 3.x shapes such as `requestBody` and `parameter.schema`). Passing a Swagger 2.0 definition (e.g. `in: body` parameters or the flat top-level `type` / `default` shape) fails with exit code 2 instead of generating anything — convert it to OpenAPI 3.x first.
 
-## 使い方
+## Usage
 
 ```
 klaus generate <spec> [options]
 ```
 
-| 引数・オプション | 説明 | デフォルト |
+| Argument / Option | Description | Default |
 |---|---|---|
-| `<spec>` | OpenAPI 定義ファイル(`.yaml` / `.yml` / `.json`) | 必須 |
-| `--out-dir <dir>` | 生成先ディレクトリ | `api` |
-| `--json` | TTY でも JSON 出力を強制 | — |
+| `<spec>` | OpenAPI definition file (`.yaml` / `.yml` / `.json`) | required |
+| `--out-dir <dir>` | Output directory | `api` |
+| `--json` | Force JSON output (prints JSON even when running on a TTY) | — |
 
-spec のパースには [`@apidevtools/swagger-parser`](https://apitools.dev/swagger-parser/) を使い、`$ref` を解決(dereference)したうえでオペレーションを走査する。外部 URL 参照を含む spec にも対応するが、通常はローカルファイルを渡す。
+The spec is parsed with [`@apidevtools/swagger-parser`](https://apitools.dev/swagger-parser/), which resolves (dereferences) all `$ref`s before operations are walked. Specs with external URL references are supported, but a local file is the typical input.
 
-## 生成されるファイル
+## Generated files
 
-1オペレーション = 1ファイル。ファイル名・フロー名・ステップ名は次のルールで決める。
+One operation = one file. File name, flow name, and step name are derived as follows.
 
-- **ファイル名**: `operationId` があれば kebab-case 化した値、無ければ `<method>-<パスをスラッグ化した値>`(例: `operationId` 無しの `GET /users/{id}` → `get-users-id.yaml`)
-- **フロー名(`name`)**: `operationId` があればそのまま、無ければ `METHOD /path` 形式(例: `GET /users/{id}`)
-- **ステップ名**: ファイル名と同じ id(1ファイル1ステップの単発チェックのため)
+- **File name**: the kebab-cased `operationId` if present, otherwise `<method>-<slugified path>` (e.g. `GET /users/{id}` without an `operationId` becomes `get-users-id.yaml`)
+- **Flow name (`name`)**: the `operationId` as-is if present, otherwise `METHOD /path` (e.g. `GET /users/{id}`)
+- **Step name**: the same id used for the file name (since it's a single-step check, one file = one step)
 
-内容は [フロー定義リファレンス](flow-definition.md) の `request` / `assert` に沿った最小構成:
+The content is a minimal skeleton following `request` / `assert` in the [Flow Definition Reference](flow-definition.md):
 
-- `request.method` / `request.url`: spec の HTTP メソッドとパスから組み立てる。`url` は `{{baseUrl}}` + spec のパス(パスパラメータ `{id}` はそのまま残す。`environments/*.yaml` の `baseUrl` を参照する運用を前提にしている)
-- `request.query`: `in: query` のパラメータのうち、example(`example` / `examples` / `schema.example` / `schema.default` の優先順)を持つものだけを含める。example が無いパラメータは省略する
-- `request.body` / `request.headers`: `requestBody` がある場合、対象コンテンツタイプ(`application/json` を優先、無ければ最初のコンテンツタイプ)の example を `body` に設定し、`headers.Content-Type` を spec のコンテンツタイプに合わせる。example が無い場合は schema から最小限のプレースホルダ(`required` なプロパティのみを埋めたオブジェクト等)を組み立てる。プレースホルダも作れない場合は `body` を省略する
-- `assert.status`: 定義済みレスポンス(`responses`)のうち最小の 2xx コード。無ければ `200`
+- `request.method` / `request.url`: built from the spec's HTTP method and path. `url` is `{{baseUrl}}` + the spec's path (path parameters like `{id}` are left as-is, assuming a workflow where `baseUrl` comes from `environments/*.yaml`)
+- `request.query`: only `in: query` parameters that have an example (checked in the order `example` / `examples` / `schema.example` / `schema.default`) are included; parameters without an example are omitted
+- `request.body` / `request.headers`: if `requestBody` is present, the example from the target content type (`application/json` is preferred, otherwise the first content type) is used as `body`, and `headers.Content-Type` is set to match the spec's content type. If there's no example, a minimal placeholder is built from the schema (an object with only its `required` properties filled in, etc.). If even a placeholder can't be built, `body` is omitted
+- `assert.status`: the smallest 2xx code among the defined `responses`, or `200` if none are defined
 
-生成した YAML は書き込み前に klaus 自身のスキーマ検証(`validateFlowYaml`)を通し、検証に通らないものは書き込まずエラーとして報告する。
+Before writing, each generated YAML is validated with klaus's own schema validation (`validateFlowYaml`); anything that fails is not written and is reported as an error instead.
 
-先頭行には他の生成物と同じ `# yaml-language-server: $schema=...` コメントが付く([JSON Schema](flow-definition.md#json-schema) 参照)。
+Each file starts with the same `# yaml-language-server: $schema=...` comment as other generated files (see [JSON Schema](flow-definition.md#json-schema)).
 
-**既存ファイルは上書きしない。** 出力先に同名ファイルが既にあればスキップし、その旨を報告する。
+**Existing files are never overwritten.** If a file with the same name already exists at the destination, it is skipped and reported as such.
 
-## 生成例
+## Example
 
-以下のような spec があるとする。
+Given a spec like this:
 
 ```yaml
 openapi: 3.0.3
@@ -70,7 +70,7 @@ paths:
           description: Created
 ```
 
-`klaus generate openapi.yaml` を実行すると `api/create-user.yaml` が生成される。
+Running `klaus generate openapi.yaml` generates `api/create-user.yaml`:
 
 ```yaml
 # yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
@@ -89,20 +89,20 @@ steps:
       status: 201
 ```
 
-## 生成物は骨組みである
+## Generated files are a skeleton
 
-`klaus generate` が作るのはあくまで最小構成の単発チェックであり、実運用のテストスイートとしてはそのままでは不十分なことが多い。生成後は用途に応じて次のような加筆を行うこと。
+What `klaus generate` produces is a minimal single-step check, and it's often not sufficient as-is for a real test suite. After generating, consider filling in:
 
-- 認証ヘッダー(`Authorization` 等)や `environments/*.yaml` への変数追加
-- `assert.body` / `assert.headers` によるレスポンス内容の検証
-- 複数ステップを `capture` で連結するシナリオへの発展(その場合は `flows/` ディレクトリへ移動する。[ディレクトリ規約](../dev/architecture.md) 参照)
-- example が無かったために省略された `request.query` / `request.body` の補完
+- Authentication headers (e.g. `Authorization`) and any variables needed in `environments/*.yaml`
+- Response content checks via `assert.body` / `assert.headers`
+- Turning it into a multi-step scenario chained with `capture` (in that case, move the file to `flows/`; see the [directory convention](https://github.com/almondoo/klaus/blob/main/docs/en/dev/architecture.md))
+- `request.query` / `request.body` fields that were omitted because no example was available
 
-## 出力モード・exit code
+## Output mode and exit codes
 
-出力モードの判定は [CLI リファレンス](cli.md) の他コマンドと同じ(TTY なら text、非 TTY または `--json` なら JSON)。
+Output mode is determined the same way as the other commands in the [CLI Reference](cli.md) (text on a TTY, JSON when non-TTY or `--json` is given).
 
-### JSON 出力
+### JSON output
 
 ```jsonc
 {
@@ -113,14 +113,14 @@ steps:
 }
 ```
 
-`errors[]` は生成物が klaus 自身のスキーマ検証を通らなかった場合のエントリ(`path` と `message` を持つ)。通常の spec では発生しない想定だが、発生した場合はそのファイルだけ書き込まれない。
+`errors[]` holds entries for generated content that failed klaus's own schema validation (each with `path` and `message`). This shouldn't happen for a well-formed spec, but if it does, that one file is simply not written.
 
-### exit code
+### Exit codes
 
-| code | 意味 |
+| code | meaning |
 |---|---|
-| 0 | 全オペレーションの生成に成功(スキップのみの場合を含む) |
-| 1 | 一般エラー(不正な CLI 引数・予期しない例外) |
-| 2 | spec が不正(パース・$ref 解決に失敗)、または生成物がスキーマ検証を通らない |
+| 0 | all operations generated successfully (including when everything was skipped) |
+| 1 | general error (invalid CLI arguments, unexpected exception) |
+| 2 | the spec is invalid (parsing or `$ref` resolution failed), or a generated file failed schema validation |
 
-spec が不正な場合、text モードでは stderr にのみメッセージを出す(stdout には何も出さない)。`--json` 指定時、または非 TTY(パイプ・エージェント実行・CI)の場合は、stdout に `errors` を含むエラーレポート(JSON)を出す。
+When the spec is invalid, text mode writes only to stderr (nothing is printed to stdout). With `--json`, or when stdout is non-TTY (pipes, agent execution, CI), a JSON error report containing `errors` is written to stdout instead.

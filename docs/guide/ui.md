@@ -1,40 +1,40 @@
 # localhost UI
 
-`klaus ui` で起動する Web UI。フローの実行(ライブ進捗付き)と履歴の閲覧ができる**ランナー + ビューア**であり、フロー定義の編集はエディタで行う(git-native 思想)。実行・アサーション・履歴のロジックはすべて CLI と同じ `src/core` を使う。
+The web UI launched by `klaus ui`. It's a **runner + viewer** that can execute flows (with live progress) and browse history; editing flow definitions is done in your editor (a git-native philosophy). All execution, assertion, and history logic uses the same `src/core` as the CLI.
 
-## 起動
+## Launching
 
 ```bash
-klaus ui [--port <n>] [--no-open]
+klaus ui [-p <n>] [-H <host>] [--no-open]
 ```
 
-- 起動するとトークン付き URL(`http://127.0.0.1:<port>/?token=…`)が表示され、ブラウザが自動で開く
-- UI アセット(`dist/ui`)が未ビルドの場合は 503 で案内が出る。開発リポジトリでは `pnpm build:all` を先に実行すること(npm インストール版にはビルド済みで同梱される)
-- フロー一覧・履歴は**サーバーを起動した cwd** を基準に読まれる。検証したいプロジェクトのルートで起動すること
+- On startup, a URL with a token (`http://127.0.0.1:<port>/?token=…`) is displayed and the browser opens automatically
+- If the UI assets (`dist/ui`) haven't been built, a 503 with guidance is shown. In a development checkout, run `pnpm build:all` first (the npm-installed version ships pre-built)
+- The flow list and history are read relative to **the cwd the server was started from**. Launch it from the root of the project you want to verify
 
-## 画面
+## Screens
 
-1. **単発 API 実行(デフォルト画面)**: フローを介さず1件のリクエストをその場で実行するタブ。method / URL / ヘッダー / クエリパラメータ / ボディをフォームで編集し、選択中の環境で `{{var}}` を展開して実行する。結果はステータス・所要時間・レスポンスヘッダー・ボディで表示され、レスポンスボディから JSONPath で値を抽出して選択中の環境に保存できる(保存はキー単位のマージで、他のキーは変更しない)
-2. **フロー一覧(サイドバー)**: cwd 配下のフロー YAML を一覧表示。パースエラーのあるファイルはエラーアイコン + 理由付きで表示され実行不可。フローを選択すると実行ビューに切り替わる。上部の環境セレクタで `--env` 相当の切替、実行ボタンで実行開始
-3. **実行ビュー**: ステップが running → pass/fail にライブで遷移(SSE 配信)。「Step n / m」の全体進捗、失敗ステップは自動展開してリクエスト / レスポンス詳細(JSON)を表示、成功ステップはデフォルト折り畳み。完了時にサマリー表示
-4. **環境エディタ**: 環境セレクタ横の編集ボタンから開閉し、選択中の環境の key-value をテーブルで編集できる。保存すると YAML 上の既存コメントを保持したまま該当ファイルへ書き戻す
-5. **履歴ブラウザ**: `.klaus/history/*.jsonl` を新しい順に表示。run 単位でグルーピングされ、行クリックでステップ詳細にドリルダウン。フローでのフィルタと「さらに読み込む」ページング
+1. **Single request execution (default screen)**: A tab for running one request on the spot, without going through a flow. Edit method / URL / headers / query parameters / body as a form, and run it with `{{var}}` expanded against the selected environment. The result shows status, duration, response headers, and body; values can be extracted from the response body via JSONPath and saved into the selected environment (saved as a merge of a single key, leaving other keys untouched)
+2. **Flow list (sidebar)**: Lists flow YAML files under the cwd. Files with parse errors are shown with an error icon and reason, and can't be run. Selecting a flow switches to the execution view. The environment selector at the top switches the equivalent of `--env`, and the run button starts execution
+3. **Execution view**: Steps transition live from running → pass/fail (delivered via SSE). Overall progress is shown as "Step n / m"; failed steps auto-expand to show request/response detail (JSON), while successful steps are collapsed by default. A summary is shown on completion
+4. **Environment editor**: Opened via the edit button next to the environment selector; lets you edit the selected environment's key-value pairs in a table. Saving writes back to the file while preserving existing YAML comments
+5. **History browser**: Displays `.klaus/history/*.jsonl` newest first. Grouped by run, with row clicks drilling down into step detail. Supports filtering by flow and "load more" paging
 
-## セキュリティモデル
+## Security Model
 
-ローカル専用の設計であり、**リバースプロキシ等で外部公開してはならない**。
+Designed for local use only — **it must not be exposed externally via a reverse proxy or similar**.
 
-| 対策 | 内容 |
+| Measure | Details |
 |---|---|
-| バインド | 127.0.0.1 固定(設定でも変更不可) |
-| 認証トークン | 起動時に `crypto.randomBytes(32)` で生成。比較はタイミングセーフ |
-| 初回アクセス | `GET /?token=…` の検証成功で `klaus_token` Cookie(SameSite=Strict / HttpOnly)を発行 |
-| API 認証 | 全 `/api/*` で `X-Klaus-Token` ヘッダー必須(不一致 401) |
-| CSRF | POST/PUT/DELETE はさらに Cookie 一致 + `Origin` ヘッダーが存在する場合は同一オリジンのみ許可 |
-| DNS rebinding | 全リクエストで `Host` が `127.0.0.1:<port>` / `localhost:<port>` 以外なら 403 |
-| CORS | ヘッダーを一切付けない(同一オリジン配信のみ) |
-| path traversal | ファイルパスを受ける API・静的配信で cwd / dist/ui 外への解決を 403 で拒否 |
+| Binding | Defaults to 127.0.0.1; can be changed via `-H`/`--host` (or the `ui.host` key in `klaus.config.yaml`) |
+| Auth token | Generated at startup with `crypto.randomBytes(32)`. Compared using a timing-safe comparison |
+| First access | Successful validation of `GET /?token=…` issues a `klaus_token` cookie (SameSite=Strict / HttpOnly) |
+| API auth | An `X-Klaus-Token` header is required on every `/api/*` (401 on mismatch) |
+| CSRF | POST/PUT/DELETE additionally require the cookie to match, and if an `Origin` header is present, only the same origin is allowed |
+| DNS rebinding | Any request whose `Host` isn't `127.0.0.1:<port>` / `localhost:<port>` gets a 403 (when `--host` is explicitly set to a non-loopback address, this check is relaxed to a port-only match) |
+| CORS | No CORS headers are ever sent (same-origin serving only) |
+| Path traversal | APIs and static serving that accept file paths reject resolution outside the cwd / dist/ui with a 403 |
 
-上記の認証トークンは、起動時に stdout へ表示されるだけでなく、ブラウザ自動起動コマンド(`open` / `xdg-open` / `cmd /c start`)の引数としても渡される。共有のマルチユーザーホストでは、この引数が他のローカルユーザーからプロセス一覧(`ps` や `/proc/<pid>/cmdline`)経由で読める可能性がある。該当する環境では `--no-open` を指定してブラウザの自動起動を避け、表示された URL を自分で開くこと。詳細は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) を参照。
+The auth token above is not only printed to stdout at startup, but also passed as an argument to the browser auto-launch command (`open` / `xdg-open` / `cmd /c start`). On a shared multi-user host, that argument may be readable by other local users via the process list (`ps`, `/proc/<pid>/cmdline`). On such hosts, pass `--no-open` to skip the automatic browser launch and open the printed URL yourself. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) for details.
 
-HTTP API の仕様と内部構成は [../dev/ui-api.md](../dev/ui-api.md) を参照。
+For the HTTP API specification and internal structure, see [../dev/ui-api.md](https://github.com/almondoo/klaus/blob/main/docs/en/dev/ui-api.md).

@@ -1,41 +1,41 @@
-# 実行履歴
+# Execution History
 
-klaus は全リクエスト / レスポンス / 所要時間をローカルの JSONL に追記する。CLI の text 出力が成功時1行要約に留まるのは、フル詳細をこちらに逃がしているため。localhost UI の履歴ブラウザもこのファイルを読む。
+klaus appends every request, response, and duration to a local JSONL file. The reason CLI text output stays a one-line summary on success is that full detail is offloaded here. The localhost UI's history browser also reads this file.
 
-ブラウザ UI を使わずに CLI から直接参照したい場合は `klaus history`(一覧)/ `klaus history show <runId>`(詳細)を使う。オプションの詳細は [CLI リファレンス](cli.md#klaus-history) を参照。
+To inspect it directly from the CLI without the browser UI, use `klaus history` (list) / `klaus history show <runId>` (detail). See the [CLI Reference](cli.md#klaus-history) for the options.
 
-## ファイル規則
+## File Conventions
 
-- パス: `.klaus/history/<YYYY-MM-DD>.jsonl`(**cwd 基準**、日付はローカル日付)
-- ディレクトリは自動作成される
-- `klaus run --no-history` で書き込みを無効化できる
-- **書き込みに失敗しても実行結果には影響しない**(stderr に警告が出るだけで、ステップの pass/fail はそのまま)
+- Path: `.klaus/history/<YYYY-MM-DD>.jsonl` (**relative to the cwd**; the date is the local date)
+- The directory is created automatically
+- Writing can be disabled with `klaus run --no-history`
+- **A write failure does not affect the execution result** (only a warning is printed to stderr; step pass/fail is unaffected)
 
-## 1行のスキーマ(v: 1)
+## Per-Line Schema (v: 1)
 
-1行 = 1ステップ実行。`runId` で同一実行のステップをグルーピングできる。
+One line = one step execution. `runId` lets you group steps from the same run.
 
 ```jsonc
 {
-  "v": 1,                       // スキーマバージョン
-  "runId": "<uuid>",            // 実行単位の ID(全フロー共通)
-  "flow": "認証フロー",          // フロー名
-  "step": "login",              // ステップ名
+  "v": 1,                       // schema version
+  "runId": "<uuid>",            // ID for the run unit (shared across all flows)
+  "flow": "auth flow",          // flow name
+  "step": "login",              // step name
   "startedAt": "2026-08-08T…",  // ISO 8601
   "durationMs": 6,
-  "status": "passed",           // "passed" | "failed" | "skipped"(旧エントリには無い場合がある。運用上の注意を参照)
-  "request": {                  // skipped ステップでは省略される
+  "status": "passed",           // "passed" | "failed" | "skipped" (may be absent on older entries; see Operational Notes)
+  "request": {                  // omitted for skipped steps
     "method": "POST",
-    "url": "http://…",          // テンプレート解決済み(シークレットはマスク後)
-    "headers": { … },           // テンプレート解決済み(シークレットはマスク後)
+    "url": "http://…",          // template-resolved (secrets masked)
+    "headers": { … },           // template-resolved (secrets masked)
     "body": { … }
   },
-  "response": {                 // skipped ステップでは省略される
+  "response": {                 // omitted for skipped steps
     "status": 200,
     "headers": { … },
-    "body": { … }               // JSON ならパース済みの値、それ以外はテキスト
+    "body": { … }               // the parsed value if JSON, otherwise text
   },
-  "events": [                   // SSE ステップでのみ設定(受信イベント一覧)
+  "events": [                   // present only for SSE steps (received events)
     { "event": "message", "id": "1", "data": "…" }
   ],
   "assertions": [
@@ -44,28 +44,28 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
 }
 ```
 
-### ステップ種別ごとの内容
+### Content by Step Type
 
-| 種別 | request | response | events |
+| Type | request | response | events |
 |---|---|---|---|
 | HTTP / GraphQL | method / url / headers / body | status / headers / body | — |
-| SSE | 通常どおり | status / headers、**body は undefined** | 受信イベント一覧(`{event?, id?, data}`) |
-| WebSocket | method は `"WS"`、body は送信メッセージ配列 | status は `101` 固定、body は受信メッセージ(data 文字列)の配列 | — |
-| skipped | 省略 | 省略 | — |
+| SSE | as usual | status / headers, **body is undefined** | array of received events (`{event?, id?, data}`) |
+| WebSocket | method is `"WS"`, body is the array of sent messages | status is fixed at `101`, body is the array of received messages (data strings) | — |
+| skipped | omitted | omitted | — |
 
-**skipped ステップも記録される**(`status: "skipped"`、request/response なし、assertions は空)。runtime エラーになったステップはエラー内容とともに記録される。
+**Skipped steps are recorded too** (`status: "skipped"`, no request/response, empty assertions). Steps that resulted in a runtime error are not recorded in the history.
 
-新規に書き込まれるエントリには常に `status` が設定される。`status` フィールドが無い旧エントリは、従来どおり `assertions` の内容から成否を導出して読み込める(後方互換)。
+Newly written entries always include `status`. Older entries without a `status` field can still be read by deriving pass/fail from `assertions`, as before (backward compatible).
 
-## バージョニング契約
+## Versioning Contract
 
-履歴 JSONL は localhost UI(および将来のツール)が読む**契約**であり、以下のルールで進化する:
+The history JSONL is a **contract** read by the localhost UI (and future tools), and evolves under the following rules:
 
-- `v` を変えない変更は**フィールド追加のみ**(additive)。既存フィールドの削除・意味変更・型変更はバージョンを上げる
-- 読み手は未知のフィールドを無視し、未知の `v` の行はスキップする
+- A change that doesn't bump `v` may **only add fields** (additive). Removing an existing field, or changing its meaning or type, requires a version bump
+- Readers ignore unknown fields, and skip lines with an unknown `v`
 
-## 運用上の注意
+## Operational Notes
 
-- **テンプレート解決済みの値が記録される**。ただし <code v-pre>{{env.X}}</code> で OS 環境変数から解決した値(長さ 4 文字以上)は、書き込み直前に request の url/headers/body・response の headers/body・assertions(expected/actual/message)・events(event/id/data)内で `***` にマスクされる。マスクは生の値だけでなく、その URL エンコード形(パーセントエンコード、`URLSearchParams` が空白を `+` にする form-urlencoded 形、および WHATWG URL 正規化に近い encodeURI 形)にも及ぶため、`request.query` に置いたシークレットや `request.url` テンプレートへ直書きしたシークレットもエンコード後の姿で記録されずに済む。マスクされるのはこの経路で解決した値のみで、`environments/*.yaml` 由来の値やライブ実行結果(実行中 UI・StepResult)はマスク対象外。詳細は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) を参照
-- マスクされない値(4文字未満のシークレットや environments ファイル由来の値など)を扱うプロジェクトでは、引き続き `.klaus/` を `.gitignore` に入れること(このリポジトリの scaffolding では最初から ignore 済み)
-- テキストファイルなので、あえて git 管理して実行記録をチームで共有する運用も可能(マスクされない値が含まれないことを確認したうえで)
+- **Template-resolved values are recorded.** However, values resolved from an OS environment variable via <code v-pre>{{env.X}}</code> (length 4 or more) are masked to `***` right before writing, inside the request's url/headers/body, the response's headers/body, assertion results (expected/actual/message), and events (event/id/data). Masking matches not only the raw value but also its URL-encoded representations (percent-encoding, the `+`-for-space form `URLSearchParams` produces, and the encodeURI form that approximates WHATWG URL normalization), so a secret placed in `request.query` or written directly into a `request.url` template is masked in its encoded form too, not just literally. Only values resolved through this path are masked — values sourced from `environments/*.yaml`, and live run output (the in-progress UI / `StepResult`), are not covered. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) for details
+- Projects handling values that aren't masked (secrets shorter than 4 characters, or values sourced from environment files) should still add `.klaus/` to `.gitignore` (this repository's scaffolding ignores it from the start)
+- Since it's a plain text file, it's also possible to deliberately commit it to git and share execution records across a team (after confirming no unmasked values are included)

@@ -1,66 +1,66 @@
-# Agent Skill(Claude Code / Codex)
+# Agent Skill (Claude Code / Codex)
 
-klaus はリポジトリ内に [Agent Skill](https://code.claude.com/docs/en/skills)(`SKILL.md`)形式のドキュメントを同梱している(`skills/klaus/SKILL.md`)。Claude Code や OpenAI Codex CLI に配置しておくと、フロー YAML の書き方・`validate` → `run` → `history` のコマンドワークフロー・exit code の意味などを、エージェントがソースコードや本サイトを読みに行かずに把握できる。
+klaus ships an [Agent Skill](https://code.claude.com/docs/en/skills) (`SKILL.md`) inside the repository (`skills/klaus/SKILL.md`). Placing it where Claude Code or the OpenAI Codex CLI look for skills lets the agent learn how to write flow YAML, the `validate` → `run` → `history` command workflow, and what each exit code means — without reading the source code or this site.
 
-`klaus init` が生成する `AGENTS.md`(プロジェクト直下に置く要点まとめ)とは独立した仕組みで、こちらはツール側(Claude Code / Codex)のスキル検索機構に登録する形式。両方配置しても問題はない。
+This is independent from the `AGENTS.md` that `klaus init` generates (a project-root summary file); this one is registered with the tool's own skill-discovery mechanism. It's fine to have both.
 
-## 対応エージェントと配置先
+## Supported agents and install locations
 
-`SKILL.md` は Claude Code に限らず、Agent Skills 形式に対応する主要エージェントで共通のフォーマットとして読み込める。作成・配置するファイルは `skills/klaus/SKILL.md` の1つのみで、エージェントごとに配置先ディレクトリを変えるだけで全対応できる。
+`SKILL.md` isn't Claude Code-specific — it's a common format that major agents supporting Agent Skills can all read. You only need to create and place one file, `skills/klaus/SKILL.md`; the only thing that differs per agent is the install directory.
 
-| エージェント | Skills 配置先 |
+| Agent | Skills install location |
 |---|---|
 | Claude Code | `.claude/skills/` / `~/.claude/skills/` |
-| Codex | `.agents/skills/`($CWD / $REPO_ROOT / $HOME) |
+| Codex | `.agents/skills/` ($CWD / $REPO_ROOT / $HOME) |
 | Gemini CLI | `.gemini/skills/` / `~/.gemini/skills/` |
-| Cursor(2.4+) | `.cursor/skills/` / `~/.cursor/skills/` |
-| Amp | `~/.config/amp/skills/`(グローバル)/ `.agents/skills/`(プロジェクト、Codex と共通) |
-| opencode | `.opencode/skills/`(`.claude/skills/` と `.agents/skills/` も互換探索) |
+| Cursor (2.4+) | `.cursor/skills/` / `~/.cursor/skills/` |
+| Amp | `~/.config/amp/skills/` (global) / `.agents/skills/` (project, shared with Codex) |
+| opencode | `.opencode/skills/` (also compat-searches `.claude/skills/` and `.agents/skills/`) |
 
-以下では代表として Claude Code と Codex への配置手順を示す。他のエージェントも上表のディレクトリに同様に `skills/klaus/` をコピーすればよい。
+The sections below walk through installing for Claude Code and Codex as representative examples. For any other agent, copy `skills/klaus/` into the directory listed above.
 
-## Claude Code への配置
+## Installing for Claude Code
 
-以下のいずれかのディレクトリに `skills/klaus/` を丸ごとコピーする(ディレクトリ名・`SKILL.md` のファイル名は変更しないこと)。
+Copy the whole `skills/klaus/` directory into one of the following (keep the directory name and the `SKILL.md` filename unchanged):
 
-- ユーザー全体: `~/.claude/skills/klaus/`
-- リポジトリ単位: `<repo>/.claude/skills/klaus/`
+- User-wide: `~/.claude/skills/klaus/`
+- Per-repository: `<repo>/.claude/skills/klaus/`
 
-klaus のソースからコピーする場合(npm パッケージにも `skills/` が同梱される):
+When copying from the klaus source (the `skills/` directory also ships in the npm package):
 
 ```bash
-# ユーザー全体に配置
+# Install user-wide
 mkdir -p ~/.claude/skills
 cp -r node_modules/@almondoo/klaus/skills/klaus ~/.claude/skills/klaus
 
-# リポジトリ単位に配置(チームで共有し git 管理する場合)
+# Install per-repository (to share with the team and check into git)
 mkdir -p .claude/skills
 cp -r node_modules/@almondoo/klaus/skills/klaus .claude/skills/klaus
 ```
 
-klaus のリポジトリを直接クローンしている場合は `node_modules/@almondoo/klaus/skills/klaus` の代わりにそのチェックアウトの `skills/klaus` を指定する。
+If you have a direct checkout of the klaus repository, use that checkout's `skills/klaus` instead of `node_modules/@almondoo/klaus/skills/klaus`.
 
-## Codex への配置
+## Installing for Codex
 
-Codex CLI のスキルディレクトリは `~/.codex/skills/` **ではない**。以下のいずれかに配置する。
+The Codex CLI skills directory is **not** `~/.codex/skills/`. Install into one of the following instead.
 
-- ユーザー全体: `$HOME/.agents/skills/klaus/`
-- リポジトリ単位: `$REPO_ROOT/.agents/skills/klaus/`
+- User-wide: `$HOME/.agents/skills/klaus/`
+- Per-repository: `$REPO_ROOT/.agents/skills/klaus/`
 
 ```bash
 mkdir -p ~/.agents/skills
 cp -r node_modules/@almondoo/klaus/skills/klaus ~/.agents/skills/klaus
 ```
 
-## 配置後の確認
+## Verifying the installation
 
-配置先のディレクトリ構成が以下になっていることを確認する。
+Confirm the installed directory looks like this:
 
 ```
 <skills-dir>/klaus/
 └── SKILL.md
 ```
 
-エージェントを再起動(または新しいセッションを開始)すると、YAML frontmatter の `description` に基づいてスキルが検出され、klaus のフロー定義に関する作業時に自動的に参照されるようになる。
+Restart the agent (or start a new session), and the skill will be discovered based on the `description` in the YAML frontmatter, then automatically referenced when the agent works on klaus flow definitions.
 
-`klaus init` はこのスキルファイルの配置は行わない(スコープ外)。プロジェクト直下向けの要点まとめが必要な場合は `klaus init` が生成する `AGENTS.md` を使うこと。
+`klaus init` does not install this skill file (out of scope). If you need a project-root summary instead, use the `AGENTS.md` that `klaus init` generates.

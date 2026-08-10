@@ -39,7 +39,9 @@ Base path `/api`. All responses are JSON. Returns core's types as-is (the type c
 | `GET /api/flows` | List of flow YAML files under cwd (path, name, step count. Parse errors are returned marked as errors) |
 | `GET /api/flows/detail?path=` | Parsed definition of a single flow |
 | `GET /api/environments` | List of environment names from `environments/*.yaml` |
+| `GET /api/environments/:name` / `PUT /api/environments/:name` | Get/update the contents of a single environment (for key-value editing from the UI; saved while preserving existing comments) |
 | `POST /api/runs` | Execute a flow. Body: `{ path, env? }`. The response is an **SSE stream** delivering per-step progress (`step-start` / `step-result`) and the final result (`run-result`) |
+| `POST /api/request` | Execute a single request. Without going through a flow YAML, assembles `{ request: { method?, url, headers?, query?, body?, graphql?, timeoutMs? }, env? }` on the spot and executes it, returning `{ result: StepResult }` as a single JSON response (not SSE) |
 | `GET /api/history?flow=&limit=&before=` | Read out history JSONL (newest first, paginated) |
 
 - To stream execution progress over SSE, core's `runner` must **expose a per-step-completion callback (or AsyncIterator)** (a requirement for the M1-M3 implementation; this can also be used for the CLI's progress display)
@@ -47,10 +49,10 @@ Base path `/api`. All responses are JSON. Returns core's types as-is (the type c
 
 ## Security (concretization of the requirements' constraints)
 
-1. **Bind only to 127.0.0.1** (`0.0.0.0` is not allowed even via configuration)
-2. **Startup token**: On server startup, generate a token with `crypto.randomBytes`, and open `http://127.0.0.1:<port>/?token=<t>` in the browser. On first access, validate the token and store it in a `SameSite=Strict` cookie; subsequent API requests are double-checked via the cookie plus a custom header (`X-Klaus-Token`)
-3. **DNS rebinding protection**: For every request, verify that the `Host` header is `127.0.0.1:<port>` / `localhost:<port>`. Mismatches return 403
-4. **CSRF protection**: State-changing APIs (`POST /api/runs`) require a custom header (which cannot be sent by a simple request, blocking submissions from anything other than the same origin). When an `Origin` header is present, only the same origin is allowed
+1. **Default is loopback binding**: When `--host` is not specified, bind only to `127.0.0.1` (connections from outside, e.g. LAN, are rejected by default). Only when `--host` explicitly specifies a non-loopback address (`0.0.0.0`, a LAN IP, etc.) are connections from other hosts accepted (an opt-in for cases such as docker-compose, where the UI needs to be reached through a container)
+2. **Startup token**: On server startup, generate a token with `crypto.randomBytes`, and open `http://127.0.0.1:<port>/?token=<t>` in the browser. On first access, validate the token and store it in a `SameSite=Strict` cookie; subsequent API requests are double-checked via the cookie plus a custom header (`X-Klaus-Token`). Token authentication is always enforced regardless of the bound host
+3. **DNS rebinding protection**: For every request, verify the `Host` header. When bound to the default loopback address (`127.0.0.1` / `localhost` / `::1`), the header is matched strictly against the `127.0.0.1:<port>` / `localhost:<port>` allowlist, and a mismatch returns 403. When explicitly bound to a non-loopback address via `--host`, the hostname the connecting client sends in the `Host` header cannot be enumerated in advance (it can vary by connection path, e.g. a LAN IP), so verification is relaxed to a port-only match. This relaxation is an opt-in that only takes effect when `--host` is explicitly specified; the default behavior (strict allowlist) is unchanged
+4. **CSRF protection**: State-changing APIs (`POST` / `PUT` / `DELETE`) require a matching cookie; when an `Origin` header is present, only the same origin is allowed. Origin verification follows the same criteria as the Host verification in 3 above (by default, strict matching against the loopback allowlist; relaxed to a port-only match only when `--host` is explicitly specified). Cookie verification is not subject to this relaxation and is always enforced in either case
 5. The UI is served from the same origin as the server (as per the requirements). No CORS headers are attached at all
 
 ## History JSONL contract (to be honored by the M1-M3 implementation)
@@ -73,10 +75,10 @@ State management starts with React's standard tools (useState / useReducer + fet
 ## `klaus ui` command specification
 
 ```
-klaus ui [--port <n>] [--no-open]
+klaus ui [-p <n>] [-H <host>] [--no-open]
 ```
 
-- If the port is not specified, an ephemeral port (an automatically chosen free port) is used
+- The CLI's default port is `4884` (`-p`/`--port` to override); the default bind host is `127.0.0.1` (`-H`/`--host` to override). An ephemeral port (an automatically chosen free port) is used only when `startServer()` is called directly without a port (via the CLI, the default port is always used)
 - After startup, the token-bearing URL is printed to stdout, and unless `--no-open` is given, the default browser is opened
 - Ctrl+C to exit (server only; any flow in progress is aborted)
 

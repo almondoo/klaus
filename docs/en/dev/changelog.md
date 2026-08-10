@@ -1,7 +1,7 @@
 # Changelog
 
 Records what changed in each release, plus **the decisions behind it and the pitfalls I hit along the way**.
-The current spec lives in the respective references ([CLI](../guide/cli.md) / [Flow definition](../guide/flow-definition.md) / [Architecture](architecture.md)) — this is the place I keep "why it ended up this way."
+The current spec lives in the respective references ([CLI](../../guide/cli.md) / [Flow definition](../../guide/flow-definition.md) / [Architecture](architecture.md)) — this is the place I keep "why it ended up this way."
 
 ## 0.1.1
 
@@ -96,7 +96,7 @@ Applied the full set of strict flags, including `exactOptionalPropertyTypes`. Th
 klaus ui -p 4400        # or --port 4400
 ```
 
-When omitted, it still auto-selects a free port as before. See the [CLI reference](../guide/cli.md) for details.
+When omitted, it still auto-selects a free port as before. See the [CLI reference](../../guide/cli.md) for details.
 
 ### Reworked the build setup
 
