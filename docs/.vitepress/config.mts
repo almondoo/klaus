@@ -1,4 +1,5 @@
 import { defineConfig } from "vitepress";
+import llmstxt from "vitepress-plugin-llms";
 
 // klaus ドキュメントサイトの VitePress 設定。
 // サイトのソースは docs/ のみ(ui/docs/ 配下は GitHub 上の絶対 URL でリンクする)。
@@ -15,6 +16,23 @@ export default defineConfig({
     build: {
       target: "esnext",
     },
+    plugins: [
+      // llms.txt / llms-full.txt を生成する(issue #48)。
+      // README の推奨に従いエージェント向けドキュメントは en 側のみを対象にする。
+      // workDir: "en" は使わない — workDir はリンク生成の基準パスも兼ねるため、
+      // "en/" プレフィックスが生成リンクから欠落し実際のページ URL (/klaus/en/...) とずれてしまう。
+      // 代わりに ignoreFiles で ja 側ページ(ルート直下の guide/ dev/)のみを除外し、
+      // srcDir (docs/) 基準の相対パスを維持することで正しい URL を保つ
+      llmstxt({
+        ignoreFiles: ["guide/**", "dev/**"],
+        // GitHub Pages 上の絶対 URL にする(base "/klaus/" は vitepressConfig.base から自動付与される)
+        domain: "https://almondoo.github.io",
+        // ルートの docs/index.md (ja) は description frontmatter を持たないため、
+        // en ロケールの description と揃えて明示指定する
+        description:
+          "A CLI tool for verifying local HTTP APIs. Request definitions are managed as plain YAML in git, with execution, assertions, and history management.",
+      }),
+    ],
   },
   title: "klaus",
   // GitHub Pages のプロジェクトサイト (https://almondoo.github.io/klaus/) 用のベースパス
@@ -45,8 +63,12 @@ export default defineConfig({
                 { text: "Getting Started", link: "/guide/getting-started" },
                 { text: "CLI リファレンス", link: "/guide/cli" },
                 { text: "フロー定義リファレンス", link: "/guide/flow-definition" },
+                { text: "OpenAPI からのフロー生成", link: "/guide/generate" },
+                { text: "record / replay モード", link: "/guide/record-replay" },
+                { text: "CLI オプションの既定値(klaus.config.yaml)", link: "/guide/config" },
                 { text: "実行履歴", link: "/guide/history" },
                 { text: "localhost UI", link: "/guide/ui" },
+                { text: "Agent Skill(Claude Code / Codex)", link: "/guide/agent-skill" },
               ],
             },
           ],
@@ -113,8 +135,15 @@ export default defineConfig({
                 { text: "Getting Started", link: "/en/guide/getting-started" },
                 { text: "CLI Reference", link: "/en/guide/cli" },
                 { text: "Flow Definition Reference", link: "/en/guide/flow-definition" },
+                { text: "Generating Flows from OpenAPI", link: "/en/guide/generate" },
+                { text: "record / replay mode", link: "/en/guide/record-replay" },
+                {
+                  text: "Default CLI options (klaus.config.yaml)",
+                  link: "/en/guide/config",
+                },
                 { text: "Execution History", link: "/en/guide/history" },
                 { text: "localhost UI", link: "/en/guide/ui" },
+                { text: "Agent Skill (Claude Code / Codex)", link: "/en/guide/agent-skill" },
               ],
             },
           ],

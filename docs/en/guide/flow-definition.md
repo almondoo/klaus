@@ -9,7 +9,7 @@ name: auth flow        # Required: flow name
 env: local             # Optional: references environments/local.yaml
 steps:                 # Required: at least one. name must be unique within the flow
   - name: login
-    request: { ... }   # Exactly one of request / ws is required (mutually exclusive)
+    request: { ... }   # Exactly one of request / ws / use is required (mutually exclusive)
     sse: { ... }       # Optional: SSE receive settings
     capture: { ... }   # Optional: captures variables from the response
     assert: { ... }    # Optional: assertions
@@ -17,6 +17,8 @@ steps:                 # Required: at least one. name must be unique within the 
 
 - Environment files are resolved as `environments/<name>.yaml` by searching upward from the cwd (stopping at the first ancestor directory containing `.git`, or at the filesystem root). See [Getting Started](getting-started.md) for details. `klaus run --env <name>` overrides the flow's `env:`
 - Environment files are a flat map of `key: string value`. Values can use templates (such as <code v-pre>{{env.X}}</code>)
+- Setting the reserved key `$protected: true` in an environment file makes `klaus run` refuse to run against that environment by default (exit 3). It only runs when `--allow-protected` is explicitly passed. This is a guardrail against accidentally running against a production-like environment; `$protected` cannot be referenced as a template variable (<code v-pre>{{...}}</code>). Execution via `klaus ui` / the server API never passes this flag, so protected environments are always refused there
+- `$protected` can only be set or unset by editing the file directly. It is not shown in the `klaus ui` environment editor, and saving from the UI leaves any existing `$protected` value untouched
 
 ## request (HTTP step)
 
@@ -94,6 +96,57 @@ ws:
 - `capture` is **ignored** for WS steps
 - Assertions use `messageCount` / `messages` (described below)
 
+## use (step reference)
+
+A step can write `use:` instead of `request` / `ws` to reuse another flow definition file (one that contains a single step) by pulling in its request / sse / assert. It's **mutually exclusive** with `request`, `ws`, and `sse` (writing both is a ParseError). This lets multiple flows reuse the same API check without copy-pasting the request definition, while the referenced file itself can still be run standalone as before (the design treats `api/` as an "executable API catalog" — see the [examples](https://github.com/almondoo/klaus/tree/main/examples) for details).
+
+```yaml
+# api/login-check.yaml — still runnable standalone
+name: Login API check
+steps:
+  - name: login
+    request:
+      method: POST
+      url: "{{baseUrl}}/login"
+      body: { email: "{{testEmail}}" }
+    assert:
+      status: 200
+      body:
+        - path: "$.token"
+          exists: true
+```
+
+```yaml
+# flows/auth-flow.yaml — reuse login without rewriting it
+name: Auth flow
+steps:
+  - name: login
+    use: ../api/login-check.yaml   # path relative to this flow file
+    capture:
+      token: "$.token"
+  - name: me
+    request:
+      method: GET
+      url: "{{baseUrl}}/me"
+      headers:
+        Authorization: "Bearer {{token}}"
+    assert:
+      status: 200
+```
+
+- **Resolution timing**: at flow load time (`klaus run` / `klaus validate` / the UI's flow detail endpoint). The referenced file's single step is expanded into a normal step (taking its `request` / `sse` / `assert`) before execution
+- **`name` / `capture` always come from the calling step**; the referenced step's values are ignored
+- **`assert` is merged additively** (not replaced): `headers` / `body` / `events` / `messages` are concatenated in referenced-then-caller order. `status` / `bodyText` / `duration` / `eventCount` / `messageCount` / `bodySchema` become a ParseError / a `klaus validate` FlowIssue if defined on both sides, since that would weaken the guarantee made by the standalone check (define it on only one side, or let the referenced step's definition win)
+- **The referenced file's `env:` is not pulled in** (the environment is always decided by the flow that's actually running). Placeholders (<code v-pre>{{var}}</code>) are resolved as usual, after expansion, using the calling flow's env / captures
+- **The path must be relative to this flow file.** Absolute paths are rejected. A resolved path that falls outside the project directory (the cwd `klaus` is run from) is also rejected (no escaping the project root via `../`)
+- If the referenced step itself has `use`, it's resolved recursively. Circular references are detected and rejected
+
+### v1 Limitations
+
+- The referenced file must contain **exactly one step** (pulling in multiple steps, inheritance, or overriding request fields is out of scope)
+- The referenced step must be an **HTTP request step** (referencing a `ws:` step is not supported)
+- A broken reference, a circular reference, a reference to a multi-step file, or a scalar `assert` conflict becomes a hinted, structured issue in `klaus validate`, and a ParseError (exit 2) in `klaus run`
+
 ## Templates
 
 <code v-pre>{{...}}</code> is resolved in the following order. **An unresolved variable or an undefined OS environment variable results in a RuntimeError (exit 3)** (it does not silently become an empty string).
@@ -133,6 +186,12 @@ assert:
     - { path: "$.email", equals: "{{testEmail}}" }
   bodyText:
     contains: "ok"
+  bodySchema:
+    type: object
+    required: [id, email]
+    properties:
+      id: { type: integer }
+      email: { type: string, format: email }
   duration:
     maxMs: 1000
   # For SSE
@@ -153,6 +212,7 @@ assert:
 | Headers | `headers[]` | `name` + `equals` / `contains` / `regex` / `exists` |
 | Body (JSONPath) | `body[]` | `path` + `exists` / `equals` / `contains` / `regex` |
 | Body (raw text) | `bodyText` | `equals` / `contains` / `regex` |
+| Body (JSON Schema) | `bodySchema` | a JSON Schema object |
 | Duration | `duration` | `maxMs` |
 | SSE event count | `eventCount` | `min` / `max` / `equals` |
 | SSE event | `events[]` | `index?` + `path?` + the matchers above |
@@ -164,6 +224,14 @@ Common semantics for `events` / `messages`:
 - When `index` is given: evaluated against the received data at that index
 - When `index` is omitted: **passes if any received data item matches**
 - When `path` is given: the received data (`data`) is JSON-parsed and the JSONPath is applied. When omitted, the matcher is applied to the raw string
+
+### bodySchema (JSON Schema body validation)
+
+- `bodySchema` takes a JSON Schema object embedded directly in the YAML (referencing an external file is not supported yet)
+- Validation is performed with [ajv](https://ajv.js.org/) using **draft 2020-12** (`Ajv2020`). Schemas originating from OpenAPI 3.1 generally work as-is
+- When the schema has multiple violations, **a separate `AssertionResult` is returned for each violation** (evaluation is not short-circuited on the first failure; all violations are reported together). Each result's `message` includes ajv's `instancePath` (`(root)` for a root-level violation) and the violation detail
+- SSE / WS steps, which have no body, always yield ok:false. An HTTP response whose body exists but fails to parse as JSON is validated against the schema as the raw string (e.g. a schema requiring `type: object` fails, while `type: string` may pass)
+- If the schema itself is invalid and ajv fails to compile it, this does not throw; it's reported as an ok:false assertion failure instead
 
 ## Flow Behavior on Step Failure
 
@@ -190,4 +258,4 @@ steps:
       url: "{{baseUrl}}/login"
 ```
 
-**Note**: constraints enforced via `superRefine` and described elsewhere on this page — the mutual exclusivity of `request.body` and `request.graphql`, requiring exactly one of `step.request` / `step.ws`, the `ws.url` scheme restriction, and step name uniqueness — are not expressible in the JSON Schema structure itself (they are noted in the `description` of the relevant properties). These are enforced only by runtime validation in `klaus validate` / `klaus run`.
+**Note**: constraints enforced via `superRefine` and described elsewhere on this page — the mutual exclusivity of `request.body` and `request.graphql`, requiring exactly one of `step.request` / `step.ws` / `step.use`, the `ws.url` scheme restriction, and step name uniqueness — are not expressible in the JSON Schema structure itself (they are noted in the `description` of the relevant properties). These are enforced only by runtime validation in `klaus validate` / `klaus run`. `use:` reference resolution (path boundaries, circular references, additive `assert` merging, etc.) is likewise enforced during load-time validation in `klaus validate` / `klaus run`, not by the schema.

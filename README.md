@@ -183,6 +183,10 @@ klaus ui [options]      # localhost Web UI(ランナー + 履歴ビューア)を
 
 全リクエスト / レスポンス / 所要時間が `.klaus/history/<日付>.jsonl` に1ステップ1行で追記される(スキーマは `v` フィールドで versioned)。git 管理するかどうかはプロジェクト側の判断(シークレットを含むレスポンスを扱う場合は `.gitignore` 推奨)。
 
+## Agent Skill(Claude Code / Codex)
+
+`skills/klaus/SKILL.md` として Agent Skill 形式のドキュメントを同梱している。`~/.claude/skills/klaus/`(Claude Code)や `~/.agents/skills/klaus/`(Codex)にコピーすると、フロー YAML の書き方や exit code の意味をエージェントがソースコードを読まずに把握できる。配置手順は [Agent Skill(Claude Code / Codex)](https://almondoo.github.io/klaus/guide/agent-skill) を参照。
+
 ## 開発
 
 ```bash

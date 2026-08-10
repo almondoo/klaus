@@ -1,23 +1,11 @@
+# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
 name: 認証フロー
 env: local          # examples/environments/local.yaml を参照(--env で上書き可)
 steps:
   - name: login
-    request:
-      method: POST
-      url: "{{baseUrl}}/login"              # 環境ファイルの baseUrl を埋め込み
-      headers:
-        Content-Type: application/json
-      body:
-        email: "{{testEmail}}"              # 環境ファイルの値を埋め込み
-        # シークレットは環境ファイルに直書きせず OS 環境変数を参照する:
-        #   password: "{{env.TEST_PASSWORD}}"
+    use: ../api/login-check.yaml            # api/login-check.yaml の request/assert をそのまま再利用(use: はこのファイル基準の相対パス)
     capture:
-      token: "$.token"                       # レスポンスの JSONPath をキャプチャ
-    assert:
-      status: 200
-      body:
-        - path: "$.token"
-          exists: true
+      token: "$.token"                       # レスポンスの JSONPath をキャプチャ(name/capture は呼び出し側のもの)
 
   - name: get-me
     request:

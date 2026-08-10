@@ -28,6 +28,7 @@
 
 - **CLI**: `tmp/cli-smoke/` 等の作業ディレクトリで、ビルド済み `dist/cli.js` に対して実際のコマンド一連(init → validate → run → history)を実行し、非 TTY での JSON 出力と exit code を確認する。`cd` が使えない実行環境では Node スクリプトから `execFileSync(process.execPath, [cliPath, ...args], { cwd })` で作業ディレクトリを指定する。
 - **UI**: 対象ディレクトリを cwd にして `node dist/cli.js ui --port <n> --no-open` を起動し、標準出力のトークン付き URL を Playwright で開いて実地確認する。確認観点: 変更した画面の主要操作が通ること、ブラウザコンソールに error が出ていないこと。
+  - `bash test_run.sh` で `klaus ui` の起動確認(基本起動 + opener 不在時の回帰)を自動化している。画面操作そのものの確認は引き続き上記の Playwright 実地確認で行う。
 - **fixture**: 外部ネットワークに依存しない。必要な API は `node:http` のローカル fixture(スクリプトは `tmp/` 配下)を起動して使い、終了時に停止する。
 
 ## 4. 環境の落とし穴(この repo で実際に踏んだもの)
