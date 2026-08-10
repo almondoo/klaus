@@ -36,6 +36,9 @@ describe("initCommand", () => {
     const envContent = await readFile(join(workDir, "environments", "local.yaml"), "utf-8");
     const agentsContent = await readFile(join(workDir, "AGENTS.md"), "utf-8");
     expect(flowContent).toContain("name: example flow");
+    expect(flowContent).toContain(
+      "# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json",
+    );
     expect(envContent).toContain("baseUrl:");
     expect(agentsContent).toContain("# AGENTS guide for klaus");
     expect(stdoutSpy.join("")).toContain("created: api/example.yaml");
@@ -58,6 +61,34 @@ describe("initCommand", () => {
     expect(agentsContent).toContain("## Directory convention");
     expect(agentsContent).toContain("`api/` holds single-step checks");
     expect(agentsContent).toContain("`flows/` holds multi-step scenarios");
+  });
+
+  it("生成される AGENTS.md にはエージェント実行環境向けの注意書き(klaus ui の長時間実行・Codex CLI のネットワーク制限)が含まれる", async () => {
+    await initCommand(workDir);
+
+    const agentsContent = await readFile(join(workDir, "AGENTS.md"), "utf-8");
+    expect(agentsContent).toContain("## Notes for agent environments");
+    expect(agentsContent).toContain("waits forever");
+    expect(agentsContent).toContain("run it in the background with an explicit timeout");
+    expect(agentsContent).toContain("network_access = true");
+    expect(agentsContent).toContain("~/.codex/config.toml");
+  });
+
+  it("生成される AGENTS.md には assert の運用指針(未指定時に HTTP 500 でも passed になる旨・最低 assert.status を書くべき旨)が含まれる", async () => {
+    await initCommand(workDir);
+
+    const agentsContent = await readFile(join(workDir, "AGENTS.md"), "utf-8");
+    expect(agentsContent).toContain("## Assert operating guidance");
+    expect(agentsContent).toContain("even on HTTP 500");
+    expect(agentsContent).toContain("assert.status");
+  });
+
+  it("生成される AGENTS.md には保護環境($protected / --allow-protected)の説明が含まれる", async () => {
+    await initCommand(workDir);
+
+    const agentsContent = await readFile(join(workDir, "AGENTS.md"), "utf-8");
+    expect(agentsContent).toContain("--allow-protected");
+    expect(agentsContent).toContain("$protected: true");
   });
 
   it("生成した api/example.yaml は klaus のローダー(loadFlow)を通る", async () => {

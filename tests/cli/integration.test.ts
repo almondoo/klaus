@@ -208,4 +208,124 @@ describe("cli integration", () => {
     expect(xml).toContain("<testsuite");
     expect(xml).toContain('<testcase name="ok"');
   });
+
+  it("(h) generate → validate: OpenAPI spec から生成したフロー YAML が validate を通る", async () => {
+    const specPath = join(workDir, "generate-source.yaml");
+    await writeFile(
+      specPath,
+      [
+        "openapi: 3.0.3",
+        "info:",
+        "  title: Integration Sample API",
+        '  version: "1.0.0"',
+        "paths:",
+        "  /ping:",
+        "    get:",
+        "      operationId: ping",
+        "      responses:",
+        '        "200":',
+        "          description: OK",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    const outDir = join(workDir, "generated-api");
+
+    const generateResult = await runCli(
+      ["generate", specPath, "--out-dir", outDir, "--json"],
+      workDir,
+    );
+
+    expect(generateResult.status).toBe(0);
+    const generateReport = JSON.parse(generateResult.stdout) as { generated: string[] };
+    // generated は validate と同様に cwd 相対の表示パスを返す
+    expect(generateReport.generated).toContain(join("generated-api", "ping.yaml"));
+
+    const validateResult = await runCli(["validate", join(outDir, "ping.yaml"), "--json"], workDir);
+
+    expect(validateResult.status).toBe(0);
+    const validateReport = JSON.parse(validateResult.stdout) as {
+      files: Array<{ valid: boolean }>;
+    };
+    expect(validateReport.files).toEqual([expect.objectContaining({ valid: true })]);
+  });
+
+  it("(i) klaus.config.yaml の run.env が --env 未指定時の既定値として使われる", async () => {
+    // workDir 直下に置くと以降の他テストの cwd(workDir)にも影響してしまうため、
+    // このテスト専用のサブディレクトリを cwd にする
+    const configWorkDir = join(workDir, "config-scenario");
+    await mkdir(join(configWorkDir, "environments"), { recursive: true });
+    await writeFile(
+      join(configWorkDir, "environments", "local.yaml"),
+      `baseUrl: "${fixture.baseUrl}"\n`,
+      "utf-8",
+    );
+    await writeFile(join(configWorkDir, "klaus.config.yaml"), "run:\n  env: local\n", "utf-8");
+    const flowPath = join(configWorkDir, "needs-env.yaml");
+    await writeFile(
+      flowPath,
+      'name: needs env flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "{{baseUrl}}/ok"\n    assert:\n      status: 200\n',
+      "utf-8",
+    );
+
+    const result = await runCli(["run", flowPath, "--no-history"], configWorkDir);
+
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe("passed");
+  });
+
+  it("(j) 不正な klaus.config.yaml(未知キー)があると run は exit 2 になり stderr に config ファイルのパスを含む", async () => {
+    // (i) と同様、workDir 直下に置くと他テストの cwd にも影響するため専用のサブディレクトリを使う
+    const configWorkDir = join(workDir, "config-invalid-scenario");
+    await mkdir(configWorkDir, { recursive: true });
+    await writeFile(join(configWorkDir, "klaus.config.yaml"), "run:\n  unknownKey: x\n", "utf-8");
+    const flowPath = join(configWorkDir, "success.yaml");
+    await writeFile(
+      flowPath,
+      `name: success flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+
+    const result = await runCli(["run", flowPath, "--no-history"], configWorkDir);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(join(configWorkDir, "klaus.config.yaml"));
+  });
+
+  it("(k) klaus.config.yaml の ui.port が --port 未指定時の既定値として使われる", async () => {
+    // (i) と同様、workDir 直下に置くと他テストの cwd にも影響するため専用のサブディレクトリを使う
+    const configWorkDir = join(workDir, "config-ui-scenario");
+    await mkdir(configWorkDir, { recursive: true });
+    // 既定ポート 4884 は Docker(verify 用 docker-compose)が占有しているため使わない
+    await writeFile(join(configWorkDir, "klaus.config.yaml"), "ui:\n  port: 14899\n", "utf-8");
+
+    const child = spawn("node", [cliPath, "ui", "--no-open"], { cwd: configWorkDir });
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf-8");
+    });
+    // spawn 失敗等で 'error' が発生してもテストプロセスごとクラッシュしないようにする
+    child.on("error", () => {});
+
+    try {
+      const expectedLine = "klaus UI started: http://127.0.0.1:14899/";
+      const deadline = Date.now() + 15000;
+      while (!stdout.includes(expectedLine) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(stdout).toContain(expectedLine);
+    } finally {
+      child.kill("SIGTERM");
+      // グレースフル停止(SIGTERM ハンドラでの close() + exit)を短時間だけ待つ(保険付きで待ちすぎない)
+      await new Promise<void>((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          resolve();
+          return;
+        }
+        child.once("exit", () => resolve());
+        setTimeout(resolve, 3000);
+      });
+    }
+  }, 20000);
 });
