@@ -402,6 +402,46 @@ describe("executeFlow", () => {
     expect(result.steps[0]?.error).toContain("failed to evaluate JSONPath");
   });
 
+  it("capture はネストしたフィールド・配列インデックスの JSONPath を指定でき、後続ステップのテンプレートで使える", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: { user: { id: "u-1" } }, items: [{ id: "i-1" }] }));
+    });
+    const { port } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "nested capture flow",
+        steps: [
+          {
+            name: "fetch",
+            request: { method: "GET", url: `http://127.0.0.1:${port}/resource` },
+            capture: { userId: "$.data.user.id", firstId: "$.items[0].id" },
+            assert: { status: 200 },
+          },
+          {
+            name: "use-captured",
+            request: {
+              method: "GET",
+              url: `http://127.0.0.1:${port}/users/{{userId}}/items/{{firstId}}`,
+            },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "nested-capture-flow.yaml", { cwd, history: false });
+
+      expect(result.status).toBe("passed");
+      expect(result.steps[1]?.status).toBe("passed");
+      expect(result.steps[1]?.request?.url).toBe(`http://127.0.0.1:${port}/users/u-1/items/i-1`);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it("request も ws も持たないステップは(schema の superRefine を bypass した場合でも)明確な RuntimeError で error になる", async () => {
     cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
     // 通常は flowSchema の superRefine が「request か ws のどちらかが必須」を検証するため
