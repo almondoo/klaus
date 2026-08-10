@@ -45,7 +45,8 @@ describe("openBrowser", () => {
    * darwin(このテスト実行機の実プラットフォーム)は実在する "open" コマンドを spawn してしまい
    * 実際にブラウザが開いてしまう(テストの副作用として望ましくない)ため、darwin 以外の
    * プラットフォーム分岐(win32/その他)のみを process.platform の一時差し替えで検証する。
-   * いずれも対象コマンド(cmd/xdg-open)はこの macOS 上には実在しないため、ENOENT で安全に完結する。
+   * 対象コマンド(cmd/xdg-open)は実行環境に実在しうる(CI の ubuntu には xdg-open がある)ため、
+   * PATH も実在しないディレクトリに差し替えて、どの OS でも決定的に ENOENT にする。
    */
   it.each([
     { platform: "win32", expectedCommand: "cmd" },
@@ -66,7 +67,9 @@ describe("openBrowser", () => {
       }) as typeof process.stderr.write;
 
       const originalPlatform = process.platform;
+      const originalPath = process.env.PATH;
       Object.defineProperty(process, "platform", { value: platform, configurable: true });
+      process.env.PATH = "/nonexistent-path-for-enoent-test";
       try {
         expect(() => {
           openBrowser("http://localhost:3000");
@@ -75,6 +78,7 @@ describe("openBrowser", () => {
         await warningEmitted;
       } finally {
         Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+        process.env.PATH = originalPath;
       }
 
       const output = chunks.join("");
