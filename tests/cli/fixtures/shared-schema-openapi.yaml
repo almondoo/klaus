@@ -1,0 +1,37 @@
+openapi: 3.0.3
+info:
+  title: Shared Schema API
+  version: "1.0.0"
+paths:
+  /orders:
+    post:
+      operationId: createOrder
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - billingAddress
+                - shippingAddress
+              properties:
+                billingAddress:
+                  $ref: "#/components/schemas/Address"
+                shippingAddress:
+                  $ref: "#/components/schemas/Address"
+      responses:
+        "201":
+          description: Created
+components:
+  schemas:
+    Address:
+      type: object
+      required:
+        - city
+        - zip
+      properties:
+        city:
+          type: string
+        zip:
+          type: string
