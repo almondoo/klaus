@@ -1,13 +1,22 @@
 import { randomUUID } from "node:crypto";
 import { JSONPath } from "jsonpath-plus";
 import { evaluateAssertions } from "./assert.js";
-import { loadEnvironment } from "./env.js";
+import {
+  appendCassetteEntry,
+  buildCassetteEntry,
+  type CassetteEntry,
+  cassetteEntryToHttpResponse,
+  findCassetteEntry,
+  loadCassetteIndex,
+} from "./cassette.js";
+import { isProtectedEnvironment, loadEnvironment, toTemplateVariables } from "./env.js";
 import { KlausError, RuntimeError } from "./errors.js";
 import type { HistoryEntry } from "./history.js";
 import { appendHistory, maskHistoryEntry } from "./history.js";
+import type { HttpRequestOptions, HttpResponse } from "./http.js";
 import { sendRequest } from "./http.js";
 import { loadFlow } from "./loader.js";
-import type { Flow, RequestDef, Step } from "./schema.js";
+import type { Environment, Flow, RequestDef, Step } from "./schema.js";
 import { requestSchema } from "./schema.js";
 import { receiveSse } from "./sse.js";
 import { renderDeep, renderHeaders, renderString, type TemplateContext } from "./template.js";
@@ -43,6 +52,13 @@ export interface RunFlowOptions {
   cwd?: string;
   /** フロー定義の env を上書きする環境名。呼び出し元(CLI オプション等)から明示的に undefined が渡ることがある */
   envNameOverride?: string | undefined;
+  /**
+   * $protected: true を付けた環境ファイルへの実行を許可するかどうか。
+   * 既定は false(未指定)で、その場合 $protected な環境への実行は RuntimeError で拒否される
+   * (CLI の --allow-protected から渡される想定。サーバー/UI 経由の実行はこのオプションを渡さないため、
+   * 保護環境は常に拒否される)。呼び出し元(CLI オプション等)から明示的に undefined が渡ることがある
+   */
+  allowProtected?: boolean | undefined;
   /** 複数フローをまとめて runId で紐付けたい場合に指定する */
   runId?: string;
   history?: boolean | ((entry: HistoryEntry) => void | Promise<void>);
@@ -60,15 +76,75 @@ export interface RunFlowOptions {
    */
   onWarning?: (message: string) => void;
   /**
-   * フロー(または単発リクエスト)実行完了時に、収集済みの secrets({{env.X}} で解決した値)を
-   * 呼び出し元へ渡すコールバック。履歴書き込みのマスクとは別経路で、CLI の JUnit ファイル出力など
-   * 呼び出し元側で独自にマスクしたい場合に使う想定。未指定の場合は何もしない。
-   * runFlows 経由で複数フローを実行する場合はフローごとに呼ばれる(呼び出し元で累積すること)。
+   * ステップが新たに解決した secrets({{env.X}} で解決した値)を、そのステップの
+   * onStepComplete より前に呼び出し元へ渡すコールバック。履歴書き込みのマスクとは別経路で、
+   * CLI の逐次テキスト出力・JUnit ファイル出力など呼び出し元側で独自にマスクしたい場合に使う想定。
+   * 未指定の場合は何もしない。
+   * ステップ単位で発火するため、1フローの実行中に複数回呼ばれ得る(そのステップで新規に解決した
+   * secrets のみを渡す。既に通知済みの値は再通知しない)。呼び出し元は複数回の呼び出しを
+   * 集合的に(累積して)扱うこと。runFlows 経由で複数フローを実行する場合はフローをまたいでも
+   * 同様に随時呼ばれる。
    */
   onSecrets?: (secrets: readonly string[]) => void;
+  /**
+   * record/replay モードの設定。指定時、HTTP ステップ(SSE/WS を除く)の送受信をカセットファイル経由にする。
+   * - "record": 実際にリクエストを送りつつ、レスポンスを secrets でマスクしてカセット(dir/cassette.jsonl)に
+   *   追記する。
+   * - "replay": ネットワークに出ず、dir のカセットから method + URL(マスク済み)の完全一致で応答を返す。
+   *   記録に無いリクエストは RuntimeError(ステップ error。CLI では exit 3)にする。
+   * SSE/WS ステップを含むフローで指定した場合、そのステップは明示的な RuntimeError になる
+   * (黙って実ネットワークへ素通ししない)。
+   */
+  recording?: { mode: "record" | "replay"; dir: string } | undefined;
 }
 
 const DEFAULT_HISTORY = true;
+
+/** executeStep に渡す record/replay の実行時状態。replay モードでは索引済みカセットを保持する */
+interface ActiveRecording {
+  mode: "record" | "replay";
+  dir: string;
+  /** replay モードでのみ設定する(executeFlow で loadCassetteIndex 済み) */
+  replayIndex?: Map<string, CassetteEntry>;
+  /**
+   * replay モードでカセットファイルの読み込み自体に失敗した場合(ファイルが無い等)に保持する。
+   * ここで即座に投げず、実際に HTTP ステップが実行されるタイミング(executeStep の try/catch 内)まで
+   * 遅延させることで、記録にないリクエストと同じ「ステップ error → exit 3」の経路に統一する。
+   */
+  replayLoadError?: RuntimeError;
+}
+
+/**
+ * record/replay モードに応じて HTTP レスポンスを解決する。
+ * - 未指定時: 通常どおり sendRequest で実ネットワークへ送信する。
+ * - record: sendRequest で実際に送信しつつ、その時点の secrets でマスクしたレスポンスをカセットへ追記する。
+ * - replay: 実ネットワークへ出ず、replayIndex から method + URL(マスク済み)一致のエントリを探して返す。
+ *   見つからない場合は findCassetteEntry が RuntimeError を投げ、呼び出し元(executeStep の catch)で
+ *   ステップ error として扱われる。
+ */
+async function resolveHttpResponse(
+  recording: ActiveRecording | undefined,
+  requestOptions: HttpRequestOptions,
+  secrets: Set<string> | undefined,
+): Promise<HttpResponse> {
+  if (!recording) {
+    return sendRequest(requestOptions);
+  }
+  const secretList = secrets ? [...secrets] : [];
+  if (recording.mode === "replay") {
+    // カセットファイル自体の読み込みに失敗している場合は、ここで初めて RuntimeError を投げる
+    // (executeStep の try/catch でステップ error になり、記録外リクエストと同じ経路で exit 3 になる)
+    if (recording.replayLoadError) throw recording.replayLoadError;
+    // 読み込み成功時は executeFlow が必ず replayIndex を設定済みにする
+    const index = recording.replayIndex as Map<string, CassetteEntry>;
+    const entry = findCassetteEntry(index, requestOptions.method, requestOptions.url, secretList);
+    return cassetteEntryToHttpResponse(entry);
+  }
+  const response = await sendRequest(requestOptions);
+  const entry = buildCassetteEntry(requestOptions.method, requestOptions.url, response, secretList);
+  await appendCassetteEntry(recording.dir, entry);
+  return response;
+}
 
 /** Accept ヘッダーまたは sse ブロックの存在で SSE モードかどうかを判定する(ws ステップは対象外) */
 function isSseStep(step: Step): boolean {
@@ -158,6 +234,13 @@ async function executeStep(
   templateContext: TemplateContext,
   runId: string,
   flowName: string,
+  recording: ActiveRecording | undefined,
+  /**
+   * 保護環境($protected: true かつ未許可)への実行を検知した場合の RuntimeError。
+   * 指定されている場合、リクエスト送信前にこれを投げてステップを error にする
+   * (record/replay モードで replayLoadError を遅延して投げるのと同じ考え方)。
+   */
+  blockedError?: RuntimeError,
 ): Promise<{
   result: StepResult;
   captured: Record<string, unknown>;
@@ -167,6 +250,20 @@ async function executeStep(
   let requestSnapshot: RequestSnapshot | undefined;
 
   try {
+    // 保護環境への実行が拒否されている場合、リクエストを送らずここでステップ error にする
+    if (blockedError) {
+      throw blockedError;
+    }
+
+    // record/replay モードは HTTP のみ対応(SSE/WS は初版スコープ外)。
+    // 黙って実ネットワークへ素通しせず、ここで明示的な RuntimeError にしてステップ error にする。
+    if (recording && (step.ws || isSseStep(step))) {
+      throw new RuntimeError(
+        `step "${step.name}": SSE/WS steps are not supported in record/replay mode (HTTP only, and GraphQL over HTTP). ` +
+          "Remove --record/--replay, or exclude this step from the flow.",
+      );
+    }
+
     // アサーションの期待値もテンプレート展開の対象(例: equals: "{{testEmail}}")
     const assertDef = step.assert ? renderDeep(step.assert, templateContext) : undefined;
 
@@ -312,13 +409,11 @@ async function executeStep(
       };
     }
 
-    const response = await sendRequest({
-      method,
-      url,
-      headers,
-      body,
-      timeoutMs: request.timeoutMs,
-    });
+    const response = await resolveHttpResponse(
+      recording,
+      { method, url, headers, body, timeoutMs: request.timeoutMs },
+      templateContext.secrets,
+    );
 
     const assertions = evaluateAssertions(assertDef, {
       status: response.status,
@@ -402,6 +497,25 @@ function aggregateStatus(statuses: AggregatableStatus[]): "passed" | "failed" | 
 }
 
 /**
+ * 環境が $protected: true かつ許可されていない場合に、ステップへ伝播させる RuntimeError を返す。
+ * ここでは投げずに返すだけにし、呼び出し元がリクエスト送信前の executeStep に渡すことで、
+ * 各ステップが既存の RuntimeError → ステップ error(exit 3)の経路に自然に乗るようにする
+ * (record/replay モードの replayLoadError と同じ「検知は早期・エラー化は遅延」という設計)。
+ * エラーメッセージには環境名と回避策(--allow-protected)を明記する。
+ */
+function checkEnvironmentAllowed(
+  envName: string | undefined,
+  environment: Environment,
+  allowProtected: boolean | undefined,
+): RuntimeError | undefined {
+  if (!isProtectedEnvironment(environment) || allowProtected) return undefined;
+  return new RuntimeError(
+    `environment "${envName}" is protected ($protected: true) and refuses execution by default. ` +
+      "Pass --allow-protected to run against this environment intentionally.",
+  );
+}
+
+/**
  * 既に読み込み済みの Flow を実行する。
  * loadFlow を経由しないため、ファイルを介さないユニットテストからも呼べる。
  */
@@ -413,11 +527,38 @@ export async function executeFlow(
   const cwd = options.cwd ?? process.cwd();
   const runId = options.runId ?? randomUUID();
   const environment = await loadEnvironment(cwd, flow.env, options.envNameOverride);
+  const protectedBlockedError = checkEnvironmentAllowed(
+    options.envNameOverride ?? flow.env,
+    environment,
+    options.allowProtected,
+  );
   const historySink = resolveHistorySink(cwd, options.history);
+
+  // replay モードでは実行前にカセットを読み込み、索引化しておく(ステップごとの再読み込みを避ける)。
+  // 読み込み失敗(ファイルが無い等)はここでは投げず、activeRecording.replayLoadError に保持して、
+  // 実際に HTTP ステップが実行されるタイミング(resolveHttpResponse)まで遅延させる
+  // (record モードは事前読み込み不要。ステップごとに追記するだけでよい)。
+  let activeRecording: ActiveRecording | undefined;
+  if (options.recording) {
+    if (options.recording.mode === "replay") {
+      try {
+        const replayIndex = await loadCassetteIndex(options.recording.dir);
+        activeRecording = { mode: "replay", dir: options.recording.dir, replayIndex };
+      } catch (error) {
+        const replayLoadError =
+          error instanceof RuntimeError ? error : new RuntimeError(String(error));
+        activeRecording = { mode: "replay", dir: options.recording.dir, replayLoadError };
+      }
+    } else {
+      activeRecording = { mode: "record", dir: options.recording.dir };
+    }
+  }
 
   const captures: Record<string, unknown> = {};
   // {{env.X}} で解決した値をフロー実行全体で蓄積する(履歴に書き込む前のマスクに使う)
   const secrets = new Set<string>();
+  // onSecrets で既に通知済みの値(重複通知を避けるため、ステップをまたいで蓄積する)
+  const notifiedSecrets = new Set<string>();
   const steps: StepResult[] = [];
   const flowStartedAt = performance.now();
   let skipRest = false;
@@ -451,8 +592,19 @@ export async function executeFlow(
         assertions: [],
       };
     } else {
-      const templateContext: TemplateContext = { captures, env: environment, secrets };
-      const outcome = await executeStep(step, templateContext, runId, flow.name);
+      const templateContext: TemplateContext = {
+        captures,
+        env: toTemplateVariables(environment),
+        secrets,
+      };
+      const outcome = await executeStep(
+        step,
+        templateContext,
+        runId,
+        flow.name,
+        activeRecording,
+        protectedBlockedError,
+      );
       result = outcome.result;
       captured = outcome.captured;
       historyEntry = outcome.historyEntry;
@@ -473,6 +625,16 @@ export async function executeFlow(
       }
     }
 
+    // このステップが新たに解決した secrets を、onStepComplete(text 出力の契機)より前に通知する。
+    // 既に通知済みの値は除外し、CLI 側での重複マスク処理・二重カウントを避ける。
+    if (options.onSecrets) {
+      const newSecrets = [...secrets].filter((value) => !notifiedSecrets.has(value));
+      if (newSecrets.length > 0) {
+        for (const value of newSecrets) notifiedSecrets.add(value);
+        options.onSecrets(newSecrets);
+      }
+    }
+
     steps.push(result);
     Object.assign(captures, captured);
 
@@ -485,9 +647,6 @@ export async function executeFlow(
 
   const durationMs = performance.now() - flowStartedAt;
   const status = aggregateStatus(steps.map((s) => s.status));
-
-  // 実行完了時点で収集済みの secrets を呼び出し元へ渡す(履歴とは別経路のマスク用)
-  options.onSecrets?.([...secrets]);
 
   return { name: flow.name, file: filePath, status, steps, durationMs };
 }
@@ -555,14 +714,29 @@ export async function executeSingleRequest(
   const cwd = options.cwd ?? process.cwd();
   const request = requestSchema.parse(options.request);
   const environment = await loadEnvironment(cwd, undefined, options.envName);
+  // 単発実行(server/UI 経由)は allowProtected を受け取らないため、保護環境は常に拒否される
+  // (v1 の意図的な挙動。--allow-protected は CLI の run コマンド専用)
+  const protectedBlockedError = checkEnvironmentAllowed(options.envName, environment, undefined);
   const runId = randomUUID();
   const flowName = "(single)";
   const captures: Record<string, unknown> = {};
   const secrets = new Set<string>();
-  const templateContext: TemplateContext = { captures, env: environment, secrets };
+  const templateContext: TemplateContext = {
+    captures,
+    env: toTemplateVariables(environment),
+    secrets,
+  };
   const step: Step = { name: "request", request };
 
-  const outcome = await executeStep(step, templateContext, runId, flowName);
+  // 単発実行(UI からの単発リクエスト実行)は record/replay の対象外(フロー実行専用機能のため)
+  const outcome = await executeStep(
+    step,
+    templateContext,
+    runId,
+    flowName,
+    undefined,
+    protectedBlockedError,
+  );
 
   const shouldWriteHistory = options.history ?? DEFAULT_HISTORY;
   if (shouldWriteHistory && outcome.historyEntry) {

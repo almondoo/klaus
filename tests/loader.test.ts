@@ -193,6 +193,35 @@ steps:
     expect(issue?.hint).toBe("example: keep either request or ws, not both");
   });
 
+  it("step.use と request の排他違反にヒントが付く(request/ws の排他ヒントとは文言で区別される)", () => {
+    const yaml = `
+name: sample
+steps:
+  - name: step1
+    use: ../api/example.yaml
+    request:
+      method: GET
+      url: "https://example.com"
+`;
+    const result = validateFlowYaml(yaml);
+    expect(result.valid).toBe(false);
+    if (result.valid) return;
+    const issue = result.errors.find((e) => e.path === "steps.0.use");
+    expect(issue?.message).toContain("mutually exclusive");
+    expect(issue?.hint).toBe("example: keep either use or request/ws/sse, not both");
+  });
+
+  it("use のみを指定したステップは、ファイルコンテキストの無い validateFlowYaml でも valid になる(request 必須の免除)", () => {
+    const yaml = `
+name: sample
+steps:
+  - name: step1
+    use: ../api/example.yaml
+`;
+    const result = validateFlowYaml(yaml);
+    expect(result.valid).toBe(true);
+  });
+
   it("step.request / step.ws のどちらも指定されていない場合にヒントが付く", () => {
     const yaml = `
 name: sample
@@ -288,6 +317,52 @@ steps:
     const issue = result.errors.find((e) => e.path === "name");
     expect(issue).toBeDefined();
     expect(issue?.hint).toBeUndefined();
+  });
+});
+
+describe("validateFlowYaml / スキーマ違反の行番号解決", () => {
+  it("型違反(ネストしたパス)は該当ノードの line/column をそのまま解決する", () => {
+    const yaml = `
+name: sample
+steps:
+  - name: step1
+    request:
+      method: 123
+      url: "https://example.com"
+`;
+    const result = validateFlowYaml(yaml);
+    expect(result.valid).toBe(false);
+    if (result.valid) return;
+    const issue = result.errors.find((e) => e.path === "steps.0.request.method");
+    expect(issue?.line).toBe(6);
+    expect(issue?.column).toBe(15);
+  });
+
+  it("必須キー欠落(url)は該当ノードが無いため、親ノード(request)の位置にフォールバックする", () => {
+    const yaml = `
+name: sample
+steps:
+  - name: step1
+    request:
+      method: GET
+`;
+    const result = validateFlowYaml(yaml);
+    expect(result.valid).toBe(false);
+    if (result.valid) return;
+    const issue = result.errors.find((e) => e.path === "steps.0.request.url");
+    expect(issue?.line).toBe(6);
+    expect(issue?.column).toBe(7);
+  });
+
+  it("ルートまで辿ってもノードを解決できない場合(空ドキュメント)は line/column を付与しない", () => {
+    const result = validateFlowYaml("");
+    expect(result.valid).toBe(false);
+    if (result.valid) return;
+    expect(result.errors.length).toBeGreaterThan(0);
+    for (const issue of result.errors) {
+      expect(issue.line).toBeUndefined();
+      expect(issue.column).toBeUndefined();
+    }
   });
 });
 

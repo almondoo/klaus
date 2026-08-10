@@ -247,6 +247,59 @@ describe("executeFlow", () => {
     ]);
   });
 
+  it("onSecrets はステップ単位で発火し、そのステップの onStepComplete より前に新規解決した secrets を通知する(同じ値は重複通知しない)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+    const SECRET_KEY = "KLAUS_TEST_ONSECRETS_TIMING";
+    const SECRET_VALUE = "onsecrets-timing-value-999";
+    process.env[SECRET_KEY] = SECRET_VALUE;
+    try {
+      const flow = flowSchema.parse({
+        name: "onSecrets timing flow",
+        steps: [
+          {
+            name: "step1",
+            request: {
+              method: "GET",
+              url: `${ctx.baseUrl}/me`,
+              headers: { Authorization: `Bearer {{env.${SECRET_KEY}}}` },
+            },
+          },
+          {
+            // step2 でも同じ secret を再度参照する(重複通知が起きないことを確認する)
+            name: "step2",
+            request: {
+              method: "GET",
+              url: `${ctx.baseUrl}/me`,
+              headers: { Authorization: `Bearer {{env.${SECRET_KEY}}}` },
+            },
+          },
+        ],
+      });
+
+      const events: string[] = [];
+      const secretsCalls: string[][] = [];
+      await executeFlow(flow, "onsecrets-timing-flow.yaml", {
+        cwd,
+        history: false,
+        onStepComplete: (context) => {
+          events.push(`complete:${context.result.name}`);
+        },
+        onSecrets: (secrets) => {
+          secretsCalls.push([...secrets]);
+          events.push(`secrets:${secrets.join(",")}`);
+        },
+      });
+
+      // step1 が解決した secret の通知は、step1 の onStepComplete より前に届く
+      // (フロー完了後の一括通知ではなく、ステップ単位で即時発火することの検証)
+      expect(events).toEqual([`secrets:${SECRET_VALUE}`, "complete:step1", "complete:step2"]);
+      // step2 で同じ値が再解決されても、既に通知済みのため再通知はしない
+      expect(secretsCalls).toEqual([[SECRET_VALUE]]);
+    } finally {
+      delete process.env[SECRET_KEY];
+    }
+  });
+
   it("history: true(デフォルト)で .klaus/history/*.jsonl に実行したステップ数だけ追記される", async () => {
     cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
     const flow = buildAuthFlow();
@@ -722,6 +775,64 @@ describe("executeFlow", () => {
         delete process.env[QUERY_SECRET_KEY];
         await new Promise<void>((resolve) => server.close(() => resolve()));
       }
+    });
+  });
+
+  describe("$protected 環境", () => {
+    async function buildProtectedFlow(cwd: string) {
+      await mkdir(join(cwd, "environments"), { recursive: true });
+      await writeFile(join(cwd, "environments", "prod.yaml"), "$protected: true\nbaseUrl: x\n");
+      return flowSchema.parse({
+        name: "protected flow",
+        env: "prod",
+        steps: [
+          {
+            name: "get-me",
+            request: { method: "GET", url: `${ctx.baseUrl}/me` },
+          },
+        ],
+      });
+    }
+
+    it("allowProtected 未指定だと RuntimeError でステップ error になり、--allow-protected の案内を含む", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+      const flow = await buildProtectedFlow(cwd);
+
+      const result = await executeFlow(flow, "protected-flow.yaml", { cwd, history: false });
+
+      expect(result.status).toBe("error");
+      expect(result.steps[0]?.status).toBe("error");
+      expect(result.steps[0]?.error).toContain("prod");
+      expect(result.steps[0]?.error).toContain("--allow-protected");
+    });
+
+    it("allowProtected: true を指定すると実行される", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+      const flow = await buildProtectedFlow(cwd);
+
+      const result = await executeFlow(flow, "protected-flow.yaml", {
+        cwd,
+        history: false,
+        allowProtected: true,
+      });
+
+      expect(result.status).toBe("passed");
+      expect(result.steps[0]?.status).toBe("passed");
+    });
+
+    it("$protected の無い環境ファイルは従来どおり実行される(回帰)", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+      await mkdir(join(cwd, "environments"), { recursive: true });
+      await writeFile(join(cwd, "environments", "local.yaml"), "baseUrl: x\n");
+      const flow = flowSchema.parse({
+        name: "unprotected flow",
+        env: "local",
+        steps: [{ name: "get-me", request: { method: "GET", url: `${ctx.baseUrl}/me` } }],
+      });
+
+      const result = await executeFlow(flow, "unprotected-flow.yaml", { cwd, history: false });
+
+      expect(result.status).toBe("passed");
     });
   });
 });

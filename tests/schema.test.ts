@@ -323,4 +323,14 @@ describe("environmentSchema", () => {
   it("値が数値など文字列以外だと検証エラーになる", () => {
     expect(() => environmentSchema.parse({ port: 3000 })).toThrow();
   });
+
+  it("予約キー $protected(boolean)を受け入れる", () => {
+    const result = environmentSchema.parse({ baseUrl: "http://localhost:3000", $protected: true });
+    expect(result.$protected).toBe(true);
+    expect(result.baseUrl).toBe("http://localhost:3000");
+  });
+
+  it("$protected に文字列を渡すと検証エラーになる(boolean 専用)", () => {
+    expect(() => environmentSchema.parse({ $protected: "true" })).toThrow();
+  });
 });
