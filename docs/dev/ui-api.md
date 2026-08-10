@@ -1,6 +1,6 @@
 # klaus ui — HTTP API と内部構成
 
-利用者向けの使い方は [../guide/ui.md](../guide/ui.md) を参照。
+利用者向けの使い方は [../guide/ui.md](../ja/guide/ui.md) を参照。
 
 ## HTTP API リファレンス
 

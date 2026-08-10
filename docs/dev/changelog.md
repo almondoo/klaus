@@ -1,7 +1,7 @@
 # 変更履歴
 
 各リリースで何が変わったかと、**その背景にある判断・踏んだ落とし穴**を記録する。
-API の現在の仕様は各リファレンス([CLI](../guide/cli.md) / [フロー定義](../guide/flow-definition.md) / [アーキテクチャ](architecture.md))が正で、ここは「なぜそうなったか」を残す場所。
+API の現在の仕様は各リファレンス([CLI](../ja/guide/cli.md) / [フロー定義](../ja/guide/flow-definition.md) / [アーキテクチャ](architecture.md))が正で、ここは「なぜそうなったか」を残す場所。
 
 ## 0.1.1
 
@@ -96,7 +96,7 @@ overrides:
 klaus ui -p 4400        # または --port 4400
 ```
 
-未指定時は従来どおり空きポートを自動選択する。詳細は [CLI リファレンス](../guide/cli.md)。
+未指定時は従来どおり空きポートを自動選択する。詳細は [CLI リファレンス](../ja/guide/cli.md)。
 
 ### ビルド構成の見直し
 

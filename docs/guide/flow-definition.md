@@ -1,62 +1,62 @@
-# フロー定義リファレンス
+# Flow Definition Reference
 
-klaus のリクエスト定義は素の YAML。**1ファイル = 1フロー(複数ステップ)**で、キャプチャとアサーションを定義に内包する。スキーマは zod で検証され、違反は exit 2(ParseError)になる。
+klaus request definitions are plain YAML. **One file = one flow (a sequence of steps)**, with captures and assertions embedded directly in the definition. The schema is validated with zod; violations result in exit 2 (ParseError).
 
-## ファイル構造
+## File Structure
 
 ```yaml
-name: 認証フロー        # 必須: フロー名
-env: local             # 任意: environments/local.yaml を参照
-steps:                 # 必須: 1件以上。name はフロー内で一意
+name: auth flow        # Required: flow name
+env: local             # Optional: references environments/local.yaml
+steps:                 # Required: at least one. name must be unique within the flow
   - name: login
-    request: { ... }   # request / ws / use のいずれか一方が必須(排他)
-    sse: { ... }       # 任意: SSE 受信設定
-    capture: { ... }   # 任意: レスポンスからの変数キャプチャ
-    assert: { ... }    # 任意: アサーション
+    request: { ... }   # Exactly one of request / ws / use is required (mutually exclusive)
+    sse: { ... }       # Optional: SSE receive settings
+    capture: { ... }   # Optional: captures variables from the response
+    assert: { ... }    # Optional: assertions
 ```
 
-- 環境ファイルは cwd から上方探索(`.git` を含む祖先ディレクトリ、またはファイルシステムルートで打ち切り)で `environments/<name>.yaml` を解決する。詳細は [Getting Started](getting-started.md) を参照。`klaus run --env <name>` でフローの `env:` を上書きできる
-- 環境ファイルは `キー: 文字列値` のフラットなマップ。値にはテンプレート(<code v-pre>{{env.X}}</code> 等)を使える
-- 予約キー `$protected: true` を環境ファイルに書くと、その環境への `klaus run` はデフォルトで拒否される(exit 3)。`--allow-protected` を明示した場合のみ実行できる。本番相当の環境を誤って実行しないためのガードレールで、`$protected` はテンプレート変数(<code v-pre>{{...}}</code>)としては参照できない。`klaus ui` / server API 経由の実行はこのフラグを渡さないため、保護環境は常に拒否される
-- `$protected` はファイル直接編集でのみ設定・解除する。`klaus ui` の環境エディタには表示されず、UI からの保存でも既存の `$protected` の値は変更されずそのまま保持される
+- Environment files are resolved as `environments/<name>.yaml` by searching upward from the cwd (stopping at the first ancestor directory containing `.git`, or at the filesystem root). See [Getting Started](getting-started.md) for details. `klaus run --env <name>` overrides the flow's `env:`
+- Environment files are a flat map of `key: string value`. Values can use templates (such as <code v-pre>{{env.X}}</code>)
+- Setting the reserved key `$protected: true` in an environment file makes `klaus run` refuse to run against that environment by default (exit 3). It only runs when `--allow-protected` is explicitly passed. This is a guardrail against accidentally running against a production-like environment; `$protected` cannot be referenced as a template variable (<code v-pre>{{...}}</code>). Execution via `klaus ui` / the server API never passes this flag, so protected environments are always refused there
+- `$protected` can only be set or unset by editing the file directly. It is not shown in the `klaus ui` environment editor, and saving from the UI leaves any existing `$protected` value untouched
 
-## request(HTTP ステップ)
+## request (HTTP step)
 
 ```yaml
 request:
-  method: POST                  # graphql 指定時のみ省略可(省略時 POST)。大文字化して扱われる
-  url: "{{baseUrl}}/login"      # 必須。テンプレート可
-  headers:                      # 任意。値はテンプレート可
+  method: POST                  # Can be omitted only when graphql is specified (defaults to POST). Treated as uppercase
+  url: "{{baseUrl}}/login"      # Required. Supports templates
+  headers:                      # Optional. Values support templates
     Content-Type: application/json
-  query:                        # 任意。値はテンプレート可
-    page: "1"                   #   url のクエリ文字列にマージされる。url に同名キーがあれば query 側で上書き
-  body:                         # 任意。object → JSON 送信(Content-Type 未指定なら application/json を自動付与)
-    email: "{{testEmail}}"      #        string → そのまま送信
-  timeoutMs: 30000              # 任意。デフォルト 30000。超過は RuntimeError(exit 3)
+  query:                        # Optional. Values support templates
+    page: "1"                   #   Merged into the url's query string. If url already has the same key, query wins
+  body:                         # Optional. object → sent as JSON (application/json is auto-set if Content-Type is unspecified)
+    email: "{{testEmail}}"      #        string → sent as-is
+  timeoutMs: 30000              # Optional. Defaults to 30000. Exceeding it is a RuntimeError (exit 3)
 ```
 
-レスポンスは Content-Type が JSON なら自動でパースされ、JSONPath アサーション / キャプチャの対象になる。それ以外はテキストとして保持され `bodyText` アサーションの対象になる。リダイレクト・TLS の挙動は undici のデフォルトに従う(klaus 側では制御しない)。
+If the Content-Type is JSON, the response is automatically parsed and becomes the target of JSONPath assertions / captures. Otherwise it's kept as text and becomes the target of `bodyText` assertions. Redirect and TLS behavior follow undici's defaults (klaus does not control these).
 
 ## GraphQL
 
-`request.graphql` を指定すると GraphQL リクエストの糖衣になる。**`body` とは排他**(両方指定は ParseError)。
+Specifying `request.graphql` is sugar for a GraphQL request. **It's mutually exclusive with `body`** (specifying both is a ParseError).
 
 ```yaml
 request:
   url: "{{baseUrl}}/graphql"
   graphql:
-    query: 'query { user(id: "{{userId}}") { id name } }'   # テンプレート可
-    variables:                                              # 任意。テンプレート可
+    query: 'query { user(id: "{{userId}}") { id name } }'   # Supports templates
+    variables:                                              # Optional. Supports templates
       limit: 10
 ```
 
-- method 省略時は POST、Content-Type 未指定時は application/json
-- 送信 body は `{ query, variables }`(variables 未指定なら `{ query }` のみ)
-- レスポンスは通常の JSON として扱われるため、`$.data.…` / `$.errors` への JSONPath アサーション・キャプチャがそのまま使える
+- If method is omitted it defaults to POST; if Content-Type is unspecified it defaults to application/json
+- The sent body is `{ query, variables }` (just `{ query }` if variables is unspecified)
+- The response is treated as regular JSON, so JSONPath assertions and captures against `$.data.…` / `$.errors` work as usual
 
-## SSE(Server-Sent Events)
+## SSE (Server-Sent Events)
 
-`Accept: text/event-stream` ヘッダーがある、または `sse:` ブロックを書いたステップは SSE モードになる。
+A step becomes SSE mode if it has an `Accept: text/event-stream` header, or if an `sse:` block is written.
 
 ```yaml
 request:
@@ -65,44 +65,44 @@ request:
   headers:
     Accept: text/event-stream
 sse:
-  maxEvents: 5          # デフォルト 100
-  maxDurationMs: 3000   # デフォルト 10000
+  maxEvents: 5          # Defaults to 100
+  maxDurationMs: 3000   # Defaults to 10000
 ```
 
-- `maxEvents` / `maxDurationMs` の**どちらかに達した時点で受信を打ち切り、正常終了**する(打ち切りは失敗ではない)
-- 受信イベントは `{ event?, id?, data }` の配列として結果の `events` に入る。`response.body` は undefined
-- `capture` は SSE ステップでは**無視される**
-- アサーションは `eventCount` / `events`(後述)を使う
+- Receiving stops as soon as **either `maxEvents` or `maxDurationMs` is reached, and the step ends successfully** (stopping is not a failure)
+- Received events go into the result's `events` field as an array of `{ event?, id?, data }`. `response.body` is undefined
+- `capture` is **ignored** for SSE steps
+- Assertions use `eventCount` / `events` (described below)
 
 ## WebSocket
 
-ステップに `request` の代わりに `ws:` を書く(**排他・どちらか必須**)。
+Write `ws:` in place of `request` for the step (**mutually exclusive — exactly one is required**).
 
 ```yaml
 ws:
-  url: "{{wsBaseUrl}}/socket"   # ws:// / wss://(http(s):// は ParseError)。テンプレート可
-  headers:                      # 任意
+  url: "{{wsBaseUrl}}/socket"   # ws:// / wss:// (http(s):// is a ParseError). Supports templates
+  headers:                      # Optional
     Authorization: "Bearer {{token}}"
-  send:                         # 任意: 接続後に順次送信。string はそのまま、object は JSON 化。テンプレート可
+  send:                         # Optional: sent in order after connecting. string is sent as-is, object is JSON-encoded. Supports templates
     - "ping"
     - { type: subscribe, channel: orders }
-  maxMessages: 50               # デフォルト 100
-  maxDurationMs: 5000           # デフォルト 10000
+  maxMessages: 50               # Defaults to 100
+  maxDurationMs: 5000           # Defaults to 10000
 ```
 
-- 受信メッセージが `maxMessages` / `maxDurationMs` のどちらかに達したら打ち切って正常終了。相手からの正常 close も正常終了
-- 接続失敗・異常 close は RuntimeError(exit 3)
-- 受信メッセージは `{ data }` の配列として結果の `wsMessages` に入る。`response` は持たない
-- `capture` は WS ステップでは**無視される**
-- アサーションは `messageCount` / `messages`(後述)を使う
+- The connection is closed and the step ends successfully once received messages reach either `maxMessages` or `maxDurationMs`. A normal close from the other side also ends successfully
+- Connection failure or an abnormal close is a RuntimeError (exit 3)
+- Received messages go into the result's `wsMessages` field as an array of `{ data }`. There is no `response`
+- `capture` is **ignored** for WS steps
+- Assertions use `messageCount` / `messages` (described below)
 
-## use(ステップ参照)
+## use (step reference)
 
-ステップに `request` / `ws` の代わりに `use:` を書くと、他のフロー定義ファイル(1 ステップのみのもの)を参照して、その request / sse / assert を取り込める。`request` / `ws` / `sse` とは**排他**(併記は ParseError)。同じ API チェックを複数のフローからコピペせずに再利用するための機構で、参照先ファイル自体も従来どおり単体実行できる(`api/` を「実行される API カタログ」として扱う設計。詳細は [examples](https://github.com/almondoo/klaus/tree/main/examples) を参照)。
+A step can write `use:` instead of `request` / `ws` to reuse another flow definition file (one that contains a single step) by pulling in its request / sse / assert. It's **mutually exclusive** with `request`, `ws`, and `sse` (writing both is a ParseError). This lets multiple flows reuse the same API check without copy-pasting the request definition, while the referenced file itself can still be run standalone as before (the design treats `api/` as an "executable API catalog" — see the [examples](https://github.com/almondoo/klaus/tree/main/examples) for details).
 
 ```yaml
-# api/login-check.yaml — 従来どおり単体実行可能
-name: ログイン API 単体チェック
+# api/login-check.yaml — still runnable standalone
+name: Login API check
 steps:
   - name: login
     request:
@@ -117,11 +117,11 @@ steps:
 ```
 
 ```yaml
-# flows/auth-flow.yaml — login を書き直さず参照
-name: 認証フロー
+# flows/auth-flow.yaml — reuse login without rewriting it
+name: Auth flow
 steps:
   - name: login
-    use: ../api/login-check.yaml   # このフローファイル基準の相対パス
+    use: ../api/login-check.yaml   # path relative to this flow file
     capture:
       token: "$.token"
   - name: me
@@ -134,47 +134,47 @@ steps:
       status: 200
 ```
 
-- **解決タイミング**: フローのロード時(`klaus run` / `klaus validate` / UI のフロー詳細取得)。参照先の唯一のステップから `request` / `sse` / `assert` を取り込んだ通常ステップに展開してから実行される
-- **`name` / `capture` は呼び出し側のもの**を使う。参照先の値は無視される
-- **`assert` は加算マージ**(置換ではない): `headers` / `body` / `events` / `messages` は参照先→呼び出し側の順に配列を連結する。`status` / `bodyText` / `duration` / `eventCount` / `messageCount` / `bodySchema` は両側で定義されていると、単体チェックの保証を弱める置換とみなして ParseError / `klaus validate` の FlowIssue になる(どちらか一方にのみ定義するか、参照先の定義に任せる)
-- **参照先の `env:` は取り込まない**(環境は常に実行するフロー側が決める)。プレースホルダ(<code v-pre>{{var}}</code>)は取り込んだ後、呼び出し側フローの env / capture で通常どおり解決される
-- **パスはこのフローファイル基準の相対パス**。絶対パスは拒否される。解決後のパスがプロジェクトディレクトリ(`klaus` 実行時の cwd)の外に出る場合も拒否される(`../` によるプロジェクト外参照はできない)
-- 参照先ステップがさらに `use` を持つ場合は再帰的に解決される。循環参照は検出され拒否される
+- **Resolution timing**: at flow load time (`klaus run` / `klaus validate` / the UI's flow detail endpoint). The referenced file's single step is expanded into a normal step (taking its `request` / `sse` / `assert`) before execution
+- **`name` / `capture` always come from the calling step**; the referenced step's values are ignored
+- **`assert` is merged additively** (not replaced): `headers` / `body` / `events` / `messages` are concatenated in referenced-then-caller order. `status` / `bodyText` / `duration` / `eventCount` / `messageCount` / `bodySchema` become a ParseError / a `klaus validate` FlowIssue if defined on both sides, since that would weaken the guarantee made by the standalone check (define it on only one side, or let the referenced step's definition win)
+- **The referenced file's `env:` is not pulled in** (the environment is always decided by the flow that's actually running). Placeholders (<code v-pre>{{var}}</code>) are resolved as usual, after expansion, using the calling flow's env / captures
+- **The path must be relative to this flow file.** Absolute paths are rejected. A resolved path that falls outside the project directory (the cwd `klaus` is run from) is also rejected (no escaping the project root via `../`)
+- If the referenced step itself has `use`, it's resolved recursively. Circular references are detected and rejected
 
-### v1 の制限
+### v1 Limitations
 
-- 参照先は**1 ステップのフローファイルのみ**(複数ステップの取り込み・継承・request フィールドの上書きはスコープ外)
-- 参照先は **HTTP request ステップのみ**(`ws:` ステップの参照は非対応)
-- 参照切れ・循環参照・複数ステップファイルへの参照・`assert` のスカラー競合は、`klaus validate` では hint 付きの構造化 issue、`klaus run` では ParseError(exit 2)になる
+- The referenced file must contain **exactly one step** (pulling in multiple steps, inheritance, or overriding request fields is out of scope)
+- The referenced step must be an **HTTP request step** (referencing a `ws:` step is not supported)
+- A broken reference, a circular reference, a reference to a multi-step file, or a scalar `assert` conflict becomes a hinted, structured issue in `klaus validate`, and a ParseError (exit 2) in `klaus run`
 
-## テンプレート
+## Templates
 
-<code v-pre>{{...}}</code> は以下の順で解決される。**未解決の変数・未定義の OS 環境変数は RuntimeError(exit 3)**になる(黙って空文字にはならない)。
+<code v-pre>{{...}}</code> is resolved in the following order. **An unresolved variable or an undefined OS environment variable results in a RuntimeError (exit 3)** (it does not silently become an empty string).
 
-| 記法 | 解決先 |
+| Syntax | Resolves to |
 |---|---|
-| <code v-pre>{{var}}</code> | ①それまでのステップのキャプチャ変数 → ②環境ファイルの値(キャプチャ優先) |
-| <code v-pre>{{env.X}}</code> | OS 環境変数 `X`。シークレットは定義ファイルに直書きせずこれを使う |
-| <code v-pre>{{newUuid}}</code> | `crypto.randomUUID()` の UUID |
-| <code v-pre>{{newDate}}</code> | 現在時刻の ISO 8601 文字列 |
-| <code v-pre>{{newTimestamp}}</code> | 現在時刻の epoch ミリ秒 |
+| <code v-pre>{{var}}</code> | ① capture variables from prior steps → ② values from the environment file (captures take precedence) |
+| <code v-pre>{{env.X}}</code> | The OS environment variable `X`. Use this for secrets instead of hard-coding them into the definition file |
+| <code v-pre>{{newUuid}}</code> | A UUID from `crypto.randomUUID()` |
+| <code v-pre>{{newDate}}</code> | The current time as an ISO 8601 string |
+| <code v-pre>{{newTimestamp}}</code> | The current time as epoch milliseconds |
 
-展開が適用される場所: `request.url` / `request.headers` の値 / `request.query` の値 / `request.body`(文字列値の深い展開)/ `graphql.query` / `graphql.variables` / `ws.url` / `ws.headers` / `ws.send` / アサーションの期待値(<code v-pre>equals: "{{testEmail}}"</code> 等)。
+Where expansion applies: `request.url` / values of `request.headers` / values of `request.query` / `request.body` (deep expansion of string values) / `graphql.query` / `graphql.variables` / `ws.url` / `ws.headers` / `ws.send` / assertion expected values (such as <code v-pre>equals: "{{testEmail}}"</code>).
 
-## capture(変数キャプチャ)
+## capture (variable capture)
 
 ```yaml
 capture:
-  token: "$.token"     # 変数名: JSONPath
+  token: "$.token"     # variable name: JSONPath
 ```
 
-- JSON レスポンスに JSONPath を適用し、結果を後続ステップのテンプレート変数にする(ログイン → トークン → Authorization ヘッダーが代表ケース)
-- **マッチしない・レスポンスが JSON でない場合は RuntimeError** になりステップは error(exit 3)。`Bearer undefined` のようなサイレント連鎖は起きない。値が `null` のキャプチャは成功扱い
-- SSE / WS ステップでは無視される
+- Applies a JSONPath to the JSON response, making the result available as a template variable in subsequent steps (the classic case being login → token → Authorization header)
+- **If it doesn't match, or the response isn't JSON, this is a RuntimeError** and the step becomes error (exit 3). A silent chain like `Bearer undefined` cannot happen. A capture whose value is `null` is treated as a success
+- Ignored on SSE / WS steps
 
-## assert(アサーション)
+## assert (assertions)
 
-すべて任意。複数書いた場合はすべて評価され、1つでも失敗すればステップは failed(exit 4)。1つのエントリに複数マッチャーを書くと、マッチャーごとに個別の結果(`AssertionResult`)が出る。
+All fields are optional. If multiple are given, all are evaluated; if even one fails, the step becomes failed (exit 4). Writing multiple matchers on a single entry produces a separate result (`AssertionResult`) per matcher.
 
 ```yaml
 assert:
@@ -194,63 +194,63 @@ assert:
       email: { type: string, format: email }
   duration:
     maxMs: 1000
-  # SSE 用
+  # For SSE
   eventCount: { min: 1, max: 10 }
   events:
     - { index: 0, path: "$.type", equals: "message" }
-  # WebSocket 用
+  # For WebSocket
   messageCount: { min: 1 }
   messages:
     - { path: "$.type", contains: "order" }
 ```
 
-### マッチャー一覧
+### Matcher List
 
-| 対象 | フィールド | マッチャー |
+| Target | Field | Matcher |
 |---|---|---|
-| ステータス | `status` | 数値の完全一致 |
-| ヘッダー | `headers[]` | `name` + `equals` / `contains` / `regex` / `exists` |
-| ボディ(JSONPath) | `body[]` | `path` + `exists` / `equals` / `contains` / `regex` |
-| ボディ(生テキスト) | `bodyText` | `equals` / `contains` / `regex` |
-| ボディ(JSON Schema) | `bodySchema` | JSON Schema オブジェクト |
-| 所要時間 | `duration` | `maxMs` |
-| SSE イベント数 | `eventCount` | `min` / `max` / `equals` |
-| SSE イベント | `events[]` | `index?` + `path?` + 上記マッチャー |
-| WS メッセージ数 | `messageCount` | `min` / `max` / `equals` |
-| WS メッセージ | `messages[]` | `index?` + `path?` + 上記マッチャー |
+| Status | `status` | exact numeric match |
+| Headers | `headers[]` | `name` + `equals` / `contains` / `regex` / `exists` |
+| Body (JSONPath) | `body[]` | `path` + `exists` / `equals` / `contains` / `regex` |
+| Body (raw text) | `bodyText` | `equals` / `contains` / `regex` |
+| Body (JSON Schema) | `bodySchema` | a JSON Schema object |
+| Duration | `duration` | `maxMs` |
+| SSE event count | `eventCount` | `min` / `max` / `equals` |
+| SSE event | `events[]` | `index?` + `path?` + the matchers above |
+| WS message count | `messageCount` | `min` / `max` / `equals` |
+| WS message | `messages[]` | `index?` + `path?` + the matchers above |
 
-`events` / `messages` の共通セマンティクス:
+Common semantics for `events` / `messages`:
 
-- `index` 指定時: そのインデックスの受信データに対して評価
-- `index` 省略時: **いずれかの受信データが一致すれば pass**
-- `path` 指定時: 受信データ(`data`)を JSON parse して JSONPath を適用。省略時は生文字列にマッチャーを適用
+- When `index` is given: evaluated against the received data at that index
+- When `index` is omitted: **passes if any received data item matches**
+- When `path` is given: the received data (`data`) is JSON-parsed and the JSONPath is applied. When omitted, the matcher is applied to the raw string
 
-### bodySchema(JSON Schema によるボディ検証)
+### bodySchema (JSON Schema body validation)
 
-- `bodySchema` には JSON Schema オブジェクトを YAML に直接埋め込む(外部ファイル参照は現時点で非対応)
-- 検証は [ajv](https://ajv.js.org/) の **draft 2020-12**(`Ajv2020`)で行う。OpenAPI 3.1 由来のスキーマもおおむねそのまま使える
-- スキーマに複数の違反があった場合、**違反ごとに個別の `AssertionResult`** が返る(1件目で打ち切らず一括報告される)。各結果の `message` には ajv の `instancePath`(ルート違反の場合は `(root)`)と違反内容が含まれる
-- body が存在しない SSE / WS ステップでは ok:false になる。body が存在するが JSON としてパースできない HTTP レスポンスは、生の文字列のままスキーマ検証にかけられる(例: `type: object` を要求するスキーマなら失敗し、`type: string` なら通り得る)
-- スキーマ自体が不正で ajv がコンパイルできない場合も、例外にはならず ok:false のアサーション失敗として報告される
+- `bodySchema` takes a JSON Schema object embedded directly in the YAML (referencing an external file is not supported yet)
+- Validation is performed with [ajv](https://ajv.js.org/) using **draft 2020-12** (`Ajv2020`). Schemas originating from OpenAPI 3.1 generally work as-is
+- When the schema has multiple violations, **a separate `AssertionResult` is returned for each violation** (evaluation is not short-circuited on the first failure; all violations are reported together). Each result's `message` includes ajv's `instancePath` (`(root)` for a root-level violation) and the violation detail
+- SSE / WS steps, which have no body, always yield ok:false. An HTTP response whose body exists but fails to parse as JSON is validated against the schema as the raw string (e.g. a schema requiring `type: object` fails, while `type: string` may pass)
+- If the schema itself is invalid and ajv fails to compile it, this does not throw; it's reported as an ok:false assertion failure instead
 
-## ステップ失敗時のフロー挙動
+## Flow Behavior on Step Failure
 
-- ステップが **failed**(アサーション失敗)または **error**(runtime エラー)になると、そのフローの**残りステップは実行されず skipped** として記録される
-- 複数フローファイルを渡した場合、あるフローが失敗しても**他のフローは実行される**
-- 最終 exit code は [CLI リファレンス](cli.md#exit-code) の優先ルールに従う
+- When a step becomes **failed** (assertion failure) or **error** (runtime error), the **remaining steps in that flow are not run and are recorded as skipped**
+- When multiple flow files are passed, **other flows still run** even if one flow fails
+- The final exit code follows the priority rules in the [CLI Reference](cli.md#exit-code)
 
 ## JSON Schema
 
-フロー定義のスキーマは JSON Schema としても公開している。エディタの補完・バリデーションや、AI エージェントがフロー YAML を生成する際の参照に使える。
+The flow definition schema is also published as JSON Schema. Use it for editor completion/validation, or as a reference when an AI agent generates flow YAML.
 
-- 公開 URL: `https://almondoo.github.io/klaus/schema/flow.schema.json`
-- npm パッケージ同梱パス: `node_modules/@almondoo/klaus/dist/schema/flow.schema.json`
+- Published URL: `https://almondoo.github.io/klaus/schema/flow.schema.json`
+- Path bundled in the npm package: `node_modules/@almondoo/klaus/dist/schema/flow.schema.json`
 
-YAML ファイルの先頭に `# yaml-language-server: $schema=` コメントを書くと、対応エディタ(VS Code の YAML 拡張など)で補完・検証が効くようになる。
+Adding a `# yaml-language-server: $schema=` comment at the top of a YAML file enables completion and validation in editors that support it (such as VS Code's YAML extension).
 
 ```yaml
 # yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
-name: 認証フロー
+name: auth flow
 steps:
   - name: login
     request:
@@ -258,4 +258,4 @@ steps:
       url: "{{baseUrl}}/login"
 ```
 
-**注意**: `request.body` と `request.graphql` の排他、`step.request` / `step.ws` / `step.use` のどちらか一方が必須、`ws.url` のスキーム制約、ステップ名の一意性など、このページで説明した `superRefine` によるチェックは JSON Schema の構造そのものには表現されない(対象プロパティの `description` に注記としては含まれる)。これらは `klaus validate` / `klaus run` の実行時検証でのみ強制される。`use:` の参照解決(パス境界・循環参照・assert の加算マージなど)も同様に、スキーマ検証ではなく `klaus validate` / `klaus run` のロード時検証で行われる。
+**Note**: constraints enforced via `superRefine` and described elsewhere on this page — the mutual exclusivity of `request.body` and `request.graphql`, requiring exactly one of `step.request` / `step.ws` / `step.use`, the `ws.url` scheme restriction, and step name uniqueness — are not expressible in the JSON Schema structure itself (they are noted in the `description` of the relevant properties). These are enforced only by runtime validation in `klaus validate` / `klaus run`. `use:` reference resolution (path boundaries, circular references, additive `assert` merging, etc.) is likewise enforced during load-time validation in `klaus validate` / `klaus run`, not by the schema.

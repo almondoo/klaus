@@ -1,24 +1,24 @@
-# klaus.config.yaml(CLI オプションの既定値)
+# klaus.config.yaml (default values for CLI options)
 
-`klaus run` / `klaus ui` でよく使うオプションは、`klaus.config.yaml` に既定値として書いておくことで、毎回コマンドライン引数として渡さなくて済む。
+Options you frequently pass to `klaus run` / `klaus ui` can be written as defaults in `klaus.config.yaml`, so you don't have to pass them as command-line arguments every time.
 
-## ファイル名と探索規則
+## File name and search rule
 
-ファイル名は `klaus.config.yaml` 固定。cwd から上方探索で解決する(規則は[環境ファイル](flow-definition.md)の探索と同じ)。
+The file name is fixed: `klaus.config.yaml`. It is resolved via an upward search from the cwd (the same rule as the [environment file](flow-definition.md) search).
 
-- cwd から順に親ディレクトリへ辿り、各ディレクトリ直下の `klaus.config.yaml` の存在を確認する。見つかった時点でそのパスを使う。
-- 探索の上限(境界)は「`.git` エントリを含む最初の祖先ディレクトリ(そのディレクトリ自身は含めて調べたうえで打ち切る)」または「ファイルシステムのルート」のいずれか先に到達した方。リポジトリルートを跨いで探索することはない。
-- どの祖先ディレクトリにも見つからなかった場合は既定値を使わない(エラーにはならない)。
+- Starting from the cwd, each ancestor directory is checked in turn for a `klaus.config.yaml` directly under it. The first one found is used.
+- The search stops at whichever comes first: the first ancestor directory containing a `.git` entry (that directory itself is checked before stopping), or the filesystem root. The search never crosses a repository root.
+- If no ancestor directory has the file, no defaults are applied (this is not an error).
 
-cwd より上の祖先ディレクトリで見つかった場合は、そのディレクトリとファイルの所有者・パーミッションを検査する(共有ホストで他ユーザーが仕込んだ config を黙って読み込まないようにするため)。所有者が自分以外、または other-writable(誰でも書き換え可能)と判定された場合はエラーで拒否する。cwd 自身に置いた `klaus.config.yaml` はこの検査の対象外。
+If the file is found in an ancestor directory above the cwd, the owner and permissions of that directory and file are checked (to avoid silently loading a config planted by another user on a shared host). If the owner is someone else, or the directory/file is other-writable, it is rejected with an error. A `klaus.config.yaml` placed directly in the cwd itself is not subject to this check.
 
-## 優先順位
+## Priority
 
-**CLI で明示指定したオプション > `klaus.config.yaml` > 組み込みの既定値**
+**Explicit CLI option > `klaus.config.yaml` > built-in default**
 
-コマンドライン引数で明示的に指定したオプションは常に `klaus.config.yaml` の値より優先される。CLI で指定しなかったオプションにのみ、`klaus.config.yaml` の値が(あれば)適用される。`--no-history` / `--no-mask` / `--no-open` のような否定フラグも同様に扱われる: CLI で明示的に `--no-xxx` を渡した場合はその値が優先され、何も指定しなかった場合にだけ `klaus.config.yaml` の値が効く。
+An option explicitly passed on the command line always takes precedence over the value in `klaus.config.yaml`. Only options that were not passed on the command line get the value from `klaus.config.yaml` (if set). Negated flags such as `--no-history` / `--no-mask` / `--no-open` work the same way: if you explicitly pass `--no-xxx` on the CLI, that value wins; only when nothing was specified does the `klaus.config.yaml` value apply.
 
-## 設定可能なキー
+## Configurable keys
 
 ```yaml
 # yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/klaus-config.schema.json
@@ -34,42 +34,42 @@ ui:
   open: true
 ```
 
-| キー | 対応する CLI オプション | 型 |
+| Key | Corresponding CLI option | Type |
 |---|---|---|
 | `run.env` | `klaus run --env <name>` | string |
 | `run.report` | `klaus run --report <type>` | `"junit"` |
 | `run.reportFile` | `klaus run --report-file <path>` | string |
-| `run.history` | `klaus run --no-history`(`false` で無効化に相当) | boolean |
-| `run.mask` | `klaus run --no-mask`(`false` で無効化に相当) | boolean |
-| `ui.port` | `klaus ui --port <n>` | number(1〜65535) |
+| `run.history` | `klaus run --no-history` (equivalent to disabling with `false`) | boolean |
+| `run.mask` | `klaus run --no-mask` (equivalent to disabling with `false`) | boolean |
+| `ui.port` | `klaus ui --port <n>` | number (1-65535) |
 | `ui.host` | `klaus ui --host <host>` | string |
-| `ui.open` | `klaus ui --no-open`(`false` で無効化に相当) | boolean |
+| `ui.open` | `klaus ui --no-open` (equivalent to disabling with `false`) | boolean |
 
-いずれのキーも省略可能。未知のキーを含む場合はスキーマ検証エラーになる([実行結果](#エラー時の扱い)を参照)。
+All keys are optional. Unknown keys cause a schema validation error (see [Error handling](#error-handling) below).
 
-## 意図的に設定不可なキー
+## Intentionally unconfigurable keys
 
-以下のオプションは `klaus.config.yaml` では設定できない(スキーマにフィールドがなく、指定すると未知キーとしてエラーになる)。
+The following options cannot be set in `klaus.config.yaml` (the schema has no field for them; specifying them fails as an unknown key).
 
-| オプション | 理由 |
+| Option | Reason |
 |---|---|
-| `--allow-protected` | `$protected: true` の環境への実行を拒否するガードレールを、config で既定 true にすることで形骸化させないため |
-| `--record` / `--replay` | record/replay モードは副作用(実際のネットワークアクセスの有無)が大きく変わる実行モードのため、呼び出しごとに明示させる |
-| `--json` / `--text` | 出力モードは呼び出し元(人が読むか、エージェントやスクリプトが読むか)に依存するため、コマンドラインで都度明示させる |
+| `--allow-protected` | Setting this to `true` by default via config would erode the guardrail that refuses execution against `$protected: true` environments |
+| `--record` / `--replay` | These record/replay modes change the execution side effects (whether real network access happens) significantly, so they must be made explicit on every invocation |
+| `--json` / `--text` | The output mode depends on the caller (a human reading it vs. an agent or script parsing it), so it should be made explicit on every command-line invocation |
 
-## エラー時の扱い
+## Error handling
 
-`klaus.config.yaml` が YAML として不正、またはスキーマ違反(未知キーを含む)の場合、`klaus run` / `klaus ui` はファイルパスと理由を stderr に出力して **exit code 2** で終了する(フロー定義・環境ファイルのパースエラーと同じ扱い)。
+If `klaus.config.yaml` is invalid YAML, or fails schema validation (including unknown keys), `klaus run` / `klaus ui` prints the file path and reason to stderr and exits with **exit code 2** (the same handling as parse errors in flow definitions and environment files).
 
 ## JSON Schema
 
-`klaus.config.yaml` のスキーマも JSON Schema として公開している。
+The schema for `klaus.config.yaml` is also published as JSON Schema.
 
-- 公開 URL: `https://almondoo.github.io/klaus/schema/klaus-config.schema.json`
-- npm パッケージ同梱パス: `node_modules/@almondoo/klaus/dist/schema/klaus-config.schema.json`
-- `klaus schema --target config` でも同じ内容を stdout に出力できる([CLI リファレンス](cli.md#klaus-schema)参照)
+- Published URL: `https://almondoo.github.io/klaus/schema/klaus-config.schema.json`
+- npm package path: `node_modules/@almondoo/klaus/dist/schema/klaus-config.schema.json`
+- `klaus schema --target config` prints the same content to stdout (see [CLI Reference](cli.md#klaus-schema))
 
-YAML ファイルの先頭に `# yaml-language-server: $schema=` コメントを書くと、対応エディタ(VS Code の YAML 拡張など)で補完・検証が効くようになる。
+Adding a `# yaml-language-server: $schema=` comment at the top of the file enables completion and validation in editors that support it (such as VS Code's YAML extension).
 
 ```yaml
 # yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/klaus-config.schema.json

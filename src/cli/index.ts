@@ -55,7 +55,7 @@ program
 program.addHelpText(
   "after",
   `
-Docs: https://almondoo.github.io/klaus/ (English docs are under /en/)
+Docs: https://almondoo.github.io/klaus/ (Japanese docs are under /ja/)
 Run \`klaus init\` to scaffold a starting point in the current directory.
 Exit codes: 0=success / 1=unexpected error / 2=invalid definition / 3=runtime error / 4=assertion failure
 `,
@@ -94,7 +94,7 @@ program
   .addHelpText(
     "after",
     `
-Docs: https://almondoo.github.io/klaus/ (English docs are under /en/)
+Docs: https://almondoo.github.io/klaus/ (Japanese docs are under /ja/)
 Exit codes: 0=success / 1=unexpected error / 2=invalid definition / 3=runtime error / 4=assertion failure
 `,
   )

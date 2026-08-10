@@ -35,6 +35,9 @@ ui/         # Vite + React SPA(private ワークスペース)。core への runt
 | `assert.ts` | 全アサーション評価(例外を投げない) | 純粋 |
 | `runner.ts` | ステップ順次実行・キャプチャ連鎖・skip 制御・status 集約 | orchestration |
 | `history.ts` | 履歴 JSONL 追記(versioned スキーマ) | I/O |
+| `cassette.ts` | record/replay モードのカセット記録・照合 | I/O |
+| `discovery.ts` | フロー定義 YAML の探索(server と CLI の共通ロジック) | I/O |
+| `history-query.ts` | 履歴の読み出し・フィルタ・ページング(server と CLI が共用) | I/O |
 | `errors.ts` | `KlausError` / `ParseError` / `RuntimeError` | 純粋 |
 | `types.ts` | `RunResult` / `FlowResult` / `StepResult` 等の契約型 | 純粋 |
 
@@ -50,11 +53,14 @@ executeFlow(flow, filePath, options?): Promise<FlowResult>  // パース済み F
 interface RunFlowOptions {
   cwd?: string;                 // 環境ファイル・履歴の基準ディレクトリ
   envNameOverride?: string;     // --env 相当
+  allowProtected?: boolean;     // $protected: true な環境への実行を許可するか(既定 false)
   runId?: string;
   history?: boolean | ((entry: HistoryEntry) => void | Promise<void>);  // false で無効化 / 関数でカスタム sink
   onStepStart?: (ctx: { flow, file, step }) => void | Promise<void>;
   onStepComplete?: (ctx: { flow, file, result: StepResult }) => void | Promise<void>;
   onWarning?: (message: string) => void;   // 履歴書き込み失敗等の非致命的警告
+  onSecrets?: (secrets: readonly string[]) => void;  // ステップが新規に解決した secrets の通知(履歴マスクとは別経路)
+  recording?: { mode: "record" | "replay"; dir: string };  // record/replay モードのカセット設定
 }
 ```
 
@@ -74,7 +80,7 @@ interface RunFlowOptions {
 
 「テストは過不足なく」(仕様のふるまい単位でカバーし、実装詳細への張り付き・重複・水増しをしない)が方針。
 
-**root(vitest、tests/、121件)**
+**root(vitest、tests/、33ファイル468件)**
 
 | 種類 | 対象 |
 |---|---|
@@ -84,7 +90,7 @@ interface RunFlowOptions {
 | CLI 統合 | ビルド済み `dist/cli.js` を spawn し、exit code 0/1/2/3/4・JSON 出力・JUnit 生成を検証 |
 | server 統合 | 認証(401/403)・path traversal・SSE イベント列・履歴ページング・クライアント切断時の完走 |
 
-**ui(vitest + jsdom、10件)**: SSE ストリームパーサー / API クライアントのトークン付与 / 履歴グルーピングの純関数
+**ui(vitest + jsdom、4ファイル22件)**: SSE ストリームパーサー / API クライアントのトークン付与 / 履歴グルーピングの純関数
 
 ## 開発コマンド
 

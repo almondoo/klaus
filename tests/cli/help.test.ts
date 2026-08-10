@@ -18,7 +18,7 @@ describe("--help", () => {
   it("ルートヘルプの末尾に docs サイト・klaus init・exit code の要約を含む", () => {
     const help = captureHelpOutput(program);
     expect(help).toContain("https://almondoo.github.io/klaus/");
-    expect(help).toContain("/en/");
+    expect(help).toContain("/ja/");
     expect(help).toContain("klaus init");
     expect(help).toContain(
       "0=success / 1=unexpected error / 2=invalid definition / 3=runtime error / 4=assertion failure",

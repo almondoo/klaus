@@ -32,7 +32,7 @@ The history schema's contract is that additive changes can stay at `v: 1`, so ad
 
 **Cost**: roughly 1 hour (runner recording, types, UI display, tests). **Verdict: recommended** — SSE verification is positioned in the requirements as "a differentiating feature no off-the-shelf tool has," so it's an incomplete feature if the result doesn't survive into history.
 
-**Resolution**: added `events?: SseEvent[]` to `HistoryEntry`, so SSE steps now record their received events in history (`response.body` still stays undefined, as before). The UI's history browser also renders the events expanded. See [history.md](../guide/history.md) for details.
+**Resolution**: added `events?: SseEvent[]` to `HistoryEntry`, so SSE steps now record their received events in history (`response.body` still stays undefined, as before). The UI's history browser also renders the events expanded. See [history.md](../../guide/history.md) for details.
 
 ### A-3. Skipped steps don't end up in history — Implemented (2026-08-08)
 
@@ -42,7 +42,7 @@ This also implies a design change: `HistoryEntry` has no `status` field today (s
 
 **Cost**: 2-3 hours (schema extension + fixing the UI's grouping display logic + tests). **Verdict: conditional** — worth it once the history UI actually sees heavy use. Since the failing row is still recorded, the missing information is limited.
 
-**Resolution**: added `status?: "passed" | "failed" | "skipped"` to `HistoryEntry`, so skipped steps are now recorded as a row with `status: "skipped"`, no request/response, and empty assertions. Older entries without `status` still fall back to being derived from assertions, preserving read compatibility. See [history.md](../guide/history.md) for details.
+**Resolution**: added `status?: "passed" | "failed" | "skipped"` to `HistoryEntry`, so skipped steps are now recorded as a row with `status: "skipped"`, no request/response, and empty assertions. Older entries without `status` still fall back to being derived from assertions, preserving read compatibility. See [history.md](../../guide/history.md) for details.
 
 ### A-4. Secrets persist in history in plaintext — Implemented (2026-08-08)
 
@@ -52,7 +52,7 @@ This also implies a design change: `HistoryEntry` has no `status` field today (s
 
 **Cost**: 3-4 hours (designing the masking layer, wiring it into core, UI display, tests). **Verdict: conditional** — as long as this stays personal, local verification, the existing warning is enough. It becomes necessary once history gets shared across a team.
 
-**Resolution**: took a different approach than the candidate fixes above. Values resolved from OS environment variables via <code v-pre>{{env.X}}</code> (length 4 or more) are now automatically replaced with `***` right before a history entry is written (`maskHistoryEntry`), covering the request's url/headers/body, the response's headers/body, and the `data` field of SSE events. It applies to both the default file sink and custom sinks; live run output (the UI's execution view) and values sourced from environment files are not covered. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) and [history.md](../guide/history.md) for the precise boundary.
+**Resolution**: took a different approach than the candidate fixes above. Values resolved from OS environment variables via <code v-pre>{{env.X}}</code> (length 4 or more) are now automatically replaced with `***` right before a history entry is written (`maskHistoryEntry`), covering the request's url/headers/body, the response's headers/body, and the `data` field of SSE events. It applies to both the default file sink and custom sinks; live run output (the UI's execution view) and values sourced from environment files are not covered. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) and [history.md](../../guide/history.md) for the precise boundary.
 
 **Addendum (2026-08-09)**: an audit raised two follow-up findings, both since fixed. (1) Masking only matched the raw value by substring, so a secret placed in `request.query` still leaked in plaintext once `URLSearchParams` percent-encoded it (`expandSecretVariants` now also covers the encoded variants). (2) The JUnit report produced by `klaus run --report junit` wasn't going through the same mask, leaving plaintext secrets in CI artifacts (masking was added to `formatJUnit`; stdout text/JSON output and live run output remain unmasked, as before).
 

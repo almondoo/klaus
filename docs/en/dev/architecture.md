@@ -35,6 +35,9 @@ ui/         # Vite + React SPA (private workspace). No runtime dependency on cor
 | `assert.ts` | Evaluates all assertions (never throws) | Pure |
 | `runner.ts` | Sequential step execution, capture chaining, skip control, status aggregation | Orchestration |
 | `history.ts` | Appends history JSONL (versioned schema) | I/O |
+| `cassette.ts` | Cassette recording / matching for record/replay mode | I/O |
+| `discovery.ts` | Flow definition YAML discovery (shared logic for the server and the CLI) | I/O |
+| `history-query.ts` | Reads, filters, and paginates history (shared by the server and the CLI) | I/O |
 | `errors.ts` | `KlausError` / `ParseError` / `RuntimeError` | Pure |
 | `types.ts` | Contract types such as `RunResult` / `FlowResult` / `StepResult` | Pure |
 
@@ -50,11 +53,14 @@ executeFlow(flow, filePath, options?): Promise<FlowResult>  // Run an already-pa
 interface RunFlowOptions {
   cwd?: string;                 // Base directory for environment files and history
   envNameOverride?: string;     // Equivalent to --env
+  allowProtected?: boolean;     // Whether to allow running against a $protected: true environment (default false)
   runId?: string;
   history?: boolean | ((entry: HistoryEntry) => void | Promise<void>);  // false disables it / a function customizes the sink
   onStepStart?: (ctx: { flow, file, step }) => void | Promise<void>;
   onStepComplete?: (ctx: { flow, file, result: StepResult }) => void | Promise<void>;
   onWarning?: (message: string) => void;   // Non-fatal warnings such as history write failures
+  onSecrets?: (secrets: readonly string[]) => void;  // Notifies newly-resolved secrets for a step (a separate path from history masking)
+  recording?: { mode: "record" | "replay"; dir: string };  // Cassette settings for record/replay mode
 }
 ```
 
@@ -74,7 +80,7 @@ interface RunFlowOptions {
 
 The policy is "tests neither too many nor too few" (cover behavior at the spec level; don't glue tests to implementation details, and don't duplicate or pad).
 
-**root (vitest, tests/, 121 tests)**
+**root (vitest, tests/, 33 files, 468 tests)**
 
 | Kind | Target |
 |---|---|
@@ -84,7 +90,7 @@ The policy is "tests neither too many nor too few" (cover behavior at the spec l
 | CLI integration | Spawns the built `dist/cli.js` and verifies exit codes 0/1/2/3/4, JSON output, and JUnit generation |
 | server integration | Auth (401/403), path traversal, SSE event sequence, history pagination, completion on client disconnect |
 
-**ui (vitest + jsdom, 10 tests)**: pure functions for the SSE stream parser / API client token attachment / history grouping
+**ui (vitest + jsdom, 4 files, 22 tests)**: pure functions for the SSE stream parser / API client token attachment / history grouping
 
 ## Development commands
 

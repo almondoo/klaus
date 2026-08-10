@@ -32,7 +32,7 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 **コスト**: 1時間程度（runner の記録・型・UI 表示・テスト）。**判定: 推奨** — SSE 検証は要件で「既製ツールに無い差別化機能」と位置づけているのに、その結果が履歴に残らないのは機能として不完全。
 
-**対応**: `HistoryEntry` に `events?: SseEvent[]` を追加し、SSE ステップで受信したイベントを履歴に記録するようにした(`response.body` は従来どおり undefined のまま)。UI の履歴ブラウザでも events を展開表示する。詳細は [history.md](../guide/history.md)。
+**対応**: `HistoryEntry` に `events?: SseEvent[]` を追加し、SSE ステップで受信したイベントを履歴に記録するようにした(`response.body` は従来どおり undefined のまま)。UI の履歴ブラウザでも events を展開表示する。詳細は [history.md](../ja/guide/history.md)。
 
 ### A-3. skipped ステップが履歴に残らない — 対応済み(2026-08-08)
 
@@ -42,7 +42,7 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 **コスト**: 2〜3時間（スキーマ拡張 + UI のグルーピング表示ロジック修正 + テスト）。**判定: 条件付き** — 履歴 UI を実際に多用するようになってから。失敗行が残る以上、情報の欠落は限定的。
 
-**対応**: `HistoryEntry` に `status?: "passed" | "failed" | "skipped"` を追加し、skipped ステップも `status: "skipped"`・request/response なし・assertions 空の行として履歴に記録するようにした。`status` を持たない旧エントリは従来どおり assertions から導出するフォールバックで読み込み互換を保つ。詳細は [history.md](../guide/history.md)。
+**対応**: `HistoryEntry` に `status?: "passed" | "failed" | "skipped"` を追加し、skipped ステップも `status: "skipped"`・request/response なし・assertions 空の行として履歴に記録するようにした。`status` を持たない旧エントリは従来どおり assertions から導出するフォールバックで読み込み互換を保つ。詳細は [history.md](../ja/guide/history.md)。
 
 ### A-4. シークレットが履歴に平文で残る — 対応済み(2026-08-08)
 
@@ -52,7 +52,7 @@ klaus を実装・検証したセッションを踏まえた改善提案。**こ
 
 **コスト**: 3〜4時間（マスク層の設計・core への組み込み・UI 表示・テスト）。**判定: 条件付き** — 個人のローカル検証に留める限りは現状の注意書きで足りる。チームで履歴を共有する運用に入るなら必須。
 
-**対応**: 修正案とは異なる方式を採用。<code v-pre>{{env.X}}</code> で OS 環境変数から解決した値(長さ 4 文字以上)を履歴エントリへの書き込み直前に `***` へ自動置換する(`maskHistoryEntry`)。request の url/headers/body、response の headers/body、SSE events の data が対象。デフォルトのファイル sink・カスタム sink の両方に適用され、ライブ実行結果(UI の実行ビュー)や environments ファイル由来の値はマスク対象外。境界の詳細は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) と [history.md](../guide/history.md) を参照。
+**対応**: 修正案とは異なる方式を採用。<code v-pre>{{env.X}}</code> で OS 環境変数から解決した値(長さ 4 文字以上)を履歴エントリへの書き込み直前に `***` へ自動置換する(`maskHistoryEntry`)。request の url/headers/body、response の headers/body、SSE events の data が対象。デフォルトのファイル sink・カスタム sink の両方に適用され、ライブ実行結果(UI の実行ビュー)や environments ファイル由来の値はマスク対象外。境界の詳細は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) と [history.md](../ja/guide/history.md) を参照。
 
 **追記(2026-08-09)**: 監査で2点指摘され対応した。(1) マスクが生の値の部分一致にしか効かず、`request.query` に置いたシークレットが `URLSearchParams` のエンコード後の姿で平文のまま残っていた点(`expandSecretVariants` でエンコード済みバリアントも対象に追加)。(2) `klaus run --report junit` が出力する JUnit レポートには同じマスクが適用されておらず、CI アーティファクトに平文で残っていた点(`formatJUnit` にマスクを追加。stdout の text / JSON 出力とライブ実行結果は引き続きマスク対象外)。
 

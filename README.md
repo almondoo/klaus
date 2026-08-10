@@ -3,31 +3,31 @@
 [![CI](https://github.com/almondoo/klaus/actions/workflows/ci.yml/badge.svg)](https://github.com/almondoo/klaus/actions/workflows/ci.yml)
 ![coverage](https://img.shields.io/badge/coverage-%E2%89%A590%25_lines-brightgreen)
 
-ローカル HTTP API を CLI から検証するツール。リクエスト定義を素の YAML で git 管理し、実行・アサーション・履歴管理を行う。人間と AI エージェント(Claude Code 等)の両方が使うことを前提に設計している。
+A CLI tool for verifying local HTTP APIs. Request definitions are managed as plain YAML in git, with execution, assertions, and history management. Designed for use by both humans and AI agents (Claude Code, etc.).
 
-ドキュメントサイト: https://almondoo.github.io/klaus/
+Documentation site: https://almondoo.github.io/klaus/
 
-[English](./README.en.md)
+[日本語](./README.ja.md)
 
-- **1ファイル = 1フロー**: 複数ステップの順次実行、レスポンスからの変数キャプチャと後続ステップへのチェーン
-- **アサーション内包**: status / header / body(JSONPath)/ 所要時間を定義ファイルに記述
-- **エージェント向け出力**: exit code だけで故障箇所を判別可能。非 TTY では JSON 出力がデフォルト
-- **ローカルファースト**: 実行履歴は `.klaus/history/*.jsonl` に追記。クラウド同期・アカウント機構はない
-- **SSE 検証**: `text/event-stream` を時間 / イベント数上限付きで受信し、イベントにアサーション
+- **1 file = 1 flow**: Sequential execution of multiple steps, with variable capture from responses and chaining to subsequent steps
+- **Built-in assertions**: Define status / header / body (JSONPath) / duration checks in the definition file
+- **Agent-friendly output**: Failures can be identified from exit code alone. JSON output is the default in non-TTY environments
+- **Local-first**: Execution history is appended to `.klaus/history/*.jsonl`. No cloud sync or account mechanism
+- **SSE verification**: Receives `text/event-stream` with time / event-count limits and asserts on the events
 
-## インストール
+## Installation
 
 ```bash
 npm install -g @almondoo/klaus
-# 要 Node.js >= 22.19.0
+# Requires Node.js >= 22.19.0
 ```
 
-## クイックスタート
+## Quick Start
 
 ```yaml
 # api/auth-flow.yaml
-name: 認証フロー
-env: local          # environments/local.yaml を参照
+name: auth flow
+env: local          # References environments/local.yaml
 steps:
   - name: login
     request:
@@ -37,9 +37,9 @@ steps:
         Content-Type: application/json
       body:
         email: "{{testEmail}}"
-        password: "{{env.TEST_PASSWORD}}"   # OS 環境変数の参照
+        password: "{{env.TEST_PASSWORD}}"   # References an OS environment variable
     capture:
-      token: "$.token"                      # JSONPath でキャプチャ
+      token: "$.token"                      # Captured via JSONPath
     assert:
       status: 200
       body:
@@ -51,7 +51,7 @@ steps:
       method: GET
       url: "{{baseUrl}}/me"
       headers:
-        Authorization: "Bearer {{token}}"   # 前ステップのキャプチャを参照
+        Authorization: "Bearer {{token}}"   # References the previous step's capture
     assert:
       status: 200
       body:
@@ -76,52 +76,67 @@ klaus run api/auth-flow.yaml
 ```
 klaus run <files...> [options]
 
-  --env <name>          フローの env 指定を上書き
-  --json                TTY でも JSON 出力を強制
-  --report junit        JUnit XML レポートを生成
-  --report-file <path>  レポート出力先(デフォルト: klaus-report.xml)
-  --no-history          履歴 JSONL への書き込みを無効化
+  --env <name>          Overrides the flow's env setting
+  --json                Forces JSON output even on a TTY
+  --text                Forces text output even when stdout is not a TTY
+  --report junit        Generates a JUnit XML report
+  --report-file <path>  Report output path (default: klaus-report.xml)
+  --no-history          Disables writing to the history JSONL
+  --no-mask             Disables secret masking in stdout output (JSON/text)
+  --record <dir>        record mode: send real requests while saving request/response pairs (masked) to a cassette in <dir>
+  --replay <dir>        replay mode: serve responses from the cassette in <dir> instead of the network (unrecorded requests fail with exit code 3; cannot be combined with --record)
+  --allow-protected     allow running against an environment marked $protected: true (refused with exit code 3 otherwise)
 
-klaus ui [options]      # localhost Web UI(ランナー + 履歴ビューア)を起動
+klaus ui [options]      # Starts the localhost web UI (runner + history viewer)
 
-  -p, --port <n>        ポート指定(デフォルト: 空きポート自動選択)
-  --no-open             ブラウザの自動起動を抑止
+  -p, --port <n>      Specifies the port (default: 4884)
+  -H, --host <host>   Specifies the bind host (default: 127.0.0.1; use 0.0.0.0 to allow external connections, e.g. from docker-compose)
+  --no-open           Suppresses automatically opening the browser
+
+klaus validate [files...]   # Validates flow YAML against the schema only (does not run it; recursively searches the current directory if no argument is given)
+klaus schema                # Outputs the JSON Schema for flow YAML / run --json output / klaus.config.yaml
+klaus generate <spec>       # Generates flow YAML scaffolding per operation from an OpenAPI spec
+klaus init                  # Generates a minimal flows/environments setup in the current directory
+klaus history               # Lists the execution history (.klaus/history/*.jsonl)
+klaus history show <runId>  # Outputs the history entry for the given runId as JSON, in its stored form
 ```
 
-`klaus ui` は 127.0.0.1 限定でサーバーを起動し、起動時トークン付き URL をブラウザで開く(トークン認証 + Host 検証 + CSRF 対策付き。外部からはアクセス不可)。
+See the [CLI reference](https://almondoo.github.io/klaus/guide/cli) for the full option list of each subcommand.
 
-- stdout が TTY なら人間向けテキスト、非 TTY(パイプ / エージェント実行)なら JSON が自動選択される
-- テキスト出力は成功時1行要約のみ。失敗時だけ詳細(expected / actual)を出す。フル詳細は履歴 JSONL に残る
+`klaus ui` starts a server bound to 127.0.0.1 by default, and opens a URL with a startup token in the browser (protected by token authentication, Host validation, and CSRF protection; not accessible from outside by default; use `-H, --host` to change this).
 
-### exit code
+- Human-readable text is used when stdout is a TTY; JSON is selected automatically for non-TTY (piped / agent execution)
+- Text output is a one-line summary on success only. Details (expected / actual) are shown only on failure. Full details remain in the history JSONL
 
-| code | 意味 |
+### Exit code
+
+| code | meaning |
 |---|---|
-| 0 | 全件成功 |
-| 1 | 一般エラー(予期しない failure) |
-| 2 | 定義ファイルのパースエラー |
-| 3 | 実行時エラー(接続不能・タイムアウト等) |
-| 4 | アサーション失敗 |
+| 0 | All succeeded |
+| 1 | General error (unexpected failure) |
+| 2 | Definition file parse error |
+| 3 | Runtime error (connection failure, timeout, etc.) |
+| 4 | Assertion failure |
 
-## テンプレート
+## Templates
 
-- `{{var}}` — キャプチャ変数・環境ファイル値の参照(キャプチャ優先)
-- `{{env.X}}` — OS 環境変数の参照。シークレットは定義ファイルに直書きせずこれを使う
-- `{{newUuid}}` / `{{newDate}}` / `{{newTimestamp}}` — テンプレート関数(UUID / ISO 8601 / epoch ms)
+- `{{var}}` — Reference to a captured variable or environment file value (captures take precedence)
+- `{{env.X}}` — Reference to an OS environment variable. Use this instead of hardcoding secrets in definition files
+- `{{newUuid}}` / `{{newDate}}` / `{{newTimestamp}}` — Template functions (UUID / ISO 8601 / epoch ms)
 
-## アサーション
+## Assertions
 
 - `status: 200`
 - `headers: [{ name, equals | contains | regex | exists }]`
-- `body: [{ path, exists | equals | contains | regex }]` — JSONPath ベース
-- `bodyText: { equals | contains | regex }` — 生テキスト
+- `body: [{ path, exists | equals | contains | regex }]` — JSONPath-based
+- `bodyText: { equals | contains | regex }` — Raw text
 - `duration: { maxMs }`
-- SSE 用: `eventCount: { min | max | equals }` / `events: [{ index?, path?, ...マッチャー }]`
-- WebSocket 用: `messageCount: { min | max | equals }` / `messages: [{ index?, path?, ...マッチャー }]`(events と同セマンティクス)
+- For SSE: `eventCount: { min | max | equals }` / `events: [{ index?, path?, ...matchers }]`
+- For WebSocket: `messageCount: { min | max | equals }` / `messages: [{ index?, path?, ...matchers }]` (same semantics as events)
 
-## SSE 検証
+## SSE Verification
 
-`Accept: text/event-stream` のリクエスト(または `sse:` ブロックの指定)は、`maxEvents` / `maxDurationMs` の上限に達した時点で受信を打ち切り、受信イベント列にアサーションを実行する。
+For a request with `Accept: text/event-stream` (or an explicit `sse:` block), reception is cut off once the `maxEvents` / `maxDurationMs` limit is reached, and assertions run against the received event sequence.
 
 ```yaml
   - name: stream
@@ -142,7 +157,7 @@ klaus ui [options]      # localhost Web UI(ランナー + 履歴ビューア)を
 
 ## GraphQL
 
-`request.graphql` を指定すると、method 未指定なら POST、`Content-Type: application/json` で `{ query, variables }` を送信する(`body` とは排他)。アサーション・キャプチャは通常の JSONPath がそのまま使える。
+When `request.graphql` is specified, if method is unspecified it defaults to POST, sending `{ query, variables }` with `Content-Type: application/json` (mutually exclusive with `body`). Assertions and captures work with regular JSONPath as-is.
 
 ```yaml
   - name: get-user
@@ -159,7 +174,7 @@ klaus ui [options]      # localhost Web UI(ランナー + 履歴ビューア)を
 
 ## WebSocket
 
-ステップに `request` の代わりに `ws:` を指定する。`send` の各メッセージを順次送信し、`maxMessages` / `maxDurationMs` の上限で受信を打ち切って正常終了、受信メッセージ列にアサーションを実行する。
+Specify `ws:` instead of `request` on a step. Each message in `send` is sent sequentially, reception is cut off at the `maxMessages` / `maxDurationMs` limit and completes normally, and assertions run against the received message sequence.
 
 ```yaml
   - name: ws-echo
@@ -168,8 +183,8 @@ klaus ui [options]      # localhost Web UI(ランナー + 履歴ビューア)を
       send:
         - "ping"
         - { type: subscribe, channel: orders }
-      maxMessages: 50        # デフォルト 100
-      maxDurationMs: 5000    # デフォルト 10000
+      maxMessages: 50        # default 100
+      maxDurationMs: 5000    # default 10000
     assert:
       messageCount: { min: 1 }
       messages:
@@ -179,33 +194,33 @@ klaus ui [options]      # localhost Web UI(ランナー + 履歴ビューア)を
           contains: "order"
 ```
 
-## 実行履歴
+## Execution History
 
-全リクエスト / レスポンス / 所要時間が `.klaus/history/<日付>.jsonl` に1ステップ1行で追記される(スキーマは `v` フィールドで versioned)。git 管理するかどうかはプロジェクト側の判断(シークレットを含むレスポンスを扱う場合は `.gitignore` 推奨)。
+All requests / responses / durations are appended one step per line to `.klaus/history/<date>.jsonl` (the schema is versioned via the `v` field). Whether to manage this under git is up to the project (`.gitignore` is recommended when handling responses that contain secrets).
 
-## Agent Skill(Claude Code / Codex)
+## Agent Skill (Claude Code / Codex)
 
-`skills/klaus/SKILL.md` として Agent Skill 形式のドキュメントを同梱している。`~/.claude/skills/klaus/`(Claude Code)や `~/.agents/skills/klaus/`(Codex)にコピーすると、フロー YAML の書き方や exit code の意味をエージェントがソースコードを読まずに把握できる。配置手順は [Agent Skill(Claude Code / Codex)](https://almondoo.github.io/klaus/guide/agent-skill) を参照。
+An Agent Skill document is bundled as `skills/klaus/SKILL.md`. Copy it to `~/.claude/skills/klaus/` (Claude Code) or `~/.agents/skills/klaus/` (Codex) so agents can learn how to write flow YAML and what each exit code means without reading the source. See [Agent Skill (Claude Code / Codex)](https://almondoo.github.io/klaus/guide/agent-skill) for setup instructions.
 
-## 開発
+## Development
 
 ```bash
 pnpm install
-pnpm build      # tsup(core / cli / server)。dist/ui は保持される
-pnpm build:ui   # Vite(ui/ → dist/ui)
-pnpm build:all  # clean + build + build:ui(リリース用のフルビルド)
+pnpm build      # tsup (core / cli / server); dist/ui is preserved
+pnpm build:ui   # Vite (ui/ -> dist/ui)
+pnpm build:all  # clean + build + build:ui (full build for release)
 pnpm test           # vitest
-pnpm test:coverage  # vitest + カバレッジ(閾値: lines 90% を CI で強制。対象は src/、ui/ は対象外)
+pnpm test:coverage  # vitest + coverage (thresholds: 90% lines, enforced in CI; scope is src/, ui/ excluded)
 pnpm typecheck      # tsc --noEmit
 pnpm lint           # biome
 ```
 
-構成: `src/core`(CLI 非依存の実行エンジン)+ `src/cli`(薄い CLI 層)+ `src/server`(`klaus ui` の API サーバー)+ `ui/`(Vite + React の Web UI、ワークスペース)。利用者向けガイドは `docs/guide/`、開発者向け資料は `docs/dev/` を参照(目次: `docs/index.md`)。
+Structure: `src/core` (CLI-independent execution engine) + `src/cli` (thin CLI layer) + `src/server` (API server for `klaus ui`) + `ui/` (Vite + React web UI, workspace). See `docs/guide/` for the user guide and `docs/en/dev/` for developer documentation (index: `docs/index.md`).
 
-## ロードマップ
+## Roadmap
 
-npm 公開(GitHub Actions + Trusted Publishing)は v0.1.1 で完了。今後の予定は [GitHub Issues](https://github.com/almondoo/klaus/issues) を参照。
+npm publishing (GitHub Actions + Trusted Publishing) was completed in v0.1.1. See [GitHub Issues](https://github.com/almondoo/klaus/issues) for future plans.
 
 ## License
 
-[Elastic License 2.0](LICENSE) — 利用・改変・再配布は自由ですが、本ソフトウェアをホスティング/マネージドサービスとして第三者に提供することはできません。
+[Elastic License 2.0](LICENSE) — Free to use, modify, and redistribute, but this software may not be provided to third parties as a hosted/managed service.
