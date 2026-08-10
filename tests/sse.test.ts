@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import { receiveSse } from "../src/core/sse.js";
+import { closeServer, listenEphemeral } from "./support/net.js";
 
 interface SseEventDef {
   event?: string;
@@ -10,7 +10,7 @@ interface SseEventDef {
 }
 
 /** SSE イベントを一定間隔で(必要なら無限に)送り続けるテストサーバー */
-function startSseServer(options: {
+async function startSseServer(options: {
   events?: SseEventDef[];
   intervalMs: number;
   infinite?: boolean;
@@ -47,12 +47,8 @@ function startSseServer(options: {
     res.on("close", () => clearInterval(timer));
   });
 
-  return new Promise<{ server: ReturnType<typeof createServer>; baseUrl: string }>((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
-      const port = (server.address() as AddressInfo).port;
-      resolve({ server, baseUrl: `http://127.0.0.1:${port}` });
-    });
-  });
+  const { baseUrl } = await listenEphemeral(server);
+  return { server, baseUrl };
 }
 
 describe("receiveSse", () => {
@@ -60,7 +56,7 @@ describe("receiveSse", () => {
 
   afterEach(async () => {
     if (activeServer) {
-      await new Promise<void>((resolve) => activeServer?.close(() => resolve()));
+      await closeServer(activeServer);
       activeServer = undefined;
     }
   });

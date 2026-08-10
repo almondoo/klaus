@@ -16,7 +16,6 @@
 | `Progress` | `progress.tsx` | `RunView` の全体進捗バー(`Step n / m`) |
 | `ScrollArea` / `ScrollBar` | `scroll-area.tsx` | `Sidebar` のフロー一覧スクロール |
 | `Select` / `SelectContent` / `SelectItem` / `SelectTrigger` / `SelectValue` | `select.tsx` | `TopBar` の環境セレクタ、`HistoryBrowser` のフローフィルタ |
-| `Separator` | `separator.tsx` | 導入済みだが**現状どの機能コンポーネントからも未使用**(将来のセクション区切り用に予約) |
 | `Skeleton` | `skeleton.tsx` | `Sidebar` / `HistoryBrowser` の読み込み中プレースホルダー |
 | `Table` / `TableHeader` / `TableBody` / `TableRow` / `TableHead` / `TableCell` | `table.tsx` | `HistoryBrowser` の履歴テーブル |
 | `Tooltip` / `TooltipTrigger` / `TooltipContent` | `tooltip.tsx` | `Sidebar` のパースエラー理由表示 |

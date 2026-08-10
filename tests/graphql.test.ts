@@ -1,14 +1,14 @@
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { executeFlow } from "../src/core/runner.js";
 import { flowSchema } from "../src/core/schema.js";
+import { closeServer, listenEphemeral } from "./support/net.js";
 
 /**
  * graphql リクエストを受け取り、実際に受信した method / Content-Type / body をそのまま返すテストサーバー。
  * GET /seed はテンプレート展開の元になる値を返す。
  */
-function startGraphqlServer() {
+async function startGraphqlServer() {
   const server = createServer((req, res) => {
     if (req.method === "GET" && req.url === "/seed") {
       res.writeHead(200, { "Content-Type": "application/json" });
@@ -31,12 +31,8 @@ function startGraphqlServer() {
     });
   });
 
-  return new Promise<{ server: ReturnType<typeof createServer>; baseUrl: string }>((resolve) => {
-    server.listen(0, "127.0.0.1", () => {
-      const port = (server.address() as AddressInfo).port;
-      resolve({ server, baseUrl: `http://127.0.0.1:${port}` });
-    });
-  });
+  const { baseUrl } = await listenEphemeral(server);
+  return { server, baseUrl };
 }
 
 interface EchoResponseBody {
@@ -53,7 +49,7 @@ describe("graphql request", () => {
   });
 
   afterAll(async () => {
-    await new Promise<void>((resolve) => ctx.server.close(() => resolve()));
+    await closeServer(ctx.server);
   });
 
   it("method 未指定なら POST、Content-Type 未指定なら application/json、body は { query, variables } になる", async () => {

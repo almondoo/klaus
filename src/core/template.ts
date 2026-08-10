@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { mapDeepStrings } from "./deep-map.js";
 import { RuntimeError } from "./errors.js";
 import type { Environment } from "./schema.js";
 
@@ -100,20 +101,7 @@ export function renderString(input: string, context: TemplateContext): string {
  * オブジェクト・配列はそのまま再帰し、数値・真偽値・null はそのまま返す。
  */
 export function renderDeep<T>(value: T, context: TemplateContext): T {
-  if (typeof value === "string") {
-    return renderString(value, context) as unknown as T;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => renderDeep(item, context)) as unknown as T;
-  }
-  if (value !== null && typeof value === "object") {
-    const result: Record<string, unknown> = {};
-    for (const [key, v] of Object.entries(value)) {
-      result[key] = renderDeep(v, context);
-    }
-    return result as unknown as T;
-  }
-  return value;
+  return mapDeepStrings(value, (s) => renderString(s, context));
 }
 
 /** Record<string,string>(headers 等)をテンプレート展開する */

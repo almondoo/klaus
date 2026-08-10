@@ -1,9 +1,10 @@
 import { existsSync, statSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseDocument } from "yaml";
 import { KlausError, ParseError } from "./errors.js";
 import { loadEnvironmentFile } from "./loader.js";
+import { isPathWithinDir } from "./path-guard.js";
 import type { Environment } from "./schema.js";
 
 /**
@@ -30,8 +31,7 @@ export function toTemplateVariables(environment: Environment): Record<string, st
  * ファイルシステムへアクセスする前に必ず呼び出すこと。
  */
 function assertWithinEnvironmentsDir(envDir: string, resolvedPath: string, envName: string): void {
-  const boundary = envDir.endsWith(sep) ? envDir : envDir + sep;
-  if (!resolvedPath.startsWith(boundary)) {
+  if (!isPathWithinDir(envDir, resolvedPath)) {
     throw new ParseError(
       `invalid environment name (resolves outside the environments dir): ${envName}`,
     );

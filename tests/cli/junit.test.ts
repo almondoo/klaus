@@ -1,38 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatJUnit } from "../../src/cli/reporters/junit.js";
-import type { FlowResult, RunResult, StepResult } from "../../src/core/index.js";
-
-function buildStep(overrides: Partial<StepResult>): StepResult {
-  return {
-    name: "step",
-    status: "passed",
-    startedAt: new Date().toISOString(),
-    durationMs: 12,
-    assertions: [],
-    ...overrides,
-  };
-}
-
-function buildFlow(overrides: Partial<FlowResult>): FlowResult {
-  return {
-    name: "flow",
-    file: "flow.yaml",
-    status: "passed",
-    steps: [],
-    durationMs: 100,
-    ...overrides,
-  };
-}
-
-function buildRunResult(flows: FlowResult[]): RunResult {
-  return {
-    runId: "run-1",
-    startedAt: new Date().toISOString(),
-    durationMs: 100,
-    flows,
-    status: "passed",
-  };
-}
+import { buildFlow, buildRunResult, buildStep } from "./reporters-fixtures.js";
 
 describe("formatJUnit", () => {
   it("flow を testsuite、step を testcase として出力する", () => {

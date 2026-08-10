@@ -3,8 +3,9 @@
  * SPA なので未知の GET パスは index.html にフォールバックする(/api/* は対象外)。
  */
 import { readFile, stat } from "node:fs/promises";
-import { extname, join, resolve, sep } from "node:path";
+import { extname, join } from "node:path";
 import type { Context } from "hono";
+import { resolveWithinCwd } from "./flows.js";
 
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -58,9 +59,10 @@ export function createStaticHandler(staticDir: string) {
 
     if (pathname !== "/") {
       // path traversal 対策: staticDir 配下に正規化解決される場合のみ実ファイルを試す
-      const requested = resolve(staticDir, `.${pathname}`);
-      const boundary = staticDir.endsWith(sep) ? staticDir : staticDir + sep;
-      if (requested === staticDir || requested.startsWith(boundary)) {
+      // (flows.ts の resolveWithinCwd と同一の境界判定ロジックを再利用する。
+      // pathname は "/" 始まりの絶対パス形式のため、"." を前置して相対パス扱いにする)
+      const requested = resolveWithinCwd(staticDir, `.${pathname}`);
+      if (requested !== null) {
         const content = await readIfExists(requested);
         if (content !== null) {
           // Node の Buffer は ArrayBufferLike(SharedArrayBuffer を含み得る)なので、

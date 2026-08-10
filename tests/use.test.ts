@@ -1,11 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { ParseError } from "../src/core/errors.js";
 import { loadFlow, validateFlowFile } from "../src/core/loader.js";
 import { runFlow } from "../src/core/runner.js";
+import { closeServer, listenEphemeral } from "./support/net.js";
 
 /**
  * ステップ参照(use:)の単体テスト・統合テスト。
@@ -539,13 +539,11 @@ describe("use: 統合実行(examples/ の api/ + flows/ 構成を模した fixtu
       res.writeHead(404);
       res.end();
     });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const port = (server.address() as AddressInfo).port;
-    baseUrl = `http://127.0.0.1:${port}`;
+    ({ baseUrl } = await listenEphemeral(server));
   });
 
   afterAll(async () => {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await closeServer(server);
   });
 
   beforeEach(async () => {

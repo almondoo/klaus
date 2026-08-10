@@ -21,7 +21,11 @@ export const EXCLUDED_DISCOVERY_DIRS = new Set([
 
 const YAML_EXTENSIONS = new Set([".yaml", ".yml"]);
 
-/** dir 以下を再帰走査し、YAML ファイル(拡張子 .yaml/.yml)の絶対パス一覧を返す */
+/**
+ * dir 以下を再帰走査し、YAML ファイル(拡張子 .yaml/.yml)の絶対パス一覧を返す。
+ * サブディレクトリの再帰・各ファイルの判定は Promise.all で並行に行う
+ * (Promise.all は入力順を保つため、返す配列は entries の並び順のまま平坦化される)。
+ */
 export async function collectYamlFiles(dir: string): Promise<string[]> {
   let entries: Dirent[];
   try {
@@ -30,20 +34,21 @@ export async function collectYamlFiles(dir: string): Promise<string[]> {
     return [];
   }
 
-  const files: string[] = [];
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      if (EXCLUDED_DISCOVERY_DIRS.has(entry.name)) continue;
-      files.push(...(await collectYamlFiles(join(dir, entry.name))));
-      continue;
-    }
-    if (entry.isFile()) {
-      const dotIndex = entry.name.lastIndexOf(".");
-      const ext = dotIndex === -1 ? "" : entry.name.slice(dotIndex);
-      if (YAML_EXTENSIONS.has(ext)) files.push(join(dir, entry.name));
-    }
-  }
-  return files;
+  const results = await Promise.all(
+    entries.map(async (entry): Promise<string[]> => {
+      if (entry.isDirectory()) {
+        if (EXCLUDED_DISCOVERY_DIRS.has(entry.name)) return [];
+        return collectYamlFiles(join(dir, entry.name));
+      }
+      if (entry.isFile()) {
+        const dotIndex = entry.name.lastIndexOf(".");
+        const ext = dotIndex === -1 ? "" : entry.name.slice(dotIndex);
+        if (YAML_EXTENSIONS.has(ext)) return [join(dir, entry.name)];
+      }
+      return [];
+    }),
+  );
+  return results.flat();
 }
 
 /** YAML パース結果がフロー候補(トップレベルに `steps` キーを持つ)かどうかを判定する */
@@ -54,28 +59,31 @@ export function isFlowCandidate(raw: unknown): boolean {
 /**
  * dir 以下のフロー候補 YAML(最上位に `steps` キーを持つもの)の絶対パス一覧を返す。
  * YAML 構文自体が壊れていて最上位のキーを判定できないファイル・読み込めないファイルは候補外として除外する。
+ * 各ファイルの読み込み・パースは Promise.all で並行に行う(Promise.all は入力順を保つため、
+ * 返す配列は files の並び順のまま候補外を取り除いたものになる)。
  */
 export async function discoverFlowCandidates(dir: string): Promise<string[]> {
   const files = await collectYamlFiles(dir);
-  const candidates: string[] = [];
 
-  for (const filePath of files) {
-    let content: string;
-    try {
-      content = await readFile(filePath, "utf-8");
-    } catch {
-      continue;
-    }
+  const candidates = await Promise.all(
+    files.map(async (filePath): Promise<string | undefined> => {
+      let content: string;
+      try {
+        content = await readFile(filePath, "utf-8");
+      } catch {
+        return undefined;
+      }
 
-    let raw: unknown;
-    try {
-      raw = parseYaml(content);
-    } catch {
-      continue;
-    }
+      let raw: unknown;
+      try {
+        raw = parseYaml(content);
+      } catch {
+        return undefined;
+      }
 
-    if (isFlowCandidate(raw)) candidates.push(filePath);
-  }
+      return isFlowCandidate(raw) ? filePath : undefined;
+    }),
+  );
 
-  return candidates;
+  return candidates.filter((filePath): filePath is string => filePath !== undefined);
 }

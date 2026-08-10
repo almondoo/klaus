@@ -1,12 +1,12 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { runCommand } from "../src/cli/run.js";
 import { cassetteFilePath } from "../src/core/cassette.js";
 import { executeFlow } from "../src/core/runner.js";
 import { flowSchema } from "../src/core/schema.js";
+import { closeServer, listenEphemeral } from "./support/net.js";
 
 /** X-Secret ヘッダーを受け取り、JSON レスポンスの body にそのまま反映するエコーサーバー */
 async function startEchoServer() {
@@ -19,9 +19,8 @@ async function startEchoServer() {
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "not found" }));
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
-  return { server, baseUrl: `http://127.0.0.1:${port}` };
+  const { baseUrl } = await listenEphemeral(server);
+  return { server, baseUrl };
 }
 
 describe("record/replay モード", () => {
@@ -77,7 +76,7 @@ describe("record/replay モード", () => {
       expect(entry.status).toBe(200);
     } finally {
       delete process.env[SECRET_KEY];
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeServer(server);
     }
   });
 
@@ -104,7 +103,7 @@ describe("record/replay モード", () => {
       expect(recordResult.status).toBe("passed");
 
       // fixture サーバーを停止してから replay する(実ネットワークに出ていないことを保証する)
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeServer(server);
       serverClosed = true;
 
       const replayResult = await executeFlow(flow, "round-trip-flow.yaml", {
@@ -117,7 +116,7 @@ describe("record/replay モード", () => {
       expect(replayResult.steps[0]?.response?.status).toBe(200);
     } finally {
       if (!serverClosed) {
-        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await closeServer(server);
       }
     }
   });
@@ -165,7 +164,7 @@ describe("record/replay モード", () => {
       expect(replayResult.steps[0]?.error).toContain("no recorded response");
       expect(replayResult.steps[0]?.error).toContain("--record");
     } finally {
-      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await closeServer(server);
     }
   });
 

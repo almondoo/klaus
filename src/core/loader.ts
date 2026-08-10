@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 import {
   type Document,
   isNode,
@@ -10,6 +10,7 @@ import {
 } from "yaml";
 import { ZodError } from "zod";
 import { ParseError } from "./errors.js";
+import { isPathWithinDir } from "./path-guard.js";
 import {
   type AssertDef,
   type Environment,
@@ -299,6 +300,22 @@ function mergeAssertArrayField<T>(
 }
 
 /**
+ * assert のスカラー・単一オブジェクトフィールド(参照先・呼び出し側の両方で定義されていたら
+ * 「単体チェックの保証を弱める置換」とみなし conflicts へ集める対象)。
+ * 型がフィールドごとに異なる(number / オブジェクト / Record)ため、衝突検出はこの一覧を
+ * 使った汎用ループにまとめる一方、値のマージ・結果組み立ては unsafe cast を避けるため
+ * フィールドごとに明示したままにする。
+ */
+const SCALAR_ASSERT_FIELDS = [
+  "status",
+  "bodyText",
+  "duration",
+  "eventCount",
+  "messageCount",
+  "bodySchema",
+] as const;
+
+/**
  * 参照先ステップの assert と呼び出し側ステップの assert を加算マージする。
  * - 配列フィールド(headers/body/events/messages): 参照先→呼び出し側の順に連結する
  * - スカラー・単一オブジェクトフィールド(status/bodyText/duration/eventCount/messageCount/bodySchema):
@@ -313,23 +330,9 @@ function mergeAssert(
     return { conflicts: [] };
   }
 
-  const conflicts: string[] = [];
-  if (referenced?.status !== undefined && caller?.status !== undefined) conflicts.push("status");
-  if (referenced?.bodyText !== undefined && caller?.bodyText !== undefined) {
-    conflicts.push("bodyText");
-  }
-  if (referenced?.duration !== undefined && caller?.duration !== undefined) {
-    conflicts.push("duration");
-  }
-  if (referenced?.eventCount !== undefined && caller?.eventCount !== undefined) {
-    conflicts.push("eventCount");
-  }
-  if (referenced?.messageCount !== undefined && caller?.messageCount !== undefined) {
-    conflicts.push("messageCount");
-  }
-  if (referenced?.bodySchema !== undefined && caller?.bodySchema !== undefined) {
-    conflicts.push("bodySchema");
-  }
+  const conflicts = SCALAR_ASSERT_FIELDS.filter(
+    (field) => referenced?.[field] !== undefined && caller?.[field] !== undefined,
+  );
   if (conflicts.length > 0) {
     return { conflicts };
   }
@@ -389,8 +392,7 @@ async function resolveUseStep(
 
   const resolvedPath = resolve(dirname(filePath), useTarget);
   const cwd = resolve(process.cwd());
-  const boundary = cwd.endsWith(sep) ? cwd : cwd + sep;
-  if (resolvedPath !== cwd && !resolvedPath.startsWith(boundary)) {
+  if (!isPathWithinDir(cwd, resolvedPath)) {
     throw new UseResolutionError(
       `step.use resolves outside the project directory: "${useTarget}"`,
       issuePath,

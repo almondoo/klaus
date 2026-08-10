@@ -1,5 +1,6 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { mapDeepStrings } from "./deep-map.js";
 import type { AssertionResult, RequestSnapshot, ResponseSnapshot, SseEvent } from "./types.js";
 
 /**
@@ -100,20 +101,7 @@ export function expandSecretVariants(secrets: readonly string[]): string[] {
  * formatJson でシリアライズする前に RunResult 全体をマスクする用途でも使うため公開する。
  */
 export function maskDeep<T>(value: T, secrets: readonly string[]): T {
-  if (typeof value === "string") {
-    return maskString(value, secrets) as unknown as T;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => maskDeep(item, secrets)) as unknown as T;
-  }
-  if (value !== null && typeof value === "object") {
-    const result: Record<string, unknown> = {};
-    for (const [key, v] of Object.entries(value)) {
-      result[key] = maskDeep(v, secrets);
-    }
-    return result as unknown as T;
-  }
-  return value;
+  return mapDeepStrings(value, (s) => maskString(s, secrets));
 }
 
 function maskHeaders(

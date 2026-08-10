@@ -17,6 +17,7 @@ import {
   resolveEnvironmentPath,
   saveEnvironment,
 } from "../../core/index.js";
+import { parseJsonBody } from "../json-body.js";
 import type {
   EnvironmentCaptureRequestBody,
   EnvironmentDetail,
@@ -27,8 +28,26 @@ import type {
 const YAML_EXT = ".yaml";
 
 // env 名は environments/<name>.yaml に展開されるため、パス区切り・親参照を含む値は拒否する
-// (URL パラメータ由来の untrusted 入力。runs.ts の env 検証と同一パターン)
-const ENV_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
+// (URL パラメータ由来の untrusted 入力。runs.ts / request.ts の env 検証と同一パターンのため export して共有する)
+export const ENV_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
+
+/** env 名が ENV_NAME_PATTERN に一致しない場合、拒否レスポンス(403)を返す(一致すれば null) */
+function invalidEnvNameResponse(c: Context, name: string): Response | null {
+  if (ENV_NAME_PATTERN.test(name)) return null;
+  return c.text("Forbidden: invalid environment name", 403);
+}
+
+/**
+ * environments/<name>.yaml のパスを解決する。ファイルが存在しない場合は 404 レスポンスを返す
+ * (存在すれば解決済みパスを返す)。
+ */
+function resolveExistingEnvironmentPath(c: Context, cwd: string, name: string): string | Response {
+  const path = resolveEnvironmentPath(cwd, name);
+  if (!existsSync(path)) {
+    return c.json({ error: `environment not found: ${name}` }, 404);
+  }
+  return path;
+}
 
 /** environments/*.yaml の名前一覧を返す(ディレクトリが無ければ空配列) */
 export async function listEnvironments(cwd: string): Promise<EnvironmentListEntry[]> {
@@ -52,14 +71,11 @@ export async function handleGetEnvironmentDetail(
   cwd: string,
   name: string,
 ): Promise<Response> {
-  if (!ENV_NAME_PATTERN.test(name)) {
-    return c.text("Forbidden: invalid environment name", 403);
-  }
+  const invalidName = invalidEnvNameResponse(c, name);
+  if (invalidName) return invalidName;
 
-  const path = resolveEnvironmentPath(cwd, name);
-  if (!existsSync(path)) {
-    return c.json({ error: `environment not found: ${name}` }, 404);
-  }
+  const path = resolveExistingEnvironmentPath(c, cwd, name);
+  if (path instanceof Response) return path;
 
   const environment = await loadEnvironmentFile(path);
   // $protected は予約キー(boolean)であり、UI の環境エディタは全行を編集行として往復させるため、
@@ -76,14 +92,11 @@ export async function handlePutEnvironment(
   cwd: string,
   name: string,
 ): Promise<Response> {
-  if (!ENV_NAME_PATTERN.test(name)) {
-    return c.text("Forbidden: invalid environment name", 403);
-  }
+  const invalidName = invalidEnvNameResponse(c, name);
+  if (invalidName) return invalidName;
 
-  let body: EnvironmentUpdateRequestBody;
-  try {
-    body = (await c.req.json()) as EnvironmentUpdateRequestBody;
-  } catch {
+  const body = await parseJsonBody<EnvironmentUpdateRequestBody>(c);
+  if (body === undefined) {
     return c.json({ error: "invalid JSON body" }, 400);
   }
   if (
@@ -142,14 +155,11 @@ export async function handlePostEnvironmentCapture(
   cwd: string,
   name: string,
 ): Promise<Response> {
-  if (!ENV_NAME_PATTERN.test(name)) {
-    return c.text("Forbidden: invalid environment name", 403);
-  }
+  const invalidName = invalidEnvNameResponse(c, name);
+  if (invalidName) return invalidName;
 
-  let body: EnvironmentCaptureRequestBody;
-  try {
-    body = (await c.req.json()) as EnvironmentCaptureRequestBody;
-  } catch {
+  const body = await parseJsonBody<EnvironmentCaptureRequestBody>(c);
+  if (body === undefined) {
     return c.json({ error: "invalid JSON body" }, 400);
   }
   if (!body || typeof body.key !== "string" || body.key.trim() === "") {
@@ -179,10 +189,8 @@ export async function handlePostEnvironmentCapture(
     );
   }
 
-  const path = resolveEnvironmentPath(cwd, name);
-  if (!existsSync(path)) {
-    return c.json({ error: `environment not found: ${name}` }, 404);
-  }
+  const path = resolveExistingEnvironmentPath(c, cwd, name);
+  if (path instanceof Response) return path;
   const existing = await loadEnvironmentFile(path);
   const values: Record<string, string> = { ...existing, [body.key]: stringValue };
 

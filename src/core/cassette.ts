@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { RuntimeError } from "./errors.js";
 import { expandSecretVariants, maskDeep } from "./history.js";
 import type { HttpResponse } from "./http.js";
+import { parseJsonBody } from "./http.js";
 
 /**
  * カセット(record/replay モードで使う記録済みリクエスト/レスポンス)1エントリのスキーマ。
@@ -121,21 +122,10 @@ export function findCassetteEntry(
  * durationMs はネットワークに出ないため常に 0 にする。
  */
 export function cassetteEntryToHttpResponse(entry: CassetteEntry): HttpResponse {
-  const contentType = entry.headers["content-type"];
-  const isJson = typeof contentType === "string" && contentType.includes("application/json");
-  let body: unknown = entry.bodyText;
-  if (isJson && entry.bodyText.length > 0) {
-    try {
-      body = JSON.parse(entry.bodyText);
-    } catch {
-      // JSON として壊れている場合はテキストのまま扱う(sendRequest と同じフォールバック)
-      body = entry.bodyText;
-    }
-  }
   return {
     status: entry.status,
     headers: entry.headers,
-    body,
+    body: parseJsonBody(entry.headers["content-type"], entry.bodyText),
     bodyText: entry.bodyText,
     durationMs: 0,
   };

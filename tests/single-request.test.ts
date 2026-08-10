@@ -1,10 +1,10 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { historyFilePath } from "../src/core/history.js";
 import { executeSingleRequest } from "../src/core/runner.js";
+import { closeServer, listenEphemeral } from "./support/net.js";
 
 async function startEchoServer() {
   const server = createServer((req, res) => {
@@ -22,9 +22,8 @@ async function startEchoServer() {
       );
     });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const port = (server.address() as AddressInfo).port;
-  return { server, baseUrl: `http://127.0.0.1:${port}` };
+  const { baseUrl } = await listenEphemeral(server);
+  return { server, baseUrl };
 }
 
 describe("executeSingleRequest", () => {
@@ -38,7 +37,7 @@ describe("executeSingleRequest", () => {
   });
 
   afterAll(async () => {
-    await new Promise<void>((resolve) => ctx.server.close(() => resolve()));
+    await closeServer(ctx.server);
   });
 
   afterEach(async () => {

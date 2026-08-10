@@ -1,5 +1,6 @@
 import type { HistoryEntry } from "../core/index.js";
 import { getHistoryPage, readAllHistoryEntries, resolveHistoryEntryStatus } from "../core/index.js";
+import { isJsonOutputMode } from "./reporters/text.js";
 
 /**
  * `klaus history` サブコマンド群の実装。
@@ -83,7 +84,7 @@ export async function historyListCommand(
   options: HistoryListOptions,
   cwd: string = process.cwd(),
 ): Promise<number> {
-  const useJson = options.json === true || !process.stdout.isTTY;
+  const useJson = isJsonOutputMode(options.json);
   const fields = parseFields(options.fields);
 
   const page = await getHistoryPage(cwd, {

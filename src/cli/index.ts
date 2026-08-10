@@ -43,6 +43,49 @@ function readPackageJson(): { version: string } {
 
 const pkg = readPackageJson();
 
+// root ヘルプと run サブコマンドヘルプの両方の末尾に載せる共通の案内行。
+// ドキュメント URL やロケール構成が変わったときに片方だけ直し漏れないよう一箇所にまとめる
+const docsHelpLine = "Docs: https://almondoo.github.io/klaus/ (Japanese docs are under /ja/)";
+const exitCodesHelpLine =
+  "Exit codes: 0=success / 1=unexpected error / 2=invalid definition / 3=runtime error / 4=assertion failure";
+
+/**
+ * 各コマンドの action 本体を実行し、予期しない例外を共通の exit 1 ハンドリングに変換する薄いラッパー。
+ * fn 内で個別に catch すべきエラー(ParseError 等、loadConfigOrReport 参照)は各アクションの責務のまま残す
+ * (ここでは fn を素通しして呼ぶだけで、fn 内部の early return には関与しない)。
+ */
+async function runAction(fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn();
+  } catch (error) {
+    // 予期しない例外は exit 1(パースエラー=2 / 実行時エラー=3 / アサーション失敗=4 とは区別する)
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`klaus: unexpected error: ${message}\n`);
+    process.exitCode = 1;
+  }
+}
+
+/**
+ * klaus.config.yaml を読み込む共通ヘルパー(run/ui アクションで重複していたロジックを集約)。
+ * config ファイルが見つからない場合の戻り値(undefined)は正常値のため、読み込み自体の成否は
+ * ok で区別する: ParseError の場合は stderr に報告し exitCode=2 を設定した上で ok: false を返す
+ * (呼び出し元はこれを見て早期 return する契約)。ParseError 以外はそのまま再送出する。
+ */
+async function loadConfigOrReport(
+  cwd: string,
+): Promise<{ ok: true; config: Awaited<ReturnType<typeof loadCliConfig>> } | { ok: false }> {
+  try {
+    return { ok: true, config: await loadCliConfig(cwd) };
+  } catch (error) {
+    if (error instanceof ParseError) {
+      process.stderr.write(`klaus: parse error: ${error.message}\n`);
+      process.exitCode = 2;
+      return { ok: false };
+    }
+    throw error;
+  }
+}
+
 const program = new Command();
 
 program
@@ -55,9 +98,9 @@ program
 program.addHelpText(
   "after",
   `
-Docs: https://almondoo.github.io/klaus/ (Japanese docs are under /ja/)
+${docsHelpLine}
 Run \`klaus init\` to scaffold a starting point in the current directory.
-Exit codes: 0=success / 1=unexpected error / 2=invalid definition / 3=runtime error / 4=assertion failure
+${exitCodesHelpLine}
 `,
 );
 
@@ -94,24 +137,17 @@ program
   .addHelpText(
     "after",
     `
-Docs: https://almondoo.github.io/klaus/ (Japanese docs are under /ja/)
-Exit codes: 0=success / 1=unexpected error / 2=invalid definition / 3=runtime error / 4=assertion failure
+${docsHelpLine}
+${exitCodesHelpLine}
 `,
   )
   .action(async (files: string[], options: RunCommandOptions, command: Command) => {
-    try {
+    await runAction(async () => {
       // klaus.config.yaml(存在すれば)を読み込み、CLI で明示指定されなかったオプションにのみ
       // config 側の既定値を適用する(優先順位: CLI 明示 > config > 組み込み既定)。
-      let config: Awaited<ReturnType<typeof loadCliConfig>>;
-      try {
-        config = await loadCliConfig(process.cwd());
-      } catch (error) {
-        if (error instanceof ParseError) {
-          process.stderr.write(`klaus: parse error: ${error.message}\n`);
-          process.exitCode = 2;
-          return;
-        }
-        throw error;
+      const configResult = await loadConfigOrReport(process.cwd());
+      if (!configResult.ok) {
+        return;
       }
       const mergedOptions = applyConfigToRunOptions(
         options,
@@ -122,7 +158,7 @@ Exit codes: 0=success / 1=unexpected error / 2=invalid definition / 3=runtime er
           history: command.getOptionValueSource("history"),
           mask: command.getOptionValueSource("mask"),
         },
-        config,
+        configResult.config,
       );
 
       if (mergedOptions.report !== undefined && mergedOptions.report !== "junit") {
@@ -134,12 +170,7 @@ Exit codes: 0=success / 1=unexpected error / 2=invalid definition / 3=runtime er
       }
 
       process.exitCode = await runCommand(files, mergedOptions);
-    } catch (error) {
-      // 予期しない例外は exit 1(パースエラー=2 / 実行時エラー=3 / アサーション失敗=4 とは区別する)
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`klaus: unexpected error: ${message}\n`);
-      process.exitCode = 1;
-    }
+    });
   });
 
 program
@@ -164,17 +195,10 @@ program
   )
   .option("--no-open", "do not automatically open a browser on startup")
   .action(async (options: UiCommandOptions, command: Command) => {
-    try {
-      let config: Awaited<ReturnType<typeof loadCliConfig>>;
-      try {
-        config = await loadCliConfig(process.cwd());
-      } catch (error) {
-        if (error instanceof ParseError) {
-          process.stderr.write(`klaus: parse error: ${error.message}\n`);
-          process.exitCode = 2;
-          return;
-        }
-        throw error;
+    await runAction(async () => {
+      const configResult = await loadConfigOrReport(process.cwd());
+      if (!configResult.ok) {
+        return;
       }
       const mergedOptions = applyConfigToUiOptions(
         options,
@@ -183,15 +207,11 @@ program
           host: command.getOptionValueSource("host"),
           open: command.getOptionValueSource("open"),
         },
-        config,
+        configResult.config,
       );
 
       await uiCommand(mergedOptions);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`klaus: unexpected error: ${message}\n`);
-      process.exitCode = 1;
-    }
+    });
   });
 
 program
@@ -203,13 +223,9 @@ program
   )
   .option("--json", "force JSON output (prints JSON even when running on a TTY)")
   .action(async (files: string[], options: ValidateCommandOptions) => {
-    try {
+    await runAction(async () => {
       process.exitCode = await validateCommand(files, options);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`klaus: unexpected error: ${message}\n`);
-      process.exitCode = 1;
-    }
+    });
   });
 
 program
@@ -235,13 +251,12 @@ program
       process.exitCode = 1;
       return;
     }
-    try {
-      process.exitCode = await schemaCommand(options.target);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`klaus: unexpected error: ${message}\n`);
-      process.exitCode = 1;
-    }
+    // options.target のナローイングはクロージャ境界を越えて保持されない(TS の既知の制約)ため、
+    // ナローイング済みの値をローカル変数に取り出してから渡す
+    const target = options.target;
+    await runAction(async () => {
+      process.exitCode = await schemaCommand(target);
+    });
   });
 
 program
@@ -253,26 +268,18 @@ program
   .option("--out-dir <dir>", "output directory for generated flow YAML files", "api")
   .option("--json", "force JSON output (prints JSON even when running on a TTY)")
   .action(async (spec: string, options: GenerateCommandOptions) => {
-    try {
+    await runAction(async () => {
       process.exitCode = await generateCommand(spec, options);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`klaus: unexpected error: ${message}\n`);
-      process.exitCode = 1;
-    }
+    });
   });
 
 program
   .command("init")
   .description("generate a minimal flows/environments starting point in the current directory")
   .action(async () => {
-    try {
+    await runAction(async () => {
       process.exitCode = await initCommand();
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`klaus: unexpected error: ${message}\n`);
-      process.exitCode = 1;
-    }
+    });
   });
 
 const historyCommand = program
@@ -295,13 +302,9 @@ const historyCommand = program
   .option("--fields <csv>", "comma-separated list of fields to output", DEFAULT_HISTORY_FIELDS)
   .option("--json", "force JSON output (prints JSON even when running on a TTY)")
   .action(async (options: HistoryListOptions) => {
-    try {
+    await runAction(async () => {
       process.exitCode = await historyListCommand(options);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`klaus: unexpected error: ${message}\n`);
-      process.exitCode = 1;
-    }
+    });
   });
 
 historyCommand
@@ -310,13 +313,9 @@ historyCommand
   .argument("<runId>", "the target runId")
   .option("--step <name>", "filter by step name")
   .action(async (runId: string, options: HistoryShowOptions) => {
-    try {
+    await runAction(async () => {
       process.exitCode = await historyShowCommand(runId, options);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      process.stderr.write(`klaus: unexpected error: ${message}\n`);
-      process.exitCode = 1;
-    }
+    });
   });
 
 // このモジュールが直接実行された(node dist/cli.js ...)場合のみパースする。

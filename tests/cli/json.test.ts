@@ -1,38 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatJson, jsonReportSchema } from "../../src/cli/reporters/json.js";
-import type { FlowResult, RunResult, StepResult } from "../../src/core/index.js";
-
-function buildStep(overrides: Partial<StepResult>): StepResult {
-  return {
-    name: "step",
-    status: "passed",
-    startedAt: "2026-08-08T00:00:00.000Z",
-    durationMs: 12,
-    assertions: [],
-    ...overrides,
-  };
-}
-
-function buildFlow(overrides: Partial<FlowResult>): FlowResult {
-  return {
-    name: "flow",
-    file: "flow.yaml",
-    status: "passed",
-    steps: [],
-    durationMs: 100,
-    ...overrides,
-  };
-}
-
-function buildRunResult(flows: FlowResult[]): RunResult {
-  return {
-    runId: "run-1",
-    startedAt: "2026-08-08T00:00:00.000Z",
-    durationMs: 100,
-    flows,
-    status: "passed",
-  };
-}
+import { buildFlow, buildRunResult, buildStep } from "./reporters-fixtures.js";
 
 describe("formatJson", () => {
   it("compact(改行なし)な JSON を1行で返す", () => {

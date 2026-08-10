@@ -1,5 +1,5 @@
 import { Plus, Trash2, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -12,6 +12,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useEnvironmentDetail } from "@/hooks/useEnvironmentDetail";
+import { useRowId } from "@/hooks/useRowId";
 
 export interface EnvEditorProps {
   envName: string;
@@ -25,12 +26,6 @@ interface EditableRow {
   value: string;
 }
 
-let nextRowId = 0;
-function makeRow(key = "", value = ""): EditableRow {
-  nextRowId += 1;
-  return { id: `row-${nextRowId}`, key, value };
-}
-
 /**
  * 選択中 env の key-value をテーブルで編集するパネル。
  * TopBar の編集ボタンから開閉し、メインエリア上部にシンプルなパネルとして表示する。
@@ -42,6 +37,12 @@ export function EnvEditor({ envName, onClose }: EnvEditorProps) {
   const [rows, setRows] = useState<EditableRow[]>([]);
   const [dirty, setDirty] = useState(false);
 
+  const makeRowId = useRowId();
+  const makeRow = useCallback(
+    (key = "", value = ""): EditableRow => ({ id: makeRowId("row"), key, value }),
+    [makeRowId],
+  );
+
   // detail の取得(初回・reload)完了時にローカル編集状態を作り直す。
   // 保存成功時も useEnvironmentDetail 側で detail が更新されるため、ここで dirty をリセットする。
   useEffect(() => {
@@ -49,7 +50,7 @@ export function EnvEditor({ envName, onClose }: EnvEditorProps) {
       setRows(Object.entries(detail.values).map(([k, v]) => makeRow(k, v)));
       setDirty(false);
     }
-  }, [detail]);
+  }, [detail, makeRow]);
 
   const updateRow = (id: string, patch: Partial<Pick<EditableRow, "key" | "value">>) => {
     setRows((prev) => prev.map((row) => (row.id === id ? { ...row, ...patch } : row)));
