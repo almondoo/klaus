@@ -6,6 +6,7 @@ import { createParser } from "eventsource-parser";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { HistoryEntry } from "../../src/core/index.js";
 import { historyFilePath } from "../../src/core/index.js";
+import { createApp } from "../../src/server/app.js";
 import type { StartServerResult } from "../../src/server/index.js";
 import { startServer } from "../../src/server/index.js";
 
@@ -13,11 +14,18 @@ import { startServer } from "../../src/server/index.js";
  * 偽の Host ヘッダーを送るためのヘルパー。
  * fetch() は "Host" を forbidden header として扱い、指定しても実際の接続先ホストで上書きされてしまうため、
  * node:http.request を直接使う(生のソケットレベルでは Host ヘッダーを自由に指定できる)。
+ * connectHost は実際に接続するソケット先(既定 127.0.0.1)で、"localhost" バインドの環境によっては
+ * IPv6(::1)に解決されるため、呼び出し側で実バインド先に合わせて上書きできるようにしている。
  */
-function requestWithHost(port: number, path: string, host: string): Promise<{ status: number }> {
+function requestWithHost(
+  port: number,
+  path: string,
+  host: string,
+  connectHost = "127.0.0.1",
+): Promise<{ status: number }> {
   return new Promise((resolve, reject) => {
     const req = httpRequest(
-      { host: "127.0.0.1", port, path, method: "GET", headers: { Host: host } },
+      { host: connectHost, port, path, method: "GET", headers: { Host: host } },
       (res) => {
         res.resume();
         res.on("end", () => resolve({ status: res.statusCode ?? 0 }));
@@ -707,6 +715,13 @@ describe("klaus server", () => {
       const readonlyPath = join(dir, "environments", "readonly.yaml");
       await writeFile(readonlyPath, "baseUrl: http://localhost:4000\n", "utf-8");
       await chmod(readonlyPath, 0o444);
+      // $protected($protected: true)を持つ環境ファイル。UI 編集経路が予約キーを
+      // 想定していない不具合(issue #53)のリグレッションテスト用
+      await writeFile(
+        join(dir, "environments", "protected.yaml"),
+        "$protected: true\nbaseUrl: http://localhost:4000\ntoken: secret-token\n",
+        "utf-8",
+      );
       server = await startServer({ cwd: dir, port: 0 });
       apiBase = `http://127.0.0.1:${server.port}`;
     });
@@ -864,6 +879,60 @@ describe("klaus server", () => {
       expect(content).toContain("# 環境変数の例");
       expect(content).toContain("baseUrl: http://localhost:5000 # 開発用");
       expect(content).not.toContain("token: old-token");
+    });
+
+    it("GET /api/environments/:name: $protected を持つ環境でも values に $protected は含まれない", async () => {
+      const res = await fetch(`${apiBase}/api/environments/protected`, {
+        headers: { "X-Klaus-Token": server.token },
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { name: string; values: Record<string, string> };
+      expect(body).toEqual({
+        name: "protected",
+        values: { baseUrl: "http://localhost:4000", token: "secret-token" },
+      });
+      expect(Object.hasOwn(body.values, "$protected")).toBe(false);
+    });
+
+    it("PUT /api/environments/:name: values に $protected キーを含めると 400", async () => {
+      const res = await fetch(`${apiBase}/api/environments/protected`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": server.token,
+          Cookie: `klaus_token=${server.token}`,
+        },
+        body: JSON.stringify({
+          values: { baseUrl: "http://localhost:4000", $protected: "false" },
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: "$protected is a reserved key and cannot be edited via this API",
+      });
+    });
+
+    it("PUT /api/environments/:name: $protected を持つ環境の他キー更新後もファイルに $protected: true が残る", async () => {
+      const res = await fetch(`${apiBase}/api/environments/protected`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": server.token,
+          Cookie: `klaus_token=${server.token}`,
+        },
+        body: JSON.stringify({ values: { baseUrl: "http://localhost:9000" } }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        name: "protected",
+        values: { baseUrl: "http://localhost:9000" },
+      });
+
+      const content = await readFile(join(dir, "environments", "protected.yaml"), "utf-8");
+      expect(content).toContain("$protected: true");
+      expect(content).toContain("baseUrl: http://localhost:9000");
+      // token は送信 values に含まれなかったため削除される($protected と異なり通常キーの挙動は不変)
+      expect(content).not.toContain("token: secret-token");
     });
   });
 
@@ -1128,6 +1197,111 @@ describe("klaus server", () => {
       }
 
       expect(stderrSpy.join("")).toContain("klaus ui: warning: failed to write history");
+    });
+  });
+
+  describe("startServer: host オプション", () => {
+    // 0.0.0.0 での listen はテスト環境によっては望ましくないため、host オプションが listen に
+    // 正しく渡ることの検証は既定値と同じ "127.0.0.1" を明示指定する形で行う。
+    // これにより、明示指定時も(host 省略時と同様に)Host ヘッダーの厳密な allowlist 検証が
+    // 維持されること(--host 0.0.0.0 用の緩和ロジックへ誤って倒れていないこと)も合わせて確認する。
+    let dir: string;
+    let server: StartServerResult;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(join(tmpRoot, "klaus-server-host-"));
+      server = await startServer({ cwd: dir, port: 0, host: "127.0.0.1" });
+    });
+
+    afterAll(async () => {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it("host: '127.0.0.1' を明示しても 127.0.0.1 で listen し、通常どおり応答する", async () => {
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/flows`, {
+        headers: { "X-Klaus-Token": server.token },
+      });
+      expect(res.status).toBe(200);
+      expect(server.url).toBe(`http://127.0.0.1:${server.port}/?token=${server.token}`);
+    });
+
+    it("host: '127.0.0.1' 明示時も Host ヘッダーの厳密な allowlist 検証は維持される(緩和ロジックへ倒れない)", async () => {
+      const res = await requestWithHost(server.port, "/api/flows", "evil.example.com");
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe("startServer: host: 'localhost' オプション", () => {
+    // "localhost" もループバック指定の一種のため、127.0.0.1 明示時と同様に Host ヘッダーの
+    // 厳密な allowlist 検証が維持されること(緩和ロジックへ誤って倒れていないこと)を確認する。
+    // localhost へのバインドは CI でも安全に行える。
+    let dir: string;
+    let server: StartServerResult;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(join(tmpRoot, "klaus-server-host-localhost-"));
+      server = await startServer({ cwd: dir, port: 0, host: "localhost" });
+    });
+
+    afterAll(async () => {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    it("host: 'localhost' 明示時も Host ヘッダーの厳密な allowlist 検証は維持される(緩和ロジックへ倒れない)", async () => {
+      // 接続先も "localhost" を指定する(環境によって ::1 に解決される場合があり、
+      // 実際にバインドしたアドレスと DNS 解決を一致させるため)。
+      const res = await requestWithHost(server.port, "/api/flows", "evil.example.com", "localhost");
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe("createApp: host が非ループバックの場合の Host/Origin 検証緩和", () => {
+    // --host 0.0.0.0 相当を検証したいが、実バインドは行わない(CI・テスト環境で望ましくないため)。
+    // createApp が返す Hono インスタンスを app.request() で直接叩く: これはネットワークを経由せず
+    // Request オブジェクトをそのまま fetch ハンドラへ渡すため、通常の fetch() と異なり
+    // Host ヘッダーもそのまま(接続先で上書きされずに)c.req.header("host") に反映される。
+    const port = 55555;
+    const relaxedToken = "relaxed-host-check-token";
+    let app: ReturnType<typeof createApp>;
+
+    beforeAll(() => {
+      // workDir は外側の beforeAll で作成済みの共有フローディレクトリ(success.yaml 等)を流用する
+      app = createApp({
+        cwd: workDir,
+        token: relaxedToken,
+        port,
+        staticDir: workDir,
+        host: "0.0.0.0",
+      });
+    });
+
+    it("任意ホスト名でもポートが一致していれば Host 検証で 403 にならない(緩和が効き、トークン検証まで到達して 200)", async () => {
+      const res = await app.request("/api/flows", {
+        headers: {
+          Host: `arbitrary-host.example.com:${port}`,
+          "X-Klaus-Token": relaxedToken,
+        },
+      });
+      expect(res.status).toBe(200);
+    });
+
+    it("ポートが不一致の Host は緩和対象でも 403 のまま", async () => {
+      const res = await app.request("/api/flows", {
+        headers: {
+          Host: `arbitrary-host.example.com:${port + 1}`,
+          "X-Klaus-Token": relaxedToken,
+        },
+      });
+      expect(res.status).toBe(403);
+    });
+
+    it("トークン未指定は緩和時も従来どおり 401(トークン認証は緩和されない)", async () => {
+      const res = await app.request("/api/flows", {
+        headers: { Host: `arbitrary-host.example.com:${port}` },
+      });
+      expect(res.status).toBe(401);
     });
   });
 });

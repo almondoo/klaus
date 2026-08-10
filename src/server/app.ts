@@ -28,6 +28,12 @@ export interface CreateAppOptions {
   port: number;
   /** dist/ui の絶対パス */
   staticDir: string;
+  /**
+   * 実際にバインドしたホスト。既定は "127.0.0.1"。
+   * ループバック(127.0.0.1 / localhost / ::1)以外を明示指定した場合は他ホストからの接続を
+   * 受け付ける設定を選んだとみなし、Host/Origin 検証のホスト名部分を緩和する(ポート一致のみ確認、後述)。
+   */
+  host?: string;
 }
 
 /**
@@ -56,17 +62,27 @@ function parseCookies(header: string): Record<string, string> {
 }
 
 export function createApp(options: CreateAppOptions): Hono {
-  const { cwd, token, port, staticDir } = options;
+  const { cwd, token, port, staticDir, host = "127.0.0.1" } = options;
   const app = new Hono();
 
   const expectedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
   const expectedOrigins = new Set([`http://127.0.0.1:${port}`, `http://localhost:${port}`]);
+  // ループバック(127.0.0.1 / localhost / ::1)へのバインド時のみ、Host/Origin の
+  // ホスト名部分まで厳密に照合する(未指定時の既定 127.0.0.1 もここに含まれる)。
+  // --host 0.0.0.0 や LAN IP 等、ループバック以外へ明示的に公開した場合、クライアントが送る
+  // Host/Origin のホスト名は接続元によって様々になり得て事前に列挙できないため、
+  // ポート一致のみの確認まで緩和する(トークン認証・CSRF Cookie 検証は変更しない)。
+  const isLoopbackHost = host === "127.0.0.1" || host === "localhost" || host === "::1";
 
-  // DNS リバインディング対策: 全リクエストで Host ヘッダーを検証する(0.0.0.0 バインドは行わないが、
-  // 悪意あるページから 127.0.0.1 以外の Host 名で本サーバーへ誘導される攻撃を防ぐ)
+  // DNS リバインディング対策: 全リクエストで Host ヘッダーを検証する(悪意あるページから
+  // 想定外の Host 名で本サーバーへ誘導される攻撃を防ぐ)
   app.use("*", async (c, next) => {
-    const host = c.req.header("host");
-    if (!host || !expectedHosts.has(host)) {
+    const hostHeader = c.req.header("host");
+    if (!hostHeader) {
+      return c.text("Forbidden: invalid Host header", 403);
+    }
+    const hostOk = isLoopbackHost ? expectedHosts.has(hostHeader) : hostHeader.endsWith(`:${port}`);
+    if (!hostOk) {
       return c.text("Forbidden: invalid Host header", 403);
     }
     await next();
@@ -99,8 +115,13 @@ export function createApp(options: CreateAppOptions): Hono {
         return c.text("Forbidden: CSRF check failed (cookie)", 403);
       }
       const origin = c.req.header("origin");
-      if (origin && !expectedOrigins.has(origin)) {
-        return c.text("Forbidden: CSRF check failed (origin)", 403);
+      if (origin) {
+        const originOk = isLoopbackHost
+          ? expectedOrigins.has(origin)
+          : origin.startsWith("http://") && origin.endsWith(`:${port}`);
+        if (!originOk) {
+          return c.text("Forbidden: CSRF check failed (origin)", 403);
+        }
       }
     }
     await next();
