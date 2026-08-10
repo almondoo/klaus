@@ -36,6 +36,13 @@ async function startFixtureServer() {
       res.end(JSON.stringify({ ok: true }));
       return;
     }
+    // WHATWG URL 正規化形でリクエスト行に載ったままの req.url をそのままエコーする
+    // (undici の URL 正規化がクエリの記号・空白をどう変換したかを検証するため)
+    if (req.url?.startsWith("/echo") && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ url: req.url }));
+      return;
+    }
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "not found" }));
   });
@@ -102,7 +109,12 @@ describe("runCommand", () => {
   }
 
   function baseOptions(overrides: Partial<RunCommandOptions> = {}): RunCommandOptions {
-    return { history: false, reportFile: join(workDir, "klaus-report.xml"), ...overrides };
+    return {
+      history: false,
+      mask: true,
+      reportFile: join(workDir, "klaus-report.xml"),
+      ...overrides,
+    };
   }
 
   it("全成功: 戻り値 0 で、非 TTY のため JSON が出力される", async () => {
@@ -153,6 +165,57 @@ describe("runCommand", () => {
     expect(exitCode).toBe(3);
     const report = readJson();
     expect(report.status).toBe("error");
+  });
+
+  it("$protected: true の環境は --allow-protected 無しだと戻り値 3 で拒否され、案内メッセージを含む", async () => {
+    const cwdSpy = process.cwd;
+    process.cwd = () => workDir;
+    try {
+      await mkdir(join(workDir, "environments"), { recursive: true });
+      await writeFile(join(workDir, "environments", "prod.yaml"), "$protected: true\nbaseUrl: x\n");
+      const flowPath = join(workDir, "protected.yaml");
+      await writeFile(
+        flowPath,
+        `name: protected flow\nenv: prod\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions());
+
+      expect(exitCode).toBe(3);
+      const report = readJson();
+      expect(report.status).toBe("error");
+      expect(stdoutSpy.join("")).toContain("--allow-protected");
+    } finally {
+      process.cwd = cwdSpy;
+    }
+  });
+
+  it("--allow-protected オプションが RunFlowOptions.allowProtected として runFlows に渡り、$protected な環境でも実行される", async () => {
+    const cwdSpy = process.cwd;
+    process.cwd = () => workDir;
+    try {
+      await mkdir(join(workDir, "environments"), { recursive: true });
+      await writeFile(join(workDir, "environments", "prod.yaml"), "$protected: true\nbaseUrl: x\n");
+      const flowPath = join(workDir, "protected-allowed.yaml");
+      await writeFile(
+        flowPath,
+        `name: protected flow\nenv: prod\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions({ allowProtected: true }));
+
+      expect(exitCode).toBe(0);
+      expect(mockedRunFlows).toHaveBeenCalledWith(
+        [flowPath],
+        expect.objectContaining({ allowProtected: true }),
+      );
+      const report = readJson();
+      expect(report.status).toBe("passed");
+    } finally {
+      process.cwd = cwdSpy;
+    }
   });
 
   it("アサーション失敗は戻り値 4 になり、JSON の status が failed になる", async () => {
@@ -213,6 +276,187 @@ describe("runCommand", () => {
       const xml = await readFile(reportPath, "utf-8");
       expect(xml).not.toContain(SECRET_VALUE);
       expect(xml).toContain("***");
+    } finally {
+      delete process.env[SECRET_KEY];
+    }
+  });
+
+  it("JSON 出力: {{env.X}} で解決したシークレットが平文で現れず *** にマスクされる", async () => {
+    const SECRET_KEY = "KLAUS_TEST_JSON_SECRET";
+    const SECRET_VALUE = "json-output-secret-value-789";
+    process.env[SECRET_KEY] = SECRET_VALUE;
+    try {
+      const flowPath = join(workDir, "assert-fail-json-secret.yaml");
+      await writeFile(
+        flowPath,
+        `name: assert fail flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      bodyText:\n        contains: "{{env.${SECRET_KEY}}}"\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions());
+
+      expect(exitCode).toBe(4);
+      const rawOutput = stdoutSpy.join("");
+      expect(rawOutput).not.toContain(SECRET_VALUE);
+      expect(rawOutput).toContain("***");
+    } finally {
+      delete process.env[SECRET_KEY];
+    }
+  });
+
+  it("text 出力(TTY): {{env.X}} で解決したシークレットが平文で現れず *** にマスクされる", async () => {
+    process.stdout.isTTY = true;
+    const SECRET_KEY = "KLAUS_TEST_TEXT_SECRET";
+    const SECRET_VALUE = "text-output-secret-value-321";
+    process.env[SECRET_KEY] = SECRET_VALUE;
+    try {
+      const flowPath = join(workDir, "assert-fail-text-secret.yaml");
+      await writeFile(
+        flowPath,
+        `name: assert fail flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      bodyText:\n        contains: "{{env.${SECRET_KEY}}}"\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions());
+
+      expect(exitCode).toBe(4);
+      const rawOutput = stdoutSpy.join("");
+      expect(rawOutput).not.toContain(SECRET_VALUE);
+      expect(rawOutput).toContain("***");
+    } finally {
+      delete process.env[SECRET_KEY];
+    }
+  });
+
+  it("mask: false(--no-mask 相当)のときは stdout の JSON にシークレットが平文で出る", async () => {
+    const SECRET_KEY = "KLAUS_TEST_NOMASK_SECRET";
+    const SECRET_VALUE = "no-mask-secret-value-654";
+    process.env[SECRET_KEY] = SECRET_VALUE;
+    try {
+      const flowPath = join(workDir, "assert-fail-nomask-secret.yaml");
+      await writeFile(
+        flowPath,
+        `name: assert fail flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      bodyText:\n        contains: "{{env.${SECRET_KEY}}}"\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions({ mask: false }));
+
+      expect(exitCode).toBe(4);
+      const rawOutput = stdoutSpy.join("");
+      expect(rawOutput).toContain(SECRET_VALUE);
+    } finally {
+      delete process.env[SECRET_KEY];
+    }
+  });
+
+  it("URL エンコード変種(request.query の {{env.X}} が URLSearchParams でパーセントエンコードされた値)も JSON 出力でマスクされる", async () => {
+    const QUERY_SECRET_KEY = "KLAUS_TEST_CLI_QUERY_SECRET";
+    // + と = を含む base64 風の値。URLSearchParams.set() 経由で組むとパーセントエンコードされ、
+    // 生の値のままでは maskString の単純な部分一致に失敗する(tests/runner.test.ts の同種テストと同じ再現条件)
+    const QUERY_SECRET_VALUE = "aB+cd/Ef==";
+    process.env[QUERY_SECRET_KEY] = QUERY_SECRET_VALUE;
+    try {
+      const flowPath = join(workDir, "assert-fail-query-secret.yaml");
+      await writeFile(
+        flowPath,
+        `name: assert fail flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n      query:\n        token: "{{env.${QUERY_SECRET_KEY}}}"\n    assert:\n      status: 201\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions());
+
+      expect(exitCode).toBe(4);
+      const report = readJson() as {
+        flows: Array<{ steps: Array<{ request?: { url: string } }> }>;
+      };
+      const url = report.flows[0]?.steps[0]?.request?.url ?? "";
+      expect(url).toBe(`${fixture.baseUrl}/ok?token=***`);
+      expect(url).not.toContain(QUERY_SECRET_VALUE);
+      expect(url).not.toContain(encodeURIComponent(QUERY_SECRET_VALUE));
+    } finally {
+      delete process.env[QUERY_SECRET_KEY];
+    }
+  });
+
+  it("request.url テンプレートに直書きした secret が WHATWG URL 正規化形でエコーされても JSON 出力に平文が現れない(#42)", async () => {
+    const URL_SECRET_KEY = "KLAUS_TEST_URL_LITERAL_SECRET";
+    // 空白と記号(@ / + = !)を含む値。undici が送信時に行う WHATWG URL 正規化により
+    // 空白のみ %20 化された "p@ss%20w/rd+key=99!" という、生値・encodeURIComponent 形・
+    // form-urlencoded 形のいずれとも一致しない形でリクエスト行に載る(#42 の再現条件)。
+    const URL_SECRET_VALUE = "p@ss w/rd+key=99!";
+    process.env[URL_SECRET_KEY] = URL_SECRET_VALUE;
+    try {
+      const flowPath = join(workDir, "url-literal-secret.yaml");
+      await writeFile(
+        flowPath,
+        // query: ではなく url: テンプレートへ直書きする(applyQueryParams の URLSearchParams 経由を通さない)
+        `name: url literal secret flow\nsteps:\n  - name: leak\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/echo?token={{env.${URL_SECRET_KEY}}}"\n    assert:\n      status: 201\n`,
+        "utf-8",
+      );
+
+      // 実際の応答は 200 のため必ず失敗し、response スナップショット(エコーされた URL を含む)が JSON 出力に含まれる
+      const exitCode = await runCommand([flowPath], baseOptions());
+
+      expect(exitCode).toBe(4);
+      const rawOutput = stdoutSpy.join("");
+      expect(rawOutput).not.toContain(URL_SECRET_VALUE);
+      expect(rawOutput).not.toContain(encodeURI(URL_SECRET_VALUE));
+      expect(rawOutput).toContain("***");
+    } finally {
+      delete process.env[URL_SECRET_KEY];
+    }
+  });
+
+  it('JSON 出力: `"` を含むシークレットが equals アサーション失敗メッセージの JSON エスケープ形でも平文で現れず *** にマスクされる', async () => {
+    const SECRET_KEY = "KLAUS_TEST_JSON_ESCAPE_SECRET";
+    // assert.ts の bodyText.equals 失敗メッセージは JSON.stringify(expected) を埋め込むため、
+    // `"` を含むこの値はエスケープ済みの形(ab\"cd5)でメッセージに現れる
+    // (JSON.stringify 後の単純な文字列置換では検出できない再現条件)。
+    const SECRET_VALUE = 'ab"cd5';
+    process.env[SECRET_KEY] = SECRET_VALUE;
+    try {
+      const flowPath = join(workDir, "assert-fail-json-escape-secret.yaml");
+      await writeFile(
+        flowPath,
+        `name: assert fail flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      bodyText:\n        equals: "{{env.${SECRET_KEY}}}"\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions());
+
+      expect(exitCode).toBe(4);
+      const rawOutput = stdoutSpy.join("");
+      const jsonEscaped = JSON.stringify(SECRET_VALUE).slice(1, -1);
+      expect(rawOutput).not.toContain(SECRET_VALUE);
+      expect(rawOutput).not.toContain(jsonEscaped);
+      expect(rawOutput).toContain("***");
+    } finally {
+      delete process.env[SECRET_KEY];
+    }
+  });
+
+  it('text 出力(TTY): `"` を含むシークレットが equals アサーション失敗メッセージの JSON エスケープ形でも平文で現れず *** にマスクされる', async () => {
+    process.stdout.isTTY = true;
+    const SECRET_KEY = "KLAUS_TEST_TEXT_JSON_ESCAPE_SECRET";
+    const SECRET_VALUE = 'ef"gh6';
+    process.env[SECRET_KEY] = SECRET_VALUE;
+    try {
+      const flowPath = join(workDir, "assert-fail-text-json-escape-secret.yaml");
+      await writeFile(
+        flowPath,
+        `name: assert fail flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      bodyText:\n        equals: "{{env.${SECRET_KEY}}}"\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions());
+
+      expect(exitCode).toBe(4);
+      const rawOutput = stdoutSpy.join("");
+      const jsonEscaped = JSON.stringify(SECRET_VALUE).slice(1, -1);
+      expect(rawOutput).not.toContain(SECRET_VALUE);
+      expect(rawOutput).not.toContain(jsonEscaped);
+      expect(rawOutput).toContain("***");
     } finally {
       delete process.env[SECRET_KEY];
     }
@@ -348,6 +592,64 @@ describe("runCommand", () => {
     expect(output).toContain(`success flow (${flowPath})`);
     expect(output).toContain("PASS ok");
     expect(output).toMatch(/1 flow, 1 step: 1 passed/);
+  });
+
+  it("非 TTY でも --text を指定すると text 出力になる(#46)", async () => {
+    // beforeEach で isTTY は非 TTY(undefined)に固定済み
+    const flowPath = join(workDir, "success-text-forced.yaml");
+    await writeFile(
+      flowPath,
+      `name: success flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+
+    const exitCode = await runCommand([flowPath], baseOptions({ text: true }));
+
+    expect(exitCode).toBe(0);
+    const output = stdoutSpy.join("");
+    expect(output).toContain(`success flow (${flowPath})`);
+    expect(output).toContain("PASS ok");
+    expect(output).toMatch(/1 flow, 1 step: 1 passed/);
+    // JSON としてはパースできない(text 出力である証拠)
+    expect(() => JSON.parse(output)).toThrow();
+  });
+
+  it("非 TTY + --text + FORCE_COLOR=1 では ANSI カラーコードが出力に含まれる(#46 の完了条件)", async () => {
+    const originalForceColor = process.env.FORCE_COLOR;
+    process.env.FORCE_COLOR = "1";
+    try {
+      const flowPath = join(workDir, "success-text-color.yaml");
+      await writeFile(
+        flowPath,
+        `name: success flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions({ text: true }));
+
+      expect(exitCode).toBe(0);
+      const output = stdoutSpy.join("");
+      // ANSI green (PASS 行の色付け)
+      expect(output).toContain("\x1b[32m");
+      expect(output).toContain("\x1b[0m");
+    } finally {
+      if (originalForceColor === undefined) {
+        delete process.env.FORCE_COLOR;
+      } else {
+        process.env.FORCE_COLOR = originalForceColor;
+      }
+    }
+  });
+
+  it("--json と --text の同時指定は戻り値 1 になり stderr にエラーを出す", async () => {
+    const flowPath = join(workDir, "any-json-text.yaml");
+    await writeFile(flowPath, VALID_FLOW_YAML, "utf-8");
+
+    const exitCode = await runCommand([flowPath], baseOptions({ json: true, text: true }));
+
+    expect(exitCode).toBe(1);
+    expect(stdoutSpy.join("")).toBe("");
+    expect(stderrSpy.join("")).toContain("klaus: --json and --text cannot be used together");
   });
 
   it("履歴書き込みが失敗してもステップの成否には影響せず、stderr に warning が出る", async () => {
