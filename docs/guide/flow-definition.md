@@ -165,7 +165,9 @@ Where expansion applies: `request.url` / values of `request.headers` / values of
 
 ```yaml
 capture:
-  token: "$.token"     # variable name: JSONPath
+  token: "$.token"            # variable name: JSONPath
+  userId: "$.data.user.id"    # nested field
+  firstId: "$.items[0].id"    # array index
 ```
 
 - Applies a JSONPath to the JSON response, making the result available as a template variable in subsequent steps (the classic case being login → token → Authorization header)

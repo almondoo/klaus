@@ -165,7 +165,9 @@ steps:
 
 ```yaml
 capture:
-  token: "$.token"     # 変数名: JSONPath
+  token: "$.token"            # 変数名: JSONPath
+  userId: "$.data.user.id"    # ネストしたフィールド
+  firstId: "$.items[0].id"    # 配列インデックス
 ```
 
 - JSON レスポンスに JSONPath を適用し、結果を後続ステップのテンプレート変数にする(ログイン → トークン → Authorization ヘッダーが代表ケース)
