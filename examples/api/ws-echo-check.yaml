@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
+name: WebSocket エコーチェック
+# ws: は request の代わりにステップへ指定する(request/use とは排他、sse とも併用不可)。
+# send の各要素は文字列ならそのまま、オブジェクトなら JSON.stringify して送信される。
+env: local          # examples/environments/local.yaml を参照(--env で上書き可、wsUrl を含む)
+steps:
+  - name: echo
+    ws:
+      url: "{{wsUrl}}/ws"
+      send:
+        - "hello"                # 文字列はそのまま送信される
+        - { foo: "bar" }          # オブジェクトは JSON.stringify されて送信される
+      maxMessages: 2
+      maxDurationMs: 3000
+    assert:
+      messageCount:
+        equals: 2
+      messages:
+        # path を省略すると受信メッセージの生テキストがそのまま比較対象になる。
+        - index: 0
+          equals: "hello"
+        # path を指定すると受信メッセージを JSON として parse した上で JSONPath 評価する。
+        - index: 1
+          path: "$.foo"
+          equals: "bar"

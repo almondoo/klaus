@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/klaus-config.schema.json
+#
+# make verify のコンテナ内でのみ有効になる klaus.config.yaml。
+# compose.yaml の klaus サービスで `/work/examples/klaus.config.yaml` にバインドマウントし、
+# ホスト側 examples/ の rw マウント(`../../examples:/work/examples`)よりも深いパスとして
+# 上書きする(Docker のバインドマウントはターゲットパスが深いものほど優先されるため、
+# ディレクトリ丸ごとマウントの中の 1 ファイルだけをこちらに差し替えられる)。
+#
+# 目的(run): examples/klaus.config.yaml は `run.env: local`(ホスト実行前提)を既定にしているため、
+# そのままコンテナ内 cwd /work/examples で使うと baseUrl が 127.0.0.1(klaus コンテナ自身)を
+# 指してしまい、`klaus run api/*.yaml flows/*.yaml` のような CHECKLIST.md 記載どおりの素の
+# コマンドが ECONNREFUSED で失敗する。ここで `run.env: docker` を既定にしておくことで、
+# コンテナ内では `-e docker` を付けなくても CHECKLIST.md の表のコマンドがそのまま動く
+# (CLI で `--env` を明示すれば、この既定より優先されるのは変わらない)。
+#
+# 目的(ui): examples/klaus.config.yaml の `ui.host: 127.0.0.1` はホスト実行前提の既定値。
+# コンテナ内でも 127.0.0.1 にバインドすると、compose.yaml の `127.0.0.1:4884:4884` ポート
+# マッピング越しにホストの外側から `127.0.0.1:4884` へ到達できない(コンテナ内 127.0.0.1 は
+# コンテナ自身しか指さない)ため、`ui.host: 0.0.0.0` で全インターフェースにバインドする。
+# また、コンテナにはブラウザ/opener が無いため `ui.open: false` にしておかないと
+# `klaus ui` 起動時にブラウザ起動を試みてエラーになる(port はホストと同じ既定値のまま)。
+
+run:
+  env: docker
+
+ui:
+  port: 4884
+  host: 0.0.0.0
+  open: false

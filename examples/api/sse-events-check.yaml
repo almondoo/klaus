@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
+name: SSE イベント配信チェック
+# sse: を request と併用すると、レスポンスを Server-Sent Events ストリームとして受信する。
+# maxEvents / maxDurationMs のいずれかに達するまで(または接続が終了するまで)イベントを蓄積する。
+env: local          # examples/environments/local.yaml を参照(--env で上書き可)
+steps:
+  - name: events
+    request:
+      method: GET
+      url: "{{baseUrl}}/events"
+    sse:
+      maxEvents: 10          # mock-server は3件送って終了するので、余裕を持たせた上限
+      maxDurationMs: 3000
+    assert:
+      status: 200
+      eventCount:
+        equals: 3
+      events:
+        # data フィールドは JSON として JSONPath 評価される({"seq":1} 等)。
+        - index: 0
+          path: "$.seq"
+          equals: 1
+        - index: 2
+          path: "$.seq"
+          equals: 3

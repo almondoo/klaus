@@ -1,0 +1,147 @@
+openapi: 3.0.3
+info:
+  title: Users API (mock-server.mjs 対応)
+  version: "1.0.0"
+  description: >
+    examples/mock-server.mjs のエンドポイントに対応した OpenAPI 3.0.3 定義。
+    `klaus generate openapi/users-api.yaml --out-dir generated` の題材として使う。
+    生成されるフロー定義はあくまで骨組みであり、パスパラメータを含む operation
+    (getUser / deleteUser)は `{id}` プレースホルダのままなので、生成後に
+    実際の id 値(または `{{userId}}` のようなキャプチャ変数)へ手直しする必要がある。
+servers:
+  - url: http://127.0.0.1:3000
+paths:
+  /login:
+    post:
+      operationId: login
+      summary: email から token を発行する
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+              properties:
+                email:
+                  type: string
+            example:
+              email: test@example.com
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  token:
+                    type: string
+  /me:
+    get:
+      operationId: getCurrentUser
+      summary: Authorization ヘッダーの token から email を復元する
+      # klaus generate はヘッダーの example を生成しないため、生成後に
+      #   headers:
+      #     Authorization: "Bearer {{token}}"
+      # を手動で追加する(flows/auth-flow.yaml の書き方を参照)。
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  email:
+                    type: string
+  /users:
+    get:
+      operationId: listUsers
+      summary: ユーザー一覧を取得する
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+          example: 2
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/User"
+    post:
+      operationId: createUser
+      summary: ユーザーを新規作成する
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - email
+              properties:
+                name:
+                  type: string
+                email:
+                  type: string
+            example:
+              name: Dave
+              email: dave@example.com
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+  /users/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema:
+          type: string
+        example: "1"
+    get:
+      operationId: getUser
+      summary: id 指定でユーザーを取得する
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "404":
+          description: Not Found
+    delete:
+      operationId: deleteUser
+      summary: id 指定でユーザーを削除する
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+components:
+  schemas:
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        email:
+          type: string

@@ -1,0 +1,39 @@
+# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/klaus-config.schema.json
+#
+# examples/ を作業ディレクトリにして klaus run / klaus ui を実行するときの既定値。
+# CLI で明示したオプションは常にこの値より優先される(例: --env docker / --no-history)。
+# 詳細: ../docs/guide/config.md
+#
+# make verify のコンテナ内(cwd /work/examples)では、このファイルは
+# verify/docker/klaus.config.yaml(run.env: docker、ui.host: 0.0.0.0 等)にバインドマウントで
+# 上書きされる(verify/docker/compose.yaml 参照)。ホストでは下記の run/ui の値がそのまま効く。
+
+run:
+  # klaus run --env に相当。未指定時のみ有効(--env docker 等を明示すればそちらが優先)。
+  env: local
+
+  # klaus run --report junit に相当。有効化するとレポート出力を毎回強制することになる
+  # ため、このサンプルではコメントアウトのままにしている。
+  # report: junit
+
+  # klaus run --report-file <path> に相当。report を有効化する場合のみ意味を持つ。
+  # reportFile: klaus-report.xml
+
+  # klaus run --no-history に相当(false で常時 --no-history と同じ挙動になる)。
+  # このサンプルでは既定どおり true(履歴を書く)のためコメントアウトのままにしている。
+  # history: false
+
+  # klaus run --no-mask に相当(false で常時 --no-mask と同じ挙動になる)。
+  # secrets のマスキングを無効化するため、通常は既定の true から変更しない。
+  # mask: false
+
+ui:
+  # klaus ui --port <n> に相当。既定値と同じ値だが、config で設定する記入例として明示している。
+  port: 4884
+
+  # klaus ui --host <host> に相当。既定値と同じ値だが、config で設定する記入例として明示している。
+  host: 127.0.0.1
+
+  # klaus ui --no-open に相当(false で常時 --no-open と同じ挙動になる)。
+  # このサンプルでは既定どおり true(自動でブラウザを開く)のためコメントアウトのままにしている。
+  # open: true

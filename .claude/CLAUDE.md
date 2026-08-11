@@ -10,7 +10,7 @@ klaus は YAML でリクエストフローを定義・実行する API 検証 CL
 
 @../docs/dev/verification.md
 
-注意: リポジトリ直下の `VERIFICATION.md` は別物(`make verify` 用の Docker 手動検証手順)。実装後の検証はこのガイド(docs/dev/verification.md)に従う。
+注意: 手動実行用のコマンドチェックリスト(`make verify` の Docker 手順を含む)は `verify/CHECKLIST.md` にある。実装後の検証はこのガイド(docs/dev/verification.md)に従う。
 
 ## 規約
 
