@@ -209,6 +209,37 @@ describe("runCommand", () => {
     }
   });
 
+  it("--env オプションが RunFlowOptions.envNameOverride として runFlows に渡り、指定した環境ファイルが使われる", async () => {
+    const cwdSpy = process.cwd;
+    process.cwd = () => workDir;
+    try {
+      await mkdir(join(workDir, "environments"), { recursive: true });
+      await writeFile(
+        join(workDir, "environments", "custom.yaml"),
+        `baseUrl: "${fixture.baseUrl}"\n`,
+      );
+      // flow 自体に env: は指定せず、--env での上書きのみで baseUrl が解決されることを確認する
+      const flowPath = join(workDir, "env-override.yaml");
+      await writeFile(
+        flowPath,
+        'name: env override flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "{{baseUrl}}/ok"\n    assert:\n      status: 200\n',
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions({ env: "custom" }));
+
+      expect(exitCode).toBe(0);
+      expect(mockedRunFlows).toHaveBeenCalledWith(
+        [flowPath],
+        expect.objectContaining({ envNameOverride: "custom" }),
+      );
+      const report = readJson();
+      expect(report.status).toBe("passed");
+    } finally {
+      process.cwd = cwdSpy;
+    }
+  });
+
   it("アサーション失敗は戻り値 4 になり、JSON の status が failed になる", async () => {
     const flowPath = join(workDir, "assert-fail.yaml");
     await writeFile(
@@ -466,6 +497,51 @@ describe("runCommand", () => {
 
     expect(exitCode).toBe(0);
     await expect(access(reportPath)).rejects.toThrow();
+  });
+
+  it('--record <dir> が RunFlowOptions.recording に { mode: "record", dir } として変換されて runFlows に渡る', async () => {
+    const recordDir = await mkdtemp(join(tmpRoot, "klaus-run-record-"));
+    try {
+      const flowPath = join(workDir, "record-single.yaml");
+      await writeFile(
+        flowPath,
+        `name: record flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions({ record: recordDir }));
+
+      expect(exitCode).toBe(0);
+      expect(mockedRunFlows).toHaveBeenCalledWith(
+        [flowPath],
+        expect.objectContaining({ recording: { mode: "record", dir: recordDir } }),
+      );
+    } finally {
+      await rm(recordDir, { recursive: true, force: true });
+    }
+  });
+
+  it('--replay <dir> が RunFlowOptions.recording に { mode: "replay", dir } として変換されて runFlows に渡る', async () => {
+    // カセットが存在しなくても(replay 実行自体が失敗しても)runFlows への引数変換は検証できる
+    // (同時指定エラーは tests/record-replay.test.ts で別途検証済みのため、ここでは変換のみを見る)
+    const replayDir = await mkdtemp(join(tmpRoot, "klaus-run-replay-"));
+    try {
+      const flowPath = join(workDir, "replay-single.yaml");
+      await writeFile(
+        flowPath,
+        `name: replay flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+
+      await runCommand([flowPath], baseOptions({ replay: replayDir }));
+
+      expect(mockedRunFlows).toHaveBeenCalledWith(
+        [flowPath],
+        expect.objectContaining({ recording: { mode: "replay", dir: replayDir } }),
+      );
+    } finally {
+      await rm(replayDir, { recursive: true, force: true });
+    }
   });
 
   it("history: false のときは .klaus/history に何も書き込まれない", async () => {

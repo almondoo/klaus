@@ -164,6 +164,29 @@ describe("cli integration", () => {
     expect(result.stderr).toContain("broken.yaml");
   });
 
+  it("(l) run -e/--env で指定した環境ファイルが使われる", async () => {
+    // 他テストの cwd(workDir)に影響しないよう専用のサブディレクトリを使う
+    const envWorkDir = join(workDir, "env-scenario");
+    await mkdir(join(envWorkDir, "environments"), { recursive: true });
+    await writeFile(
+      join(envWorkDir, "environments", "staging.yaml"),
+      `baseUrl: "${fixture.baseUrl}"\n`,
+      "utf-8",
+    );
+    const flowPath = join(envWorkDir, "needs-env.yaml");
+    await writeFile(
+      flowPath,
+      'name: needs env flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "{{baseUrl}}/ok"\n    assert:\n      status: 200\n',
+      "utf-8",
+    );
+
+    const result = await runCli(["run", flowPath, "--no-history", "-e", "staging"], envWorkDir);
+
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe("passed");
+  });
+
   it("(g) --report invalid のような未対応レポート形式を指定すると exit 1", async () => {
     const flowPath = join(workDir, "success-for-invalid-report.yaml");
     await writeFile(
@@ -318,4 +341,83 @@ describe("cli integration", () => {
       });
     }
   }, 20000);
+
+  it("(m) schema: 既定(flow スキーマ)の JSON Schema を stdout に出力し exit 0 になる", async () => {
+    const result = await runCli(["schema"], workDir);
+
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.$schema).toContain("json-schema.org");
+    expect(parsed.type).toBe("object");
+  });
+
+  it("(n) schema -t bogus: 不正な --target を指定すると exit 1 になり案内メッセージを出す", async () => {
+    const result = await runCli(["schema", "-t", "bogus"], workDir);
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain('invalid --target "bogus"');
+  });
+
+  it("(o) ui --port abc: 不正な --port は exit 0 以外になり、サーバーは起動せず未捕捉スタックトレースも出ない", async () => {
+    const result = await runCli(["ui", "--port", "abc", "--no-open"], workDir);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("invalid --port value: abc");
+    // InvalidArgumentError として throw されるため commander が整形したメッセージのみになり、
+    // 未捕捉例外のスタックトレース("    at ..." 形式の行)は出ない
+    expect(result.stderr).not.toMatch(/^\s+at\s/m);
+    expect(result.stdout).not.toContain("klaus UI started");
+  });
+
+  it("(p) history --last abc: 不正な --last は exit 0 以外になり未捕捉スタックトレースも出ない", async () => {
+    const result = await runCli(["history", "--last", "abc"], workDir);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("invalid --last value: abc");
+    expect(result.stderr).not.toMatch(/^\s+at\s/m);
+  });
+
+  it("(q) init: api/example.yaml と environments/local.yaml と AGENTS.md を生成し exit 0 になる", async () => {
+    const initWorkDir = join(workDir, "init-scenario");
+    await mkdir(initWorkDir, { recursive: true });
+
+    const result = await runCli(["init"], initWorkDir);
+
+    expect(result.status).toBe(0);
+    await access(join(initWorkDir, "api", "example.yaml"));
+    await access(join(initWorkDir, "environments", "local.yaml"));
+    await access(join(initWorkDir, "AGENTS.md"));
+  });
+
+  it("(r) history / history show: 既存の履歴ディレクトリから JSON を出力し exit 0 になる", async () => {
+    const historyWorkDir = join(workDir, "history-scenario");
+    const historyDir = join(historyWorkDir, ".klaus", "history");
+    await mkdir(historyDir, { recursive: true });
+    const entry = {
+      v: 1,
+      runId: "run-it-1",
+      flow: "it flow",
+      step: "ok",
+      startedAt: "2026-08-08T10:00:00.000Z",
+      durationMs: 1,
+      status: "passed",
+      request: { method: "GET", url: "http://localhost/ok", headers: {} },
+      response: { status: 200, headers: {}, body: null },
+      assertions: [],
+    };
+    await writeFile(join(historyDir, "2026-08-08.jsonl"), `${JSON.stringify(entry)}\n`, "utf-8");
+
+    const listResult = await runCli(["history", "--json"], historyWorkDir);
+    expect(listResult.status).toBe(0);
+    const listParsed = JSON.parse(listResult.stdout) as Array<Record<string, unknown>>;
+    expect(listParsed).toHaveLength(1);
+    expect(listParsed[0]?.runId).toBe("run-it-1");
+
+    const showResult = await runCli(["history", "show", "run-it-1"], historyWorkDir);
+    expect(showResult.status).toBe(0);
+    const showParsed = JSON.parse(showResult.stdout) as Array<Record<string, unknown>>;
+    expect(showParsed).toHaveLength(1);
+    expect(showParsed[0]?.step).toBe("ok");
+  });
 });
