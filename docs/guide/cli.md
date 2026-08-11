@@ -1,28 +1,10 @@
 # CLI Reference
 
-klaus has six commands: `init` (scaffolds a starting point), `run` (executes flows), `validate` (schema-validates flows), `schema` (prints a JSON Schema), `ui` (launches the localhost web UI), and `history` (inspects execution history).
+klaus has seven commands: `run` (executes flows), `ui` (launches the localhost web UI), `validate` (schema-validates flows), `schema` (prints a JSON Schema), `generate` (generates flows from an OpenAPI spec; see [Generating Flows from OpenAPI](./generate.md)), `init` (scaffolds a starting point), and `history` (inspects execution history).
 
 ## --help
 
 Both `klaus --help` and `klaus run --help` end with a link to the docs site (this site; the Japanese version is under `/ja/`, not at the site root), a note that `klaus init` scaffolds a starting point, and a one-line exit code summary.
-
-## klaus init
-
-```
-klaus init
-```
-
-Takes no options. Generates a minimal starting point in the current directory.
-
-| Generated file | Contents |
-|---|---|
-| `api/example.yaml` | A single GET to `https://example.com` with a status-200 assertion (with English comments) |
-| `environments/local.yaml` | A minimal environment file with a `baseUrl` |
-| `AGENTS.md` | A guide for AI coding agents, compressing the command set, YAML schema essentials, assert operating guidance, exit code table, and the api/flows directory convention into about 50 lines |
-
-Existing files are never overwritten — they're skipped, with a message printed to stdout. Any needed directories are created automatically. Always exits 0. If at least one file was generated, a hint for the next command is printed at the end: `klaus run api/example.yaml -e local`
-
-`AGENTS.md` also includes notes for agent execution environments: don't launch `klaus ui` casually — run it in the background with explicit timeout management if you do — and OpenAI Codex CLI disables sandbox network access by default, which can make `klaus run`'s HTTP requests fail (set `network_access = true` under `[sandbox_workspace_write]` in `~/.codex/config.toml` to allow them).
 
 ## klaus run
 
@@ -149,6 +131,39 @@ Details of the decision rules:
 
 An agent (such as Claude Code) can identify where things went wrong from the exit code alone: 2 means fix the definition, 3 means check whether the target API is up, and 4 means compare the assertion against the response.
 
+## klaus ui
+
+```
+klaus ui [-p <n>] [-H <host>] [--no-open]
+```
+
+| Option | Description | Default |
+|---|---|---|
+| `-p`, `--port <n>` | The port to listen on | `4884` (fixed) |
+| `-H`, `--host <host>` | The host to listen on | `127.0.0.1` |
+| `--no-open` | Suppresses automatically opening the browser | opens automatically |
+
+On startup, a URL with a token (`http://127.0.0.1:<port>/?token=…`) is printed to stdout and opened in the default browser. Press Ctrl+C to stop it. For the server's features, security model, and HTTP API, see [localhost UI](ui.md).
+
+`--port` / `--host` / `--no-open` can have their defaults set via `klaus.config.yaml`. See [Default CLI options](config.md).
+
+On a shared multi-user host, this token-bearing URL is passed as an argument to the browser-launch command, so it may be readable by other local users via the process list. On such hosts, pass `--no-open` and open the printed URL yourself instead.
+
+### Using it with docker-compose
+
+To use `klaus ui` inside a container, keep the default port (`4884`) so the port mapping can be pinned, and pass `--host 0.0.0.0` so it's reachable from outside the container.
+
+```yaml
+services:
+  klaus:
+    image: your-klaus-image
+    command: ["klaus", "ui", "--host", "0.0.0.0", "--no-open"]
+    ports:
+      - "4884:4884"
+```
+
+`--host 0.0.0.0` makes the server reachable from other hosts on the network (the printed URL still shows `127.0.0.1` as an openable address, with a `(listening on 0.0.0.0)` note appended). Anyone who knows the token-bearing URL can access the UI/API, so be careful about handling it: don't expose it to untrusted networks and don't share the URL.
+
 ## klaus validate
 
 ```
@@ -222,38 +237,23 @@ The `version` field of the `run --json` payload is a plain literal (currently `2
 
 The `request`/`ws` exclusivity and requiredness, the `body`/`graphql` exclusivity, `method` being required unless `graphql` is set, the `ws.url` scheme constraint, and step name uniqueness are all custom validations expressed via zod's `superRefine` and can't be represented in JSON Schema, so they're instead noted in the `description` of the relevant subschema. Always exits 0.
 
-## klaus ui
+## klaus init
 
 ```
-klaus ui [-p <n>] [-H <host>] [--no-open]
+klaus init
 ```
 
-| Option | Description | Default |
-|---|---|---|
-| `-p`, `--port <n>` | The port to listen on | `4884` (fixed) |
-| `-H`, `--host <host>` | The host to listen on | `127.0.0.1` |
-| `--no-open` | Suppresses automatically opening the browser | opens automatically |
+Takes no options. Generates a minimal starting point in the current directory.
 
-On startup, a URL with a token (`http://127.0.0.1:<port>/?token=…`) is printed to stdout and opened in the default browser. Press Ctrl+C to stop it. For the server's features, security model, and HTTP API, see [localhost UI](ui.md).
+| Generated file | Contents |
+|---|---|
+| `api/example.yaml` | A single GET to `https://example.com` with a status-200 assertion (with English comments) |
+| `environments/local.yaml` | A minimal environment file with a `baseUrl` |
+| `AGENTS.md` | A guide for AI coding agents, compressing the command set, YAML schema essentials, assert operating guidance, exit code table, and the api/flows directory convention into about 50 lines |
 
-`--port` / `--host` / `--no-open` can have their defaults set via `klaus.config.yaml`. See [Default CLI options](config.md).
+Existing files are never overwritten — they're skipped, with a message printed to stdout. Any needed directories are created automatically. Always exits 0. If at least one file was generated, a hint for the next command is printed at the end: `klaus run api/example.yaml -e local`
 
-On a shared multi-user host, this token-bearing URL is passed as an argument to the browser-launch command, so it may be readable by other local users via the process list. On such hosts, pass `--no-open` and open the printed URL yourself instead.
-
-### Using it with docker-compose
-
-To use `klaus ui` inside a container, keep the default port (`4884`) so the port mapping can be pinned, and pass `--host 0.0.0.0` so it's reachable from outside the container.
-
-```yaml
-services:
-  klaus:
-    image: your-klaus-image
-    command: ["klaus", "ui", "--host", "0.0.0.0", "--no-open"]
-    ports:
-      - "4884:4884"
-```
-
-`--host 0.0.0.0` makes the server reachable from other hosts on the network (the printed URL still shows `127.0.0.1` as an openable address, with a `(listening on 0.0.0.0)` note appended). Anyone who knows the token-bearing URL can access the UI/API, so be careful about handling it: don't expose it to untrusted networks and don't share the URL.
+`AGENTS.md` also includes notes for agent execution environments: don't launch `klaus ui` casually — run it in the background with explicit timeout management if you do — and OpenAI Codex CLI disables sandbox network access by default, which can make `klaus run`'s HTTP requests fail (set `network_access = true` under `[sandbox_workspace_write]` in `~/.codex/config.toml` to allow them).
 
 ## klaus history
 

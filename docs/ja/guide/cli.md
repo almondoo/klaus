@@ -1,28 +1,10 @@
 # CLI リファレンス
 
-klaus のコマンドは `init`(雛形生成)・`run`(フロー実行)・`validate`(スキーマ検証)・`schema`(JSON Schema 出力)・`ui`(localhost Web UI 起動)・`history`(実行履歴の参照)の6つ。
+klaus のコマンドは `run`(フロー実行)・`ui`(localhost Web UI 起動)・`validate`(スキーマ検証)・`schema`(JSON Schema 出力)・`generate`(OpenAPI 仕様からのフロー生成。[OpenAPI からのフロー生成](./generate.md)を参照)・`init`(雛形生成)・`history`(実行履歴の参照)の7つ。
 
 ## --help
 
 `klaus --help` および `klaus run --help` の末尾には、docs サイト(このサイト。英語版はサイトのルート、`/en/` 配下ではない)へのリンク・`klaus init` で雛形生成できる旨・exit code の一行要約が付与される。
-
-## klaus init
-
-```
-klaus init
-```
-
-オプションはない。カレントディレクトリに最小構成を生成する。
-
-| 生成されるファイル | 内容 |
-|---|---|
-| `api/example.yaml` | `https://example.com` への GET 1件、ステータス200のアサーション(英語コメント付き) |
-| `environments/local.yaml` | `baseUrl` を持つ最小の環境ファイル |
-| `AGENTS.md` | AI コーディングエージェント向けに、コマンド体系・YAML スキーマ要点・assert の運用指針・exit code 表・api/flows のディレクトリ規約を約50行に圧縮したガイド(英語) |
-
-既存ファイルは上書きせずスキップし、その旨を stdout に表示する。必要なディレクトリは自動で作成される。常に exit 0。1件以上生成した場合、最後に次のコマンドのヒントを表示する: `klaus run api/example.yaml -e local`
-
-`AGENTS.md` には、エージェント実行環境向けの注意点として、`klaus ui` を安易に起動せずバックグラウンド実行+タイムアウト管理を行うべきこと、および OpenAI Codex CLI はサンドボックスのネットワークアクセスが既定で無効なため `klaus run` の HTTP リクエストが失敗する場合があること(`~/.codex/config.toml` の `[sandbox_workspace_write] network_access = true` で解除)も含まれる。
 
 ## klaus run
 
@@ -149,6 +131,39 @@ request/response スナップショットや assertions などの詳細を持つ
 
 エージェント(Claude Code 等)は exit code だけで故障箇所を判別できる: 2 なら定義を直す、3 なら対象 API の起動状態を見る、4 ならアサーション内容とレスポンスを比較する。
 
+## klaus ui
+
+```
+klaus ui [-p <n>] [-H <host>] [--no-open]
+```
+
+| オプション | 説明 | デフォルト |
+|---|---|---|
+| `-p`, `--port <n>` | 待ち受けポート | `4884`(固定) |
+| `-H`, `--host <host>` | 待ち受けホスト | `127.0.0.1` |
+| `--no-open` | ブラウザの自動起動を抑止 | 自動起動する |
+
+起動するとトークン付き URL(`http://127.0.0.1:<port>/?token=…`)を stdout に表示し、デフォルトブラウザで開く。Ctrl+C で終了。サーバーの機能・セキュリティモデル・HTTP API は [localhost UI](ui.md) を参照。
+
+`--port` / `--host` / `--no-open` は `klaus.config.yaml` で既定値を設定できる。詳細は [CLI オプションの既定値](config.md) を参照。
+
+共有のマルチユーザーホストでは、このトークン付き URL がブラウザ起動コマンドの引数として渡るため、他のローカルユーザーからプロセス一覧経由で読める可能性がある。そうした環境では `--no-open` を指定し、表示された URL を自分で開くこと。
+
+### docker-compose での利用
+
+コンテナ内で `klaus ui` を使う場合、ポートマッピングを固定するために既定ポート(`4884`)をそのまま使い、コンテナ外(ホスト側)から到達できるよう `--host 0.0.0.0` を指定する。
+
+```yaml
+services:
+  klaus:
+    image: your-klaus-image
+    command: ["klaus", "ui", "--host", "0.0.0.0", "--no-open"]
+    ports:
+      - "4884:4884"
+```
+
+`--host 0.0.0.0` を指定するとネットワーク内の他ホストからも接続できるようになる(表示される URL は開ける URL として `127.0.0.1` のまま示され、末尾に `(listening on 0.0.0.0)` の注記が付く)。トークン付き URL を知っていれば誰でも UI・API にアクセスできてしまうため、信頼できないネットワークに公開しない、URL を共有しない、など取り扱いに注意すること。
+
 ## klaus validate
 
 ```
@@ -222,38 +237,23 @@ JSON Schema(zod スキーマから生成、2スペース pretty print)を stdout
 
 `request`/`ws` の排他・どちらか必須、`body`/`graphql` の排他、`graphql` 無しの `method` 必須、`ws.url` のスキーム制約、step 名の一意性は zod の `superRefine` によるカスタムバリデーションであり JSON Schema では表現できないため、該当箇所の `description` に注記を付与する形で補っている。常に exit 0。
 
-## klaus ui
+## klaus init
 
 ```
-klaus ui [-p <n>] [-H <host>] [--no-open]
+klaus init
 ```
 
-| オプション | 説明 | デフォルト |
-|---|---|---|
-| `-p`, `--port <n>` | 待ち受けポート | `4884`(固定) |
-| `-H`, `--host <host>` | 待ち受けホスト | `127.0.0.1` |
-| `--no-open` | ブラウザの自動起動を抑止 | 自動起動する |
+オプションはない。カレントディレクトリに最小構成を生成する。
 
-起動するとトークン付き URL(`http://127.0.0.1:<port>/?token=…`)を stdout に表示し、デフォルトブラウザで開く。Ctrl+C で終了。サーバーの機能・セキュリティモデル・HTTP API は [localhost UI](ui.md) を参照。
+| 生成されるファイル | 内容 |
+|---|---|
+| `api/example.yaml` | `https://example.com` への GET 1件、ステータス200のアサーション(英語コメント付き) |
+| `environments/local.yaml` | `baseUrl` を持つ最小の環境ファイル |
+| `AGENTS.md` | AI コーディングエージェント向けに、コマンド体系・YAML スキーマ要点・assert の運用指針・exit code 表・api/flows のディレクトリ規約を約50行に圧縮したガイド(英語) |
 
-`--port` / `--host` / `--no-open` は `klaus.config.yaml` で既定値を設定できる。詳細は [CLI オプションの既定値](config.md) を参照。
+既存ファイルは上書きせずスキップし、その旨を stdout に表示する。必要なディレクトリは自動で作成される。常に exit 0。1件以上生成した場合、最後に次のコマンドのヒントを表示する: `klaus run api/example.yaml -e local`
 
-共有のマルチユーザーホストでは、このトークン付き URL がブラウザ起動コマンドの引数として渡るため、他のローカルユーザーからプロセス一覧経由で読める可能性がある。そうした環境では `--no-open` を指定し、表示された URL を自分で開くこと。
-
-### docker-compose での利用
-
-コンテナ内で `klaus ui` を使う場合、ポートマッピングを固定するために既定ポート(`4884`)をそのまま使い、コンテナ外(ホスト側)から到達できるよう `--host 0.0.0.0` を指定する。
-
-```yaml
-services:
-  klaus:
-    image: your-klaus-image
-    command: ["klaus", "ui", "--host", "0.0.0.0", "--no-open"]
-    ports:
-      - "4884:4884"
-```
-
-`--host 0.0.0.0` を指定するとネットワーク内の他ホストからも接続できるようになる(表示される URL は開ける URL として `127.0.0.1` のまま示され、末尾に `(listening on 0.0.0.0)` の注記が付く)。トークン付き URL を知っていれば誰でも UI・API にアクセスできてしまうため、信頼できないネットワークに公開しない、URL を共有しない、など取り扱いに注意すること。
+`AGENTS.md` には、エージェント実行環境向けの注意点として、`klaus ui` を安易に起動せずバックグラウンド実行+タイムアウト管理を行うべきこと、および OpenAI Codex CLI はサンドボックスのネットワークアクセスが既定で無効なため `klaus run` の HTTP リクエストが失敗する場合があること(`~/.codex/config.toml` の `[sandbox_workspace_write] network_access = true` で解除)も含まれる。
 
 ## klaus history
 

@@ -11,9 +11,11 @@
 
 - **1ファイル = 1フロー**: 複数ステップの順次実行、レスポンスからの変数キャプチャと後続ステップへのチェーン
 - **アサーション内包**: status / header / body(JSONPath)/ 所要時間を定義ファイルに記述
+- **プロトコル対応**: SSE / GraphQL / WebSocket も通常の HTTP リクエストと同じマッチャーでアサーション可能(適用先は `events` / `messages` などプロトコル固有フィールド)
+- **Web UI**: `klaus ui` で CLI と並行してローカルのランナー + 履歴ビューアを起動
+- **record/replay・OpenAPI 生成**: `--record`/`--replay` でカセットベースの検証、`klaus generate` で OpenAPI スペックからフロー雛形を生成
 - **エージェント向け出力**: exit code だけで故障箇所を判別可能。非 TTY では JSON 出力がデフォルト
 - **ローカルファースト**: 実行履歴は `.klaus/history/*.jsonl` に追記。クラウド同期・アカウント機構はない
-- **SSE 検証**: `text/event-stream` を時間 / イベント数上限付きで受信し、イベントにアサーション
 
 ## インストール
 
@@ -71,39 +73,21 @@ klaus run api/auth-flow.yaml
 # PASS get-me (200, 12ms)
 ```
 
+テンプレート・アサーション・SSE / GraphQL / WebSocket の全構文は [フロー定義リファレンス](https://almondoo.github.io/klaus/ja/guide/flow-definition) を参照。
+
 ## CLI
 
-```
-klaus run <files...> [options]
-
-  --env <name>          フローの env 指定を上書き
-  --json                TTY でも JSON 出力を強制
-  --text                非 TTY でもテキスト出力を強制
-  --report junit        JUnit XML レポートを生成
-  --report-file <path>  レポート出力先(デフォルト: klaus-report.xml)
-  --no-history          履歴 JSONL への書き込みを無効化
-  --no-mask             stdout 出力(JSON/text)の secrets マスクを無効化
-  --record <dir>        record モード: 実リクエストを送りつつ request/response(マスク済み)を <dir> のカセットに保存
-  --replay <dir>        replay モード: ネットワークではなく <dir> のカセットからレスポンスを返す(未記録のリクエストは exit code 3。--record と併用不可)
-  --allow-protected     $protected: true な環境への実行を許可(未指定時は拒否され exit code 3)
-
-klaus ui [options]      # localhost Web UI(ランナー + 履歴ビューア)を起動
-
-  -p, --port <n>      ポート指定(デフォルト: 4884)
-  -H, --host <host>   バインド先ホスト指定(デフォルト: 127.0.0.1。0.0.0.0 で docker-compose 等外部からの接続を許可)
-  --no-open           ブラウザの自動起動を抑止
-
-klaus validate [files...]   # フロー YAML をスキーマ検証のみ行う(実行しない。引数省略時はカレントディレクトリを再帰探索)
-klaus schema                # フロー YAML / run --json 出力 / klaus.config.yaml の JSON Schema を出力
-klaus generate <spec>       # OpenAPI スペックから操作ごとのフロー YAML 雛形を生成
-klaus init                  # flows/environments の最小構成をカレントディレクトリに生成
-klaus history               # 実行履歴(.klaus/history/*.jsonl)を一覧表示
-klaus history show <runId>  # 指定 runId の履歴エントリを保存形式のまま JSON で出力
-```
+| コマンド | 説明 |
+|---|---|
+| `klaus run <files...>` | フロー YAML を実行 |
+| `klaus ui` | localhost Web UI(ランナー + 履歴ビューア)を起動 |
+| `klaus validate [files...]` | フロー YAML をスキーマ検証のみ行う(実行しない) |
+| `klaus schema` | フロー YAML / `run --json` 出力 / `klaus.config.yaml` の JSON Schema を出力 |
+| `klaus generate <spec>` | OpenAPI スペックから操作ごとのフロー YAML 雛形を生成 |
+| `klaus init` | flows/environments の最小構成をカレントディレクトリに生成 |
+| `klaus history [show <runId>]` | 実行履歴を一覧表示、または1件を JSON で出力 |
 
 各サブコマンドの全オプションは [CLI リファレンス](https://almondoo.github.io/klaus/ja/guide/cli) を参照。
-
-`klaus ui` は既定で 127.0.0.1 にバインドしてサーバーを起動し、起動時トークン付き URL をブラウザで開く(トークン認証 + Host 検証 + CSRF 対策付き。既定では外部からアクセス不可。`-H, --host` で変更可能)。
 
 - stdout が TTY なら人間向けテキスト、非 TTY(パイプ / エージェント実行)なら JSON が自動選択される
 - テキスト出力は成功時1行要約のみ。失敗時だけ詳細(expected / actual)を出す。フル詳細は履歴 JSONL に残る
@@ -118,85 +102,18 @@ klaus history show <runId>  # 指定 runId の履歴エントリを保存形式�
 | 3 | 実行時エラー(接続不能・タイムアウト等) |
 | 4 | アサーション失敗 |
 
-## テンプレート
+## Documentation
 
-- `{{var}}` — キャプチャ変数・環境ファイル値の参照(キャプチャ優先)
-- `{{env.X}}` — OS 環境変数の参照。シークレットは定義ファイルに直書きせずこれを使う
-- `{{newUuid}}` / `{{newDate}}` / `{{newTimestamp}}` — テンプレート関数(UUID / ISO 8601 / epoch ms)
-
-## アサーション
-
-- `status: 200`
-- `headers: [{ name, equals | contains | regex | exists }]`
-- `body: [{ path, exists | equals | contains | regex }]` — JSONPath ベース
-- `bodyText: { equals | contains | regex }` — 生テキスト
-- `duration: { maxMs }`
-- SSE 用: `eventCount: { min | max | equals }` / `events: [{ index?, path?, ...マッチャー }]`
-- WebSocket 用: `messageCount: { min | max | equals }` / `messages: [{ index?, path?, ...マッチャー }]`(events と同セマンティクス)
-
-## SSE 検証
-
-`Accept: text/event-stream` のリクエスト(または `sse:` ブロックの指定)は、`maxEvents` / `maxDurationMs` の上限に達した時点で受信を打ち切り、受信イベント列にアサーションを実行する。
-
-```yaml
-  - name: stream
-    request:
-      method: GET
-      url: "{{baseUrl}}/events"
-      headers:
-        Accept: text/event-stream
-    sse:
-      maxEvents: 5
-      maxDurationMs: 3000
-    assert:
-      eventCount: { min: 1 }
-      events:
-        - path: "$.type"
-          equals: "message"
-```
-
-## GraphQL
-
-`request.graphql` を指定すると、method 未指定なら POST、`Content-Type: application/json` で `{ query, variables }` を送信する(`body` とは排他)。アサーション・キャプチャは通常の JSONPath がそのまま使える。
-
-```yaml
-  - name: get-user
-    request:
-      url: "{{baseUrl}}/graphql"
-      graphql:
-        query: 'query { user(id: "{{userId}}") { id name } }'
-    assert:
-      status: 200
-      body:
-        - path: "$.data.user.id"
-          exists: true
-```
-
-## WebSocket
-
-ステップに `request` の代わりに `ws:` を指定する。`send` の各メッセージを順次送信し、`maxMessages` / `maxDurationMs` の上限で受信を打ち切って正常終了、受信メッセージ列にアサーションを実行する。
-
-```yaml
-  - name: ws-echo
-    ws:
-      url: "{{wsBaseUrl}}/socket"
-      send:
-        - "ping"
-        - { type: subscribe, channel: orders }
-      maxMessages: 50        # デフォルト 100
-      maxDurationMs: 5000    # デフォルト 10000
-    assert:
-      messageCount: { min: 1 }
-      messages:
-        - index: 0
-          equals: "pong"
-        - path: "$.type"
-          contains: "order"
-```
-
-## 実行履歴
-
-全リクエスト / レスポンス / 所要時間が `.klaus/history/<日付>.jsonl` に1ステップ1行で追記される(スキーマは `v` フィールドで versioned)。git 管理するかどうかはプロジェクト側の判断(シークレットを含むレスポンスを扱う場合は `.gitignore` 推奨)。
+- [Getting Started](https://almondoo.github.io/klaus/ja/guide/getting-started) — インストールから最初のフロー実行まで
+- [フロー定義リファレンス](https://almondoo.github.io/klaus/ja/guide/flow-definition) — YAML スキーマ全体:ステップ・テンプレート・キャプチャ・アサーション・SSE/GraphQL/WebSocket 構文
+- [CLI リファレンス](https://almondoo.github.io/klaus/ja/guide/cli) — 各サブコマンドの全オプション
+- [Configuration(klaus.config.yaml)](https://almondoo.github.io/klaus/ja/guide/config) — よく使う CLI オプションのデフォルト値
+- [OpenAPI からのフロー生成](https://almondoo.github.io/klaus/ja/guide/generate) — `klaus generate` の使い方と operation ごとに生成される雛形
+- [record / replay モード](https://almondoo.github.io/klaus/ja/guide/record-replay) — ネットワーク隔離環境や破壊的 API 向けのカセットベース検証
+- [Web UI](https://almondoo.github.io/klaus/ja/guide/ui) — `klaus ui` のランナー + 履歴ビューアと、トークン / CSRF / Host 検証のセキュリティモデル
+- [実行履歴](https://almondoo.github.io/klaus/ja/guide/history) — `.klaus/history/*.jsonl` のスキーマとファイル規約
+- [トラブルシューティング](https://almondoo.github.io/klaus/ja/guide/troubleshooting) — klaus が実際に出すエラーメッセージと原因・対処
+- [Agent Skill(Claude Code / Codex)](https://almondoo.github.io/klaus/ja/guide/agent-skill) — 配置場所と、同梱の SKILL.md がエージェントに教える内容
 
 ## Agent Skill(Claude Code / Codex)
 
