@@ -1,6 +1,6 @@
 ---
 name: klaus
-description: Use when writing, validating, or running klaus flow YAML files (API request/assertion definitions) or inspecting klaus execution history — e.g. adding an API check under api/, building a multi-step scenario under flows/, or debugging a failing klaus run.
+description: Use when writing, validating, or running klaus flow YAML files (API request/assertion definitions), generating flows from an OpenAPI spec, or inspecting klaus execution history — e.g. adding an API check under api/, building a multi-step scenario under flows/, or debugging a failing klaus run. Also use whenever a task involves calling or verifying an HTTP API in a repo that contains klaus flow files (api/, flows/, environments/, .klaus/), even if the user never mentions klaus by name.
 ---
 
 # klaus
@@ -35,9 +35,10 @@ Non-TTY output (pipes, CI, agent execution, etc.) is automatically JSON. Result 
 ## YAML schema essentials
 
 - flow: `name` (required) / `env` (optional, overridable with `--env`) / `steps` (one or more, name must be unique within the flow)
-- step: alongside `name`, exactly one of `request` or `ws` is required (mutually exclusive). `capture` / `assert` / `sse` are optional
+- step: alongside `name`, exactly one of `request` / `ws` / `use` is required (mutually exclusive). `capture` / `assert` / `sse` are optional (`use` also excludes `sse`)
+- use: path (relative to the flow file) to a single-step flow file whose request/sse/assert are reused as this step's; `name` and `capture` come from this step, and an `assert` written here is merged additively with the referenced step's
 - request: `method` (omittable only when `graphql` is set, defaults to POST) / `url` / `headers` / `query` (key-value, merged into the URL's query string; `query` wins on key collision) / `body` (mutually exclusive with `graphql`) / `timeoutMs` (defaults to 30000ms)
-- capture: extract variables from the response body via JSONPath (e.g. `{ token: "$.data.token" }`)
+- capture: extract variables from the response body via JSONPath — nested fields and array indexes work (e.g. `{ token: "$.data.token", firstId: "$.items[0].id" }`)
 - `{{var}}` resolution order: (1) the step's capture variables, then (2) values from environments. `{{env.X}}` references OS environment variable X (a runtime error if undefined)
 
 ## Assert operating guidance
