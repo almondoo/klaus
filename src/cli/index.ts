@@ -5,7 +5,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { ParseError } from "../core/index.js";
 import { applyConfigToRunOptions, applyConfigToUiOptions, loadCliConfig } from "./config.js";
 import { type GenerateCommandOptions, generateCommand } from "./generate.js";
@@ -182,7 +182,9 @@ program
     (value) => {
       const parsed = Number.parseInt(value, 10);
       if (Number.isNaN(parsed)) {
-        throw new Error(`invalid --port value: ${value}`);
+        // commander の _callParseArg は InvalidArgumentError のみ特別扱いする(それ以外は
+        // 素通しで re-throw され未捕捉スタックトレースになる)ため、plain Error ではなくこれを使う
+        throw new InvalidArgumentError(`invalid --port value: ${value}`);
       }
       return parsed;
     },
@@ -293,7 +295,8 @@ const historyCommand = program
     (value) => {
       const parsed = Number.parseInt(value, 10);
       if (Number.isNaN(parsed) || parsed <= 0) {
-        throw new Error(`invalid --last value: ${value}`);
+        // 理由は --port と同じ(InvalidArgumentError のみ commander が整形して扱う)
+        throw new InvalidArgumentError(`invalid --last value: ${value}`);
       }
       return parsed;
     },
