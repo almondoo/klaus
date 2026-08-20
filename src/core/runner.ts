@@ -723,7 +723,9 @@ export async function executeFlow(
     steps.push(result);
     Object.assign(captures, captured);
 
-    if (result.status === "error" || result.status === "failed") {
+    // continueOnError が true の場合、retry を使い切った後の failed/error でも
+    // 以降のステップをスキップしない(このステップ自体の status は変えない)。
+    if ((result.status === "error" || result.status === "failed") && !step.continueOnError) {
       skipRest = true;
     }
 

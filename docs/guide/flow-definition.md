@@ -251,9 +251,26 @@ retry:
 - **Only the final attempt is recorded**: one entry in the step results, one history entry, and a single `onStepStart` / `onStepComplete` pair per step. Earlier failed/error attempts are not kept
 - When `retry` is set, the result and history entry carry an `attempts` field with the number of executions actually performed (1 or more). Without `retry`, `attempts` is omitted. `durationMs` remains the final attempt's own duration, as before
 
+## continueOnError
+
+```yaml
+steps:
+  - name: optional-check
+    request: { method: GET, url: "{{env.baseUrl}}/optional" }
+    assert: { status: 200 }
+    continueOnError: true   # Optional. Defaults to false
+  - name: next-step
+    request: { method: GET, url: "{{env.baseUrl}}/next" }
+```
+
+- When `continueOnError: true` is set on a step, a final outcome of **`failed`** or **`error`** on that step does not skip the remaining steps — the flow keeps running from the next step
+- "Final outcome" means **after `retry` is exhausted**, if `retry` is also set: retries run first as usual, and `continueOnError` only takes effect once no more retries remain
+- The step itself keeps its `failed`/`error` status, and the flow's (and run's) aggregate status and exit code are unaffected — they still reflect the failure as usual (see [CLI Reference](cli.md#exit-code))
+- `continueOnError` only affects *that step's own* failure. If a *later* step without `continueOnError` fails, it still skips the steps after it, as described below
+
 ## Flow Behavior on Step Failure
 
-- When a step becomes **failed** (assertion failure) or **error** (runtime error), the **remaining steps in that flow are not run and are recorded as skipped**
+- When a step becomes **failed** (assertion failure) or **error** (runtime error), the **remaining steps in that flow are not run and are recorded as skipped** — unless the failing step has `continueOnError: true` set, in which case the remaining steps still run (see [continueOnError](#continueonerror))
 - When multiple flow files are passed, **other flows still run** even if one flow fails
 - The final exit code follows the priority rules in the [CLI Reference](cli.md#exit-code)
 

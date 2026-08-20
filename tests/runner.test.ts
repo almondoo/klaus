@@ -1338,3 +1338,189 @@ describe("step.retry", () => {
     }
   });
 });
+
+describe("step.continueOnError", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let cwd: string;
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+  });
+
+  afterEach(async () => {
+    if (cwd) {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("continueOnError:true のステップが failed でも後続ステップは通常通り実行される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-continue-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "continue on error flow",
+        steps: [
+          {
+            name: "step1",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 999 },
+            continueOnError: true,
+          },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "continue-on-error-flow.yaml", {
+        cwd,
+        history: false,
+      });
+
+      expect(result.status).toBe("failed");
+      expect(result.steps[0]?.status).toBe("failed");
+      expect(result.steps[1]?.status).toBe("passed");
+      expect(result.steps[1]?.error).toBeUndefined();
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("continueOnError:true のステップが error(接続不能)でも後続ステップは通常通り実行される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-continue-"));
+    const closedPort = await reserveClosedPort();
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "continue on error (error outcome) flow",
+        steps: [
+          {
+            name: "unreachable",
+            request: { method: "GET", url: `http://127.0.0.1:${closedPort}/` },
+            continueOnError: true,
+          },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "continue-on-error-error-flow.yaml", {
+        cwd,
+        history: false,
+      });
+
+      expect(result.status).toBe("error");
+      expect(result.steps[0]?.status).toBe("error");
+      expect(result.steps[1]?.status).toBe("passed");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("retry と併用した場合、retry を使い切ってから continueOnError が働く(attempts=2、後続ステップは実行される)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-continue-"));
+    let hitCount = 0;
+    const server = createServer((req, res) => {
+      if (req.url === "/always500") {
+        hitCount++;
+        res.writeHead(500);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "continue on error with retry flow",
+        steps: [
+          {
+            name: "always-fail",
+            request: { method: "GET", url: `${baseUrl}/always500` },
+            assert: { status: 200 },
+            retry: { count: 1, intervalMs: 0 },
+            continueOnError: true,
+          },
+          {
+            name: "next-step",
+            request: { method: "GET", url: `${baseUrl}/ok` },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "continue-on-error-with-retry-flow.yaml", {
+        cwd,
+        history: false,
+      });
+
+      expect(result.steps[0]?.status).toBe("failed");
+      expect(result.steps[0]?.attempts).toBe(2);
+      expect(hitCount).toBe(2);
+      expect(result.steps[1]?.status).toBe("passed");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("後続ステップが continueOnError なしで failed の場合、そのさらに後は skipped になる(混在フロー)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-continue-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "mixed continue on error flow",
+        steps: [
+          {
+            name: "step1",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 999 },
+            continueOnError: true,
+          },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 999 },
+          },
+          {
+            name: "step3",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "mixed-continue-on-error-flow.yaml", {
+        cwd,
+        history: false,
+      });
+
+      expect(result.steps[0]?.status).toBe("failed");
+      expect(result.steps[1]?.status).toBe("failed");
+      expect(result.steps[2]?.status).toBe("skipped");
+    } finally {
+      await closeServer(server);
+    }
+  });
+});

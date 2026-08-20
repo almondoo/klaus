@@ -251,9 +251,26 @@ retry:
 - **記録されるのは最終試行のみ**: ステップ結果・履歴エントリともに1件、`onStepStart` / `onStepComplete` もステップごとに1回ずつ呼ばれる。途中の failed / error な試行は保持されない
 - `retry` を設定すると、結果と履歴エントリに実際に実行された試行回数(1 以上)を表す `attempts` フィールドが付く。`retry` 未設定時は `attempts` は省略される。`durationMs` は従来どおり最終試行自体の所要時間のまま変わらない
 
+## continueOnError
+
+```yaml
+steps:
+  - name: optional-check
+    request: { method: GET, url: "{{env.baseUrl}}/optional" }
+    assert: { status: 200 }
+    continueOnError: true   # 任意。既定値は false
+  - name: next-step
+    request: { method: GET, url: "{{env.baseUrl}}/next" }
+```
+
+- ステップに `continueOnError: true` を設定すると、そのステップの最終結果が **`failed`** または **`error`** になっても以降のステップはスキップされず、次のステップから実行が継続される
+- 「最終結果」とは、`retry` を併用している場合は **retry を使い切った後**を指す。retry は通常どおり先に実行され、リトライがすべて尽きて初めて `continueOnError` が効果を持つ
+- ステップ自体の状態は `failed` / `error` のまま変わらず、フロー(および run)全体の集約ステータスと exit code もこれまでどおり失敗として扱われる(詳細は [CLI リファレンス](cli.md#exit-code))
+- `continueOnError` が影響するのは**そのステップ自身の失敗のみ**。`continueOnError` を指定していない**後続の**ステップが失敗した場合は、下記のとおりそれ以降のステップはスキップされる
+
 ## ステップ失敗時のフロー挙動
 
-- ステップが **failed**(アサーション失敗)または **error**(runtime エラー)になると、そのフローの**残りステップは実行されず skipped** として記録される
+- ステップが **failed**(アサーション失敗)または **error**(runtime エラー)になると、そのフローの**残りステップは実行されず skipped** として記録される。ただし失敗したステップに `continueOnError: true` が設定されている場合は残りステップが実行される([continueOnError](#continueonerror) を参照)
 - 複数フローファイルを渡した場合、あるフローが失敗しても**他のフローは実行される**
 - 最終 exit code は [CLI リファレンス](cli.md#exit-code) の優先ルールに従う
 

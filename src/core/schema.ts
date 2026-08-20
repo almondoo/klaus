@@ -404,6 +404,12 @@ export const stepSchema = z
       .describe(
         "Retry the whole step (request/ws/sse) when its outcome is `failed` (assertion failure) or `error` (thrown exception). Only the final attempt is recorded in results/history.",
       ),
+    continueOnError: z
+      .boolean()
+      .optional()
+      .describe(
+        "If true, subsequent steps still run when this step's final status (after retry, if any) is `failed` or `error`. The step itself keeps its failed/error status and still fails the flow/run.",
+      ),
   })
   .superRefine((step, ctx) => {
     if (step.request !== undefined && step.ws !== undefined) {
