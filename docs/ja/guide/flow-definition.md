@@ -7,6 +7,7 @@ klaus のリクエスト定義は素の YAML。**1ファイル = 1フロー(複�
 ```yaml
 name: 認証フロー        # 必須: フロー名
 env: local             # 任意: environments/local.yaml を参照
+tags: [smoke, auth]    # 任意: フロー単位のタグ。`klaus run --tags` / `--exclude-tags` で使う
 steps:                 # 必須: 1件以上。name はフロー内で一意
   - name: login
     request: { ... }   # request / ws / use のいずれか一方が必須(排他)
@@ -19,6 +20,18 @@ steps:                 # 必須: 1件以上。name はフロー内で一意
 - 環境ファイルは `キー: 文字列値` のフラットなマップ。値にはテンプレート(<code v-pre>{{env.X}}</code> 等)を使える
 - 予約キー `$protected: true` を環境ファイルに書くと、その環境への `klaus run` はデフォルトで拒否される(exit 3)。`--allow-protected` を明示した場合のみ実行できる。本番相当の環境を誤って実行しないためのガードレールで、`$protected` はテンプレート変数(<code v-pre>{{...}}</code>)としては参照できない。`klaus ui` / server API 経由の実行はこのフラグを渡さないため、保護環境は常に拒否される
 - `$protected` はファイル直接編集でのみ設定・解除する。`klaus ui` の環境エディタには表示されず、UI からの保存でも既存の `$protected` の値は変更されずそのまま保持される
+
+## tags
+
+```yaml
+name: 認証フロー
+tags: [smoke, auth]   # 任意: 空文字列を含まない文字列配列。一意性の制約は無い
+steps: [ ... ]
+```
+
+- フロー単位のみ — ステップ単位のタグは無い
+- `klaus run --tags <list>` / `--exclude-tags <list>` によるフロー選択専用([CLI リファレンス](cli.md#タグによるフロー選択-tags-exclude-tags)参照)。タグ自体は実行に他の影響を与えない
+- `klaus ui` や server API には公開されない
 
 ## request(HTTP ステップ)
 

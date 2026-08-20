@@ -29,6 +29,8 @@ klaus run <files...> [options]
 | `--replay <dir>` | replay モード: 実ネットワークではなく `<dir>` のカセットから HTTP レスポンスを再生する(記録外リクエストは exit code 3 で失敗する)。`--record` とは併用不可 | — |
 | `--allow-protected` | `$protected: true` の環境ファイルへの実行を許可する(未指定時は exit code 3 で拒否) | — |
 | `--data <path>` | データ駆動実行: この JSON/YAML データファイルの各行につき、指定した全フローファイルを1回ずつ実行する(詳細は後述の「データ駆動実行(--data)」を参照) | — |
+| `--tags <list>` | カンマ区切りのタグ一覧。フローの `tags:` にいずれか1つでも含まれるものだけを実行する(OR 条件。詳細は後述の「タグによるフロー選択」を参照) | — |
+| `--exclude-tags <list>` | カンマ区切りのタグ一覧。フローの `tags:` にいずれか1つでも含まれるものを除外する。`--tags` より優先される | — |
 
 `--report` に `junit` 以外の値を渡すと stderr にエラーを出して exit 1。`--json` と `--text`、または `-e`/`--env` と `--env-file` を同時に指定した場合も同様に stderr にエラーを出して exit 1(何も実行しない)。この `-e`/`--env` と `--env-file` の併用エラーは、**コマンドラインで明示的に指定した** `-e`/`--env` に対してのみ発生する。`klaus.config.yaml` の `run.env` による既定値は、明示指定された `--env-file` と衝突せずそちらに道を譲る([CLI オプションの既定値](config.md)参照)。
 
@@ -36,7 +38,19 @@ klaus run <files...> [options]
 
 `--var` の値は <code v-pre>{{env.X}}</code>(OS 環境変数参照)と異なり、シークレットとして登録されず、出力でもマスクされない。真のシークレットを渡したい場合は OS 環境変数経由で <code v-pre>{{env.X}}</code> として参照し、[実行履歴](history.md)に記載のマスキングの恩恵を受けること。
 
-`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` は `klaus.config.yaml` で既定値を設定できる。`--var`・`--env-file`・`--data` は設定できない。詳細は [CLI オプションの既定値](config.md) を参照。
+`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` は `klaus.config.yaml` で既定値を設定できる。`--var`・`--env-file`・`--data`・`--tags`・`--exclude-tags` は設定できない。詳細は [CLI オプションの既定値](config.md) を参照。
+
+### タグによるフロー選択(--tags / --exclude-tags)
+
+フロー定義には最上位で `tags: [smoke, auth]` を宣言できる([フロー定義リファレンス](flow-definition.md#tags)参照)。`--tags` と `--exclude-tags` はそれぞれカンマ区切りのリストを受け取る(各要素は trim される。trim 後に空文字列になる要素 — 先頭・末尾・連続するカンマなど — があるとエラーになり exit 0 以外・スタックトレース無しで終了する)。
+
+- **`--tags`**: 指定したタグのうち**1つでも**持つフローだけを残す(OR 条件)。未指定なら選抜段階での絞り込みは行わない(全フローが通過する)
+- **`--exclude-tags`**: 指定したタグの**いずれか**を持つフローを除外する。`--tags` の選抜段階の後に適用される。未指定なら除外を行わない。フローが `--tags` と `--exclude-tags` の両方に一致する場合は**除外が優先**される
+- **タグ無しフロー**(`tags:` フィールドが無い): `--tags` のどれとも一致しないため、`--tags` 指定時は除外される。`--exclude-tags` のどれとも一致しないため、`--exclude-tags` のみ指定時は保持される
+- **絞り込みで落ちたフローは一切実行されない**: タグによる絞り込みで除外されたフローはランナーに到達すらしないため、JSON/JUnit 出力にも実行履歴にも一切現れない。これは記録される `skipped` ステップとは異なる([ステップ失敗時のフロー挙動](flow-definition.md#flow-behavior-on-step-failure)参照)
+- **絞り込み結果が0件だとエラー**: 絞り込みの結果、実行対象のフローが1件も残らない場合、`klaus run` は stderr に `no flows match the specified tags` を出力し、何も実行せず **exit 1** で終了する。これは意図的な仕様で、CI でタグ名の typo により意図せず全緑の空実行になる事故を防ぐため
+- **`--data` との組み合わせ**: 絞り込みはデータ駆動実行の行展開より先に行われる — 行 × フローのイテレーションは、絞り込みを通過したフローのみを対象にする
+- `klaus.config.yaml` では設定不可(上述のとおり)
 
 ### データ駆動実行(--data)
 

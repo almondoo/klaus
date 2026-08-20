@@ -71,6 +71,26 @@ describe("flowSchema", () => {
     ).toThrow();
   });
 
+  it("flow-level の tags を受理する", () => {
+    const result = flowSchema.parse({
+      name: "tagged flow",
+      tags: ["smoke", "auth"],
+      steps: [{ name: "step1", request: { method: "GET", url: "https://example.com" } }],
+    });
+
+    expect(result.tags).toEqual(["smoke", "auth"]);
+  });
+
+  it("tags に空文字列を含むと検証エラーになる", () => {
+    expect(() =>
+      flowSchema.parse({
+        name: "tagged flow",
+        tags: ["smoke", ""],
+        steps: [{ name: "step1", request: { method: "GET", url: "https://example.com" } }],
+      }),
+    ).toThrow();
+  });
+
   it("assert 定義のネストしたフィールドを検証する", () => {
     const result = flowSchema.parse({
       name: "assert flow",

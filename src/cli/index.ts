@@ -86,6 +86,20 @@ async function loadConfigOrReport(
   }
 }
 
+/**
+ * --tags / --exclude-tags のカンマ区切りリストをパースする共通ヘルパー。
+ * 各要素を trim し、trim 後に空文字列になった要素(空エントリ・連続カンマ・前後カンマ)が
+ * 1つでもあれば InvalidArgumentError で拒否する(--var の区切り検証と同じ、commander の
+ * _callParseArg が InvalidArgumentError のみ特別扱いする挙動に合わせる)。
+ */
+function parseTagList(value: string): string[] {
+  const tags = value.split(",").map((tag) => tag.trim());
+  if (tags.some((tag) => tag.length === 0)) {
+    throw new InvalidArgumentError(`invalid tag list (empty tag after trimming): ${value}`);
+  }
+  return tags;
+}
+
 const program = new Command();
 
 program
@@ -158,6 +172,16 @@ program
   .option(
     "--data <path>",
     "run data-driven: for each row in this JSON/YAML data file, run all given flow files once (iteration-major order). Row values land in the template env namespace, overriding same-named --var/environment values",
+  )
+  .option(
+    "--tags <list>",
+    "only run flows carrying at least one of these comma-separated tags (OR semantics). Untagged flows are excluded when this is given",
+    parseTagList,
+  )
+  .option(
+    "--exclude-tags <list>",
+    "exclude flows carrying any of these comma-separated tags. Takes precedence over --tags when a flow matches both",
+    parseTagList,
   )
   .addHelpText(
     "after",

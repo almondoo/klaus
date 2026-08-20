@@ -127,9 +127,12 @@ export interface RunOptionSources {
  * 「CLI 明示(source === "cli") > config > 組み込み既定(options のまま)」の優先順位。
  * `--no-history` / `--no-mask` の負論理も source 判定で自然に扱える(未指定=default のときだけ
  * config の値で上書きし、明示指定(source "cli")なら常に CLI 側を優先する)。
- * `--allow-protected` / `--record` / `--replay` / `--json` / `--text` / `--var` / `--env-file` / `--data` は
- * 対象外(configSchema に定義がないため、options はそのまま素通りする。`--var` / `--env-file` / `--data` は
- * その場限り・呼び出しごとの指定であることが本質のため、恒久的な既定値を持つ config には馴染まない)。
+ * `--allow-protected` / `--record` / `--replay` / `--json` / `--text` / `--var` / `--env-file` / `--data` /
+ * `--tags` / `--exclude-tags` は対象外(configSchema に定義がないため、options はそのまま素通りする。
+ * `--var` / `--env-file` / `--data` はその場限り・呼び出しごとの指定であることが本質のため、恒久的な既定値を
+ * 持つ config には馴染まない。`--tags` / `--exclude-tags` も同様に、その回の実行で何を対象にするかという
+ * 一時的な選択であり、config の恒久的な既定値にすると「一部のフローが常に除外される」という気づきにくい
+ * 状態を生みかねないため対象外にする)。
  * `run.env` の適用には例外がある: `--env-file` が明示指定されている場合、config の `run.env` は
  * 注入しない(config 由来の既定値はあくまで既定値であり、利用者が明示した `--env-file` に道を譲る。
  * ここで注入すると、-e/--env を一度も打っていないのに run.ts の「明示的な -e/--env と --env-file の

@@ -54,6 +54,48 @@ export interface RunCommandOptions {
    * 実行前の並列読み込み → ParseError なら exit 2 という契約)
    */
   data?: string;
+  /**
+   * --tags <list> 指定時、フローが持つ tags のうち1つでも一致すれば実行対象に含める(OR 条件)。
+   * index.ts のカンマ区切りパースで正規化済み(各要素は trim 済みで空要素は含まれない)。
+   * 未指定の場合は絞り込みを行わない(全フローが選抜段階を通過する)。
+   */
+  tags?: string[];
+  /**
+   * --exclude-tags <list> 指定時、フローが持つ tags のいずれか1つでも一致すれば実行対象から除外する。
+   * --tags による選抜より後に適用され、除外が優先される(両方に一致するフローは除外される)。
+   * 未指定の場合は除外を行わない。
+   */
+  excludeTags?: string[];
+}
+
+/**
+ * --tags / --exclude-tags による絞り込みをフロー単位で行う純関数。
+ * 適用順序: 1. --tags 指定時、tags のいずれとも一致しないフローを除外(OR 条件。未指定なら全通過)
+ *           2. --exclude-tags 指定時、tags のいずれかに一致するフローを除外(除外が選抜より優先)
+ * タグ無しフローは --tags のどれとも一致しないため 1. で落ち、--exclude-tags のどれとも一致しないため
+ * 2. では常に残る(--exclude-tags のみ指定時は保持される)。
+ */
+function filterFlowsByTags(
+  entries: LoadedFlowEntry[],
+  options: Pick<RunCommandOptions, "tags" | "excludeTags">,
+): LoadedFlowEntry[] {
+  let filtered = entries;
+
+  if (options.tags && options.tags.length > 0) {
+    const includeTags = new Set(options.tags);
+    filtered = filtered.filter((entry) =>
+      (entry.flow.tags ?? []).some((tag) => includeTags.has(tag)),
+    );
+  }
+
+  if (options.excludeTags && options.excludeTags.length > 0) {
+    const excludeTags = new Set(options.excludeTags);
+    filtered = filtered.filter(
+      (entry) => !(entry.flow.tags ?? []).some((tag) => excludeTags.has(tag)),
+    );
+  }
+
+  return filtered;
 }
 
 /**
@@ -61,10 +103,12 @@ export interface RunCommandOptions {
  * 0. --record と --replay、--json と --text の同時指定を検査(いずれも stderr + exit 1、何も実行しない)
  * 1. 全ファイルを loadFlow でパース検証(--data 指定時は loadDataFile も並行して読み込む。
  *    いずれか1件でも ParseError なら exit 2、何も実行しない)
- * 2. runLoadedFlows で実行(1.で読み込み済みの Flow・データ行をそのまま渡し、二重パースを避ける。
+ * 2. --tags / --exclude-tags でフローを絞り込む(filterFlowsByTags。--data によるイテレーション展開より前、
+ *    runLoadedFlows に渡す前に行う。絞り込んだ結果が0件なら stderr + exit 1、何も実行しない)
+ * 3. runLoadedFlows で実行(1.で読み込み・2.で絞り込み済みの Flow・データ行をそのまま渡し、二重パースを避ける。
  *    environments/*.yaml の ParseError もここで捕捉し exit 2 に丸める)
- * 3. 出力(text/JSON + 任意で JUnit ファイル)
- * 4. RunResult から exit code を決定して返す
+ * 4. 出力(text/JSON + 任意で JUnit ファイル)
+ * 5. RunResult から exit code を決定して返す
  *
  * ParseError 以外の例外はそのまま呼び出し元へ投げる(呼び出し元で exit 1 に変換する契約)。
  */
@@ -145,7 +189,18 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   const dataRows: DataRow[] | undefined =
     dataLoadOutcome && "rows" in dataLoadOutcome ? dataLoadOutcome.rows : undefined;
 
-  // 2. 実行(テキストモードは onStepStart/onStepComplete で逐次出力する)
+  // 2. --tags / --exclude-tags による絞り込み。--data のイテレーション展開(行 × フロー)より前に行うため、
+  // ここで落ちたフローは FlowResult・履歴・出力のいずれにも一切現れない(「skipped」とは異なる:
+  // skipped はステップ単位でランナーに到達した上で記録される結果だが、絞り込みで落ちたフローはランナーへ
+  // 到達すらしない)。絞り込んだ結果が0件になった場合、CI で意図せず全緑の空実行になりタグの typo を
+  // 見逃す事故を避けるため、既存の設定エラー(0.)と同じ流儀で stderr + exit 1 とする。
+  const filteredFlows = filterFlowsByTags(loadedFlows, options);
+  if (filteredFlows.length === 0) {
+    process.stderr.write("klaus: no flows match the specified tags\n");
+    return 1;
+  }
+
+  // 3. 実行(テキストモードは onStepStart/onStepComplete で逐次出力する)
   // stdout(text/JSON いずれも)と JUnit ファイル出力の両方で使う secrets({{env.X}} 等で解決した値)。
   // --no-mask 指定時は options.mask が false になり、stdout 側のマスキングのみ無効化する(JUnit は従来どおり)。
   const collectedSecrets: string[] = [];
@@ -198,7 +253,7 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
 
   let runResult: RunResult;
   try {
-    runResult = await runLoadedFlows(loadedFlows, runOptions);
+    runResult = await runLoadedFlows(filteredFlows, runOptions);
   } catch (error) {
     // environments/*.yaml のパース・検証失敗など、loadFlow 以外から来る ParseError もここで exit 2 に丸める
     if (error instanceof ParseError) {
@@ -208,7 +263,7 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     throw error;
   }
 
-  // 3. 出力
+  // 4. 出力
   if (useJson) {
     // JSON.stringify 後の文字列置換だと、`"` やバックスラッシュ・制御文字を含むシークレットは
     // JSON エスケープで生の値と一致しなくなり、平文のまま漏れてしまう。
@@ -233,6 +288,6 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     );
   }
 
-  // 4. exit code
+  // 5. exit code
   return determineExitCode(runResult);
 }

@@ -7,6 +7,7 @@ klaus request definitions are plain YAML. **One file = one flow (a sequence of s
 ```yaml
 name: auth flow        # Required: flow name
 env: local             # Optional: references environments/local.yaml
+tags: [smoke, auth]    # Optional: flow-level tags, used by `klaus run --tags` / `--exclude-tags`
 steps:                 # Required: at least one. name must be unique within the flow
   - name: login
     request: { ... }   # Exactly one of request / ws / use is required (mutually exclusive)
@@ -19,6 +20,18 @@ steps:                 # Required: at least one. name must be unique within the 
 - Environment files are a flat map of `key: string value`. Values can use templates (such as <code v-pre>{{env.X}}</code>)
 - Setting the reserved key `$protected: true` in an environment file makes `klaus run` refuse to run against that environment by default (exit 3). It only runs when `--allow-protected` is explicitly passed. This is a guardrail against accidentally running against a production-like environment; `$protected` cannot be referenced as a template variable (<code v-pre>{{...}}</code>). Execution via `klaus ui` / the server API never passes this flag, so protected environments are always refused there
 - `$protected` can only be set or unset by editing the file directly. It is not shown in the `klaus ui` environment editor, and saving from the UI leaves any existing `$protected` value untouched
+
+## tags
+
+```yaml
+name: auth flow
+tags: [smoke, auth]   # Optional: array of non-empty strings. No uniqueness constraint
+steps: [ ... ]
+```
+
+- Flow-level only — there is no step-level tag
+- Used exclusively for flow selection via `klaus run --tags <list>` / `--exclude-tags <list>` (see [CLI Reference](cli.md#tag-based-flow-selection-tags-exclude-tags)); tags themselves have no other effect on execution
+- Not exposed in `klaus ui` or the server API
 
 ## request (HTTP step)
 

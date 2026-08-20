@@ -29,6 +29,8 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 | `--replay <dir>` | Replay mode: serves HTTP responses from the cassette in `<dir>` instead of the network (unrecorded requests fail with exit code 3). Cannot be combined with `--record` | — |
 | `--allow-protected` | Allow running against an environment file marked `$protected: true` (otherwise refused with exit code 3) | — |
 | `--data <path>` | Run data-driven: for each row in this JSON/YAML data file, run all given flow files once (see "Data-driven runs" below) | — |
+| `--tags <list>` | Comma-separated list of tags; only run flows whose `tags:` includes at least one of them (OR semantics; see "Tag-based flow selection" below) | — |
+| `--exclude-tags <list>` | Comma-separated list of tags; drop flows whose `tags:` includes any of them. Takes precedence over `--tags` | — |
 
 Passing a value other than `junit` to `--report` prints an error to stderr and exits with 1. Passing `--json` and `--text` together, or `-e`/`--env` and `--env-file` together, also prints an error to stderr and exits with 1 (nothing is run). This `-e`/`--env` + `--env-file` conflict only fires for an `-e`/`--env` **typed on the command line**; a `run.env` default coming from `klaus.config.yaml` yields to an explicit `--env-file` instead of conflicting with it (see [Default CLI options](config.md)).
 
@@ -36,7 +38,19 @@ Passing a value other than `junit` to `--report` prints an error to stderr and e
 
 `--var` values are **not** registered as secrets and are **not** masked in output, unlike <code v-pre>{{env.X}}</code> (OS environment variable references). If a value is a real secret, pass it through an OS environment variable and reference it as <code v-pre>{{env.X}}</code> instead, so it benefits from the masking described in [Execution History](history.md).
 
-`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` can have their defaults set via `klaus.config.yaml`. `--var`, `--env-file`, and `--data` cannot — see [Default CLI options](config.md).
+`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` can have their defaults set via `klaus.config.yaml`. `--var`, `--env-file`, `--data`, `--tags`, and `--exclude-tags` cannot — see [Default CLI options](config.md).
+
+### Tag-based flow selection (`--tags` / `--exclude-tags`)
+
+Flow definitions may declare `tags: [smoke, auth]` at the top level (see [Flow Definition Reference](flow-definition.md#tags)). `--tags` and `--exclude-tags` each take a comma-separated list (entries are trimmed; an empty entry after trimming — e.g. a leading/trailing/doubled comma — is rejected with a non-zero exit and no stack trace).
+
+- **`--tags`**: keeps a flow if it has **at least one** of the given tags (OR semantics). Omitted → no filtering by inclusion (every flow passes this stage)
+- **`--exclude-tags`**: drops a flow if it has **any** of the given tags, applied after the `--tags` stage. Omitted → nothing is excluded. When a flow matches both `--tags` and `--exclude-tags`, **exclusion wins**
+- **Untagged flows** (no `tags:` field): they match none of `--tags`, so they are dropped whenever `--tags` is given; they match none of `--exclude-tags` either, so they are kept when only `--exclude-tags` is given
+- **Filtered-out flows never run**: a flow dropped by tag filtering does not reach the runner at all, so it produces no entry in the JSON/JUnit output and no execution-history row — this is different from a `skipped` step, which is recorded (see [Flow Behavior on Step Failure](flow-definition.md#flow-behavior-on-step-failure))
+- **Zero matches is an error**: if filtering leaves no flows to run, `klaus run` prints `no flows match the specified tags` to stderr and exits with **1**, without running anything. This is intentional — a silently-green empty run in CI would hide a typo in a tag name
+- **Combined with `--data`**: filtering happens first, before the data-driven row expansion — so the row × flow iteration only covers the flows that survived filtering
+- Not settable via `klaus.config.yaml` (see above)
 
 ### Data-driven runs (`--data`)
 

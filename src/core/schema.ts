@@ -461,6 +461,13 @@ export const flowSchema = z
       .array(stepSchema)
       .min(1)
       .describe("Ordered list of steps to execute. Must contain at least one step."),
+    tags: z
+      .array(z.string().min(1))
+      .optional()
+      .describe(
+        "Flow-level tags for selecting which flows to run via `klaus run --tags` / `--exclude-tags`. " +
+          "No uniqueness constraint. Step-level tags are not supported.",
+      ),
   })
   .superRefine((flow, ctx) => {
     // ステップ名はフロー内で一意でなければならない

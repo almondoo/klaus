@@ -57,6 +57,7 @@ The following options cannot be set in `klaus.config.yaml` (the schema has no fi
 | `--record` / `--replay` | These record/replay modes change the execution side effects (whether real network access happens) significantly, so they must be made explicit on every invocation |
 | `--json` / `--text` | The output mode depends on the caller (a human reading it vs. an agent or script parsing it), so it should be made explicit on every command-line invocation |
 | `--var` / `--env-file` / `--data` | All three are ad-hoc, per-invocation overrides by nature (a one-off variable, a one-off environment file path, or a one-off data file for a data-driven run); giving them a persistent default in config would defeat that purpose |
+| `--tags` / `--exclude-tags` | Also a per-invocation choice of what to run this time; a persistent default in config risks silently excluding some flows on every run without it being obvious |
 
 ## Error handling
 

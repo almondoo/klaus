@@ -1047,4 +1047,112 @@ describe("runCommand", () => {
       expect(stderrOutput).toContain(brokenFlowPath);
     });
   });
+
+  describe("--tags / --exclude-tags", () => {
+    /** tags 未指定(タグ無しフロー)を含む2フローを workDir に書き出す共通セットアップ */
+    async function writeTaggedFlows(): Promise<{ taggedPath: string; untaggedPath: string }> {
+      const taggedPath = join(workDir, "tagged-flow.yaml");
+      await writeFile(
+        taggedPath,
+        `name: tagged flow\ntags: [smoke, auth]\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+      const untaggedPath = join(workDir, "untagged-flow.yaml");
+      await writeFile(
+        untaggedPath,
+        `name: untagged flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+      return { taggedPath, untaggedPath };
+    }
+
+    it("--tags は一致するタグを持つフローだけを実行する(OR 条件)", async () => {
+      const { taggedPath, untaggedPath } = await writeTaggedFlows();
+
+      const exitCode = await runCommand(
+        [taggedPath, untaggedPath],
+        baseOptions({ tags: ["smoke"] }),
+      );
+
+      expect(exitCode).toBe(0);
+      const report = readJson() as { flows: Array<{ name: string }> };
+      expect(report.flows).toHaveLength(1);
+      expect(report.flows[0]?.name).toBe("tagged flow");
+    });
+
+    it("--exclude-tags は一致するタグを持つフローを除外する", async () => {
+      const { taggedPath, untaggedPath } = await writeTaggedFlows();
+
+      const exitCode = await runCommand(
+        [taggedPath, untaggedPath],
+        baseOptions({ excludeTags: ["smoke"] }),
+      );
+
+      expect(exitCode).toBe(0);
+      const report = readJson() as { flows: Array<{ name: string }> };
+      expect(report.flows).toHaveLength(1);
+      expect(report.flows[0]?.name).toBe("untagged flow");
+    });
+
+    it("--tags と --exclude-tags の両方に一致するフローは除外される(除外が優先)", async () => {
+      const { taggedPath, untaggedPath } = await writeTaggedFlows();
+
+      const exitCode = await runCommand(
+        [taggedPath, untaggedPath],
+        baseOptions({ tags: ["smoke"], excludeTags: ["auth"] }),
+      );
+
+      // tagged-flow は --tags(smoke)にも --exclude-tags(auth)にも一致するため除外され、
+      // untagged-flow は --tags のどれとも一致しないため除外される → 残り0件で exit 1
+      expect(exitCode).toBe(1);
+      expect(stdoutSpy.join("")).toBe("");
+      expect(stderrSpy.join("")).toContain("klaus: no flows match the specified tags");
+    });
+
+    it("タグ無しフローは --tags 指定時は除外され、--exclude-tags のみ指定時は保持される", async () => {
+      const { untaggedPath } = await writeTaggedFlows();
+
+      const excludeOnlyExitCode = await runCommand(
+        [untaggedPath],
+        baseOptions({ excludeTags: ["smoke"] }),
+      );
+      expect(excludeOnlyExitCode).toBe(0);
+      const report = readJson() as { flows: Array<{ name: string }> };
+      expect(report.flows).toHaveLength(1);
+      expect(report.flows[0]?.name).toBe("untagged flow");
+    });
+
+    it("絞り込み結果が0件になると戻り値1になり stderr にメッセージを出し、何も実行されない", async () => {
+      const { taggedPath, untaggedPath } = await writeTaggedFlows();
+
+      const exitCode = await runCommand(
+        [taggedPath, untaggedPath],
+        baseOptions({ tags: ["nonexistent"] }),
+      );
+
+      expect(exitCode).toBe(1);
+      expect(stdoutSpy.join("")).toBe("");
+      expect(stderrSpy.join("")).toContain("klaus: no flows match the specified tags");
+    });
+
+    it("--data と組み合わせると絞り込み後のフロー × 行数で実行される(2フロー中1件マッチ × 2行 = 2 FlowResults)", async () => {
+      const { taggedPath, untaggedPath } = await writeTaggedFlows();
+      const dataPath = join(workDir, "tags-data-rows.json");
+      await writeFile(dataPath, JSON.stringify([{ a: "1" }, { a: "2" }]), "utf-8");
+
+      const exitCode = await runCommand(
+        [taggedPath, untaggedPath],
+        baseOptions({ tags: ["smoke"], data: dataPath }),
+      );
+
+      expect(exitCode).toBe(0);
+      const report = readJson() as {
+        flows: Array<{ name: string; iteration?: number }>;
+      };
+      expect(report.flows).toHaveLength(2);
+      expect(report.flows.every((flow) => flow.name === "tagged flow")).toBe(true);
+      expect(report.flows[0]?.iteration).toBe(1);
+      expect(report.flows[1]?.iteration).toBe(2);
+    });
+  });
 });

@@ -582,6 +582,64 @@ describe("cli integration", () => {
     expect(parsed.status).toBe("failed");
   });
 
+  it("(u) run --tags: 一致するタグを持つフローのみ実行され exit 0 になる", async () => {
+    const taggedPath = join(workDir, "tags-happy-tagged.yaml");
+    await writeFile(
+      taggedPath,
+      `name: tagged flow\ntags: [smoke]\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+    const untaggedPath = join(workDir, "tags-happy-untagged.yaml");
+    await writeFile(
+      untaggedPath,
+      `name: untagged flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+
+    const result = await runCli(
+      ["run", taggedPath, untaggedPath, "--no-history", "--tags", "smoke"],
+      workDir,
+    );
+
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe("passed");
+    expect(parsed.flows).toHaveLength(1);
+    expect(parsed.flows[0].name).toBe("tagged flow");
+  });
+
+  it("(v) run --tags: 一致するフローが0件だと exit 1 + stderr メッセージになり、何も実行されない", async () => {
+    const flowPath = join(workDir, "tags-zero-match.yaml");
+    await writeFile(
+      flowPath,
+      `name: any flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+
+    const result = await runCli(
+      ["run", flowPath, "--no-history", "--tags", "nonexistent"],
+      workDir,
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("klaus: no flows match the specified tags");
+  });
+
+  it("(w) run --tags に空エントリ(連続カンマ)を渡すと exit 0 以外になり未捕捉スタックトレースも出ない", async () => {
+    const flowPath = join(workDir, "tags-invalid.yaml");
+    await writeFile(flowPath, "name: any\nsteps: []\n", "utf-8");
+
+    const result = await runCli(
+      ["run", flowPath, "--no-history", "--tags", "smoke,,auth"],
+      workDir,
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("invalid tag list (empty tag after trimming): smoke,,auth");
+    expect(result.stderr).not.toMatch(/^\s+at\s/m);
+  });
+
   it("(r) history / history show: 既存の履歴ディレクトリから JSON を出力し exit 0 になる", async () => {
     const historyWorkDir = join(workDir, "history-scenario");
     const historyDir = join(historyWorkDir, ".klaus", "history");
