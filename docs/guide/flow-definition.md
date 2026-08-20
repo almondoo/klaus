@@ -172,6 +172,7 @@ capture:
 
 - Applies a JSONPath to the JSON response, making the result available as a template variable in subsequent steps (the classic case being login → token → Authorization header)
 - **If it doesn't match, or the response isn't JSON, this is a RuntimeError** and the step becomes error (exit 3). A silent chain like `Bearer undefined` cannot happen. A capture whose value is `null` is treated as a success
+- **Captured values are not masked.** Secret masking covers only values resolved via <code v-pre>{{env.X}}</code>, so a token captured here is written as-is to the history JSONL, the JUnit report, and record cassettes. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) for the masking boundaries
 - Ignored on SSE / WS steps
 
 ## assert (assertions)

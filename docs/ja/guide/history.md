@@ -66,6 +66,6 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
 
 ## 運用上の注意
 
-- **テンプレート解決済みの値が記録される**。ただし <code v-pre>{{env.X}}</code> で OS 環境変数から解決した値(長さ 4 文字以上)は、書き込み直前に request の url/headers/body・response の headers/body・assertions(expected/actual/message)・events(event/id/data)内で `***` にマスクされる。マスクは生の値だけでなく、その URL エンコード形(パーセントエンコード、`URLSearchParams` が空白を `+` にする form-urlencoded 形、および WHATWG URL 正規化に近い encodeURI 形)にも及ぶため、`request.query` に置いたシークレットや `request.url` テンプレートへ直書きしたシークレットもエンコード後の姿で記録されずに済む。マスクされるのはこの経路で解決した値のみで、`environments/*.yaml` 由来の値やライブ実行結果(実行中 UI・StepResult)はマスク対象外。詳細は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) を参照
+- **テンプレート解決済みの値が記録される**。ただし <code v-pre>{{env.X}}</code> で OS 環境変数から解決した値(長さ 4 文字以上)は、書き込み直前に request の url/headers/body・response の headers/body・assertions(expected/actual/message)・events(event/id/data)内で `***` にマスクされる。マスクは生の値だけでなく、その URL エンコード形(パーセントエンコード、`URLSearchParams` が空白を `+` にする form-urlencoded 形、および WHATWG URL 正規化に近い encodeURI 形)にも及ぶため、`request.query` に置いたシークレットや `request.url` テンプレートへ直書きしたシークレットもエンコード後の姿で記録されずに済む。マスクされるのはこの経路で解決した値のみで、`environments/*.yaml` 由来の値、`capture:` で取得した値、ライブ実行結果(実行中 UI・StepResult)はマスク対象外。詳細は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) を参照
 - マスクされない値(4文字未満のシークレットや environments ファイル由来の値など)を扱うプロジェクトでは、引き続き `.klaus/` を `.gitignore` に入れること(このリポジトリの scaffolding では最初から ignore 済み)
 - テキストファイルなので、あえて git 管理して実行記録をチームで共有する運用も可能(マスクされない値が含まれないことを確認したうえで)

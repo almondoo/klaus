@@ -172,6 +172,7 @@ capture:
 
 - JSON レスポンスに JSONPath を適用し、結果を後続ステップのテンプレート変数にする(ログイン → トークン → Authorization ヘッダーが代表ケース)
 - **マッチしない・レスポンスが JSON でない場合は RuntimeError** になりステップは error(exit 3)。`Bearer undefined` のようなサイレント連鎖は起きない。値が `null` のキャプチャは成功扱い
+- **キャプチャした値はマスクされない**。シークレットマスクの対象は <code v-pre>{{env.X}}</code> で解決した値のみのため、ここでキャプチャしたトークンは履歴 JSONL・JUnit レポート・record カセットにそのまま書き込まれる。マスクの境界は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) を参照
 - SSE / WS ステップでは無視される
 
 ## assert(アサーション)
