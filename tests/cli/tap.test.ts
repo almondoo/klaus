@@ -133,7 +133,22 @@ describe("formatTap", () => {
 
     // 出力全体の行数がステップ数(プラン込みで3行)どおりであること = 実際の改行が増えていないこと
     expect(lines).toHaveLength(4); // "TAP version 13" / "1..1" / ok 行 / 末尾の空文字列(trailing \n)
-    expect(lines[2]).toBe("ok 1 - flow \\# with hash > step\\nwith\\nnewline");
+    // sanitizeForTerminal が実改行を可視エスケープ "\n"(バックスラッシュ+n)に変換した後、
+    // その '\' 自体もエスケープ対象になるため出力は "\\n"(バックスラッシュ2つ+n)になる
+    expect(lines[2]).toBe("ok 1 - flow \\# with hash > step\\\\nwith\\\\nnewline");
+  });
+
+  it("'\\' は '#' より先にエスケープされ、'\\#' という入力由来の並びと '#' のエスケープ結果が区別できる", () => {
+    const flow = buildFlow({
+      // 生の '\' と、生の '\#'(エスケープ前から存在する並び)の両方を含める
+      name: String.raw`flow \ with backslash`,
+      steps: [buildStep({ name: String.raw`step\#literal`, status: "passed" })],
+    });
+    const tap = formatTap(buildRunResult([flow]));
+    const lines = tap.split("\n");
+
+    // '\' -> '\\'、'#' -> '\#' の順で変換されるため、生の '\#' は '\\\#'(バックスラッシュ2つ+エスケープ済み#)になる
+    expect(lines[2]).toBe(String.raw`ok 1 - flow \\ with backslash > step\\\#literal`);
   });
 
   it("secrets を渡すと該当する値が *** にマスクされる", () => {

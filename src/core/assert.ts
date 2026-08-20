@@ -21,6 +21,15 @@ import type { AssertionResult, SseEvent, WsMessage } from "./types.js";
 const ajv = new Ajv2020({ allErrors: true, strict: false });
 
 /**
+ * ユーザー定義(フロー YAML の assert マッチャー・CLI 変数注入)由来の regex パターンをコンパイルする唯一の箇所。
+ * CodeQL の js/regex-injection alert をこの 1 箇所に集約するため、ユーザー入力を new RegExp に渡すコードは
+ * 必ずこの関数を経由すること(新たな構築箇所を作ると新規 alert が発生する)。
+ */
+function compileUserRegex(pattern: string): RegExp {
+  return new RegExp(pattern);
+}
+
+/**
  * スキーマオブジェクトの参照をキーにコンパイル済み validator をキャッシュする。
  * 同じ schema オブジェクトに対する複数回のアサーション評価(例: リトライ・複数レスポンスでの再利用)で
  * 再コンパイルを避ける。コンパイル失敗時はキャッシュしない(呼び出し元でエラーメッセージ化するのみ)。
@@ -158,7 +167,7 @@ function pushMatchResults(
   }
   if (matchers.regex !== undefined) {
     const actualStr = stringifyForMatch(resolvedValue);
-    const regex = precompiledRegex ?? new RegExp(matchers.regex);
+    const regex = precompiledRegex ?? compileUserRegex(matchers.regex);
     const ok = resolvedExists && regex.test(actualStr);
     results.push({
       ok,
@@ -437,7 +446,7 @@ function assertItems(
       if (expected === undefined) continue;
       // regex は items 件数分 new RegExp するとイベント/メッセージ数に比例してコストがかかるため、
       // ループの外で1回だけコンパイルして使い回す
-      const precompiledRegex = key === "regex" ? new RegExp(expected as string) : undefined;
+      const precompiledRegex = key === "regex" ? compileUserRegex(expected as string) : undefined;
       let anyOk = false;
       for (const item of items) {
         const { exists, value } = resolveItemValue(item, def.path);

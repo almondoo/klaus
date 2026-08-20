@@ -14,11 +14,15 @@ export interface FormatTapOptions {
  * 名前や診断メッセージに改行が含まれると行構造が壊れ、'#' が含まれると
  * コメント/ディレクティブ(`# SKIP ...` 等)の構文と衝突しうる。
  * 変換順序は formatJUnit の escapeXmlText と同じ: ①シークレットマスク(生のバイト列のまま照合する
- * 必要があるため最初)②制御文字のサニタイズ(sanitizeForTerminal)③'#' のエスケープ(TAP の構文要素との衝突回避)。
+ * 必要があるため最初)②制御文字のサニタイズ(sanitizeForTerminal)③'\' のエスケープ④'#' のエスケープ
+ * (TAP の構文要素との衝突回避)。③→④の順序は固定: 先に '#' を '\#' に変換すると、そこで新たに
+ * 導入された '\' まで④の対象になり二重エスケープ(`\\#`)されてしまう。そのため入力由来の '\' を
+ * 先に '\\' へエスケープしてから '#' を '\#' に変換することで、出力の '\' が「元から '\' だったもの」
+ * と「'#' のエスケープで付与したもの」のどちらに由来するか一意に判別できるようにする。
  */
 function sanitizeForTap(text: string, secretVariants: readonly string[]): string {
   const masked = secretVariants.length > 0 ? maskString(text, secretVariants) : text;
-  return sanitizeForTerminal(masked).replace(/#/g, "\\#");
+  return sanitizeForTerminal(masked).replace(/\\/g, "\\\\").replace(/#/g, "\\#");
 }
 
 /**
