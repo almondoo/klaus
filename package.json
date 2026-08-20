@@ -1,6 +1,6 @@
 {
   "name": "@almondoo/klaus",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "API testing CLI: define request flows in YAML and run execution, assertions, and history tracking",
   "type": "module",
   "license": "Elastic-2.0",
