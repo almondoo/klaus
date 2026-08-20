@@ -13,11 +13,17 @@
  * - クォート文字列はエスケープシーケンスをサポートしない。クォート文字自体を値に
  *   含めたい場合は反対側のクォート種別を使うこと(例: 二重引用符を含めたいなら
  *   シングルクォートで囲む)。
- * - 比較は常に文字列として行う。capture 側の値のみ String() で強制変換してから
- *   比較する(steps.*.status は元々 string のため変換は事実上の no-op)。
+ * - ' または " で始まるリテラルは、同じクォート文字で終端していなければ不正な式として扱う
+ *   (未終端のクォートを空白区切りのベアトークンとして黙って解釈してしまうと、クォート文字を
+ *   含んだまま比較され、常に false になる事故に気付けないため)。
+ * - 比較は常に文字列として行う。capture 側の値は template.ts の stringifyValue で変換してから
+ *   比較する(テンプレート展開 {{captures.x}} の見た目と条件式の比較結果を一致させるため。
+ *   オブジェクト・配列は JSON 文字列化される。steps.*.status は元々 string のため変換は
+ *   事実上の no-op)。
  */
 
 import { RuntimeError } from "./errors.js";
+import { stringifyValue } from "./template.js";
 
 /** 条件式の評価に必要なコンテキスト */
 export interface ConditionContext {
@@ -30,11 +36,15 @@ export interface ConditionContext {
 // グループ番号: 1=stepName, 2=captureName, 3=op, 4=literal(クォート込み)
 // ref 側の alternation(steps.../captures...)はどちらか一方だけがマッチするため、
 // 名前付きキャプチャではなく番号付きキャプチャで受け取り、undefined 判定で分岐する。
+// リテラルのベアトークン側([^\s'"]\S*)は先頭に ' や " を含めない。これにより閉じクォートを
+// 欠いた `"abc` のような入力は、クォート付きリテラルにもベアトークンにもマッチせず全体が
+// マッチ失敗となり、末尾のクォート文字を含んだまま黙って比較される事故を防ぐ(未終端クォートは
+// invalid condition expression の RuntimeError になる)。
 const CONDITION_PATTERN =
-  /^\s*(?:steps\.([^\s.]+)\.status|captures\.([^\s.]+))\s*(==|!=)\s*("[^"]*"|'[^']*'|\S+)\s*$/;
+  /^\s*(?:steps\.([^\s.]+)\.status|captures\.([^\s.]+))\s*(==|!=)\s*("[^"]*"|'[^']*'|[^\s'"]\S*)\s*$/;
 
 const GRAMMAR_HINT =
-  'expected "ref op literal", e.g. steps.<name>.status == "ok" or captures.<name> != value';
+  'expected "ref op literal", e.g. steps.<name>.status == "passed" or captures.<name> != value';
 
 /**
  * 条件式を評価する。
@@ -59,7 +69,7 @@ export function evaluateCondition(expression: string, context: ConditionContext)
 
   // rawLiteral は上記正規表現で必ずマッチするグループのため undefined にはならない
   const expected = unquoteLiteral(rawLiteral as string);
-  const equal = String(actual) === expected;
+  const equal = stringifyValue(actual) === expected;
   return op === "==" ? equal : !equal;
 }
 

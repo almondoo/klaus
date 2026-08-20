@@ -158,4 +158,66 @@ describe("getHistoryPage / readAllHistoryEntries", () => {
     expect(page.entries).toHaveLength(2);
     expect(page.nextBefore).toBeUndefined();
   });
+
+  describe("--jobs>1 による完了順追記(ファイル内行順 != startedAt 順)", () => {
+    // 実行完了順に追記されたことを模して、意図的に startedAt の昇順とは異なる行順で書く
+    const outOfOrderLines = [
+      entry({ step: "s2", startedAt: "2026-08-07T00:00:02.000Z" }),
+      entry({ step: "s0", startedAt: "2026-08-07T00:00:00.000Z" }),
+      entry({ step: "s4", startedAt: "2026-08-07T00:00:04.000Z" }),
+      entry({ step: "s1", startedAt: "2026-08-07T00:00:01.000Z" }),
+      entry({ step: "s3", startedAt: "2026-08-07T00:00:03.000Z" }),
+    ];
+
+    it("readAllHistoryEntries は行の追記順によらず startedAt 降順(新しい順)で返す", async () => {
+      await writeHistoryFile(dir, "2026-08-07.jsonl", outOfOrderLines);
+
+      const entries = await readAllHistoryEntries(dir);
+
+      expect(entries.map((e) => e.step)).toEqual(["s4", "s3", "s2", "s1", "s0"]);
+    });
+
+    it("limit + before によるページングが、行の追記順によらず欠落・重複なく全件を復元できる", async () => {
+      await writeHistoryFile(dir, "2026-08-07.jsonl", outOfOrderLines);
+
+      const seenSteps: string[] = [];
+      let before: string | undefined;
+      // limit を小さくし、複数ページに跨って before カーソルを渡す(完了順追記でも
+      // 正しく1件ずつ、スキップ・重複なく取得できることを検証する)
+      for (let i = 0; i < outOfOrderLines.length; i++) {
+        const page = await getHistoryPage(dir, { limit: 2, before });
+        for (const e of page.entries) seenSteps.push(e.step);
+        if (!page.nextBefore) break;
+        before = page.nextBefore;
+      }
+
+      // 欠落・重複なく、新しい順の全件と一致する(union が全体集合と一致することを確認)
+      expect(seenSteps).toEqual(["s4", "s3", "s2", "s1", "s0"]);
+      expect(new Set(seenSteps).size).toBe(outOfOrderLines.length);
+    });
+
+    it(
+      "startedAt が同一のエントリは before カーソル境界を跨ぐと欠落しうる(既存の `<` 厳密比較カーソルの" +
+        "既知の限界であり、本修正のスコープ外。並び順の安定ソートにより取りこぼす2件の相対順序自体は決定的になる)",
+      async () => {
+        await writeHistoryFile(dir, "2026-08-07.jsonl", [
+          entry({ step: "tie-a", startedAt: "2026-08-07T00:00:01.000Z" }),
+          entry({ step: "tie-b", startedAt: "2026-08-07T00:00:01.000Z" }),
+        ]);
+
+        // limit: 1 でページングすると、1ページ目でどちらか1件のみ返り(安定ソートにより
+        // ファイル内行順の逆順 = tie-b が先になる)、before はその startedAt(もう一方と同一)
+        // になるため、2ページ目は `startedAt < before` の厳密比較によりもう一方を取りこぼす
+        const firstPage = await getHistoryPage(dir, { limit: 1 });
+        expect(firstPage.entries.map((e) => e.step)).toEqual(["tie-b"]);
+        expect(firstPage.nextBefore).toBe("2026-08-07T00:00:01.000Z");
+
+        const secondPage = await getHistoryPage(dir, {
+          limit: 1,
+          before: firstPage.nextBefore,
+        });
+        expect(secondPage.entries).toEqual([]); // tie-a が既知の限界により取りこぼされる
+      },
+    );
+  });
 });

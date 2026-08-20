@@ -166,6 +166,28 @@ describe("formatTap", () => {
     expect(tap).toContain("***");
   });
 
+  it("--data 実行時(flow.iteration 指定あり)はテスト名の flow 部分に (iteration N) が付く(formatJUnit と同じ文言)", () => {
+    const flow = buildFlow({
+      name: "data flow",
+      iteration: 2,
+      steps: [buildStep({ name: "ok", status: "passed" })],
+    });
+    const tap = formatTap(buildRunResult([flow]));
+
+    expect(tap).toContain("ok 1 - data flow (iteration 2) > ok");
+  });
+
+  it("flow.iteration が未設定の場合(通常実行)はテスト名に (iteration N) が付かない", () => {
+    const flow = buildFlow({
+      name: "flow",
+      steps: [buildStep({ name: "ok", status: "passed" })],
+    });
+    const tap = formatTap(buildRunResult([flow]));
+
+    expect(tap).toContain("ok 1 - flow > ok");
+    expect(tap).not.toContain("iteration");
+  });
+
   it("末尾に改行が1つ付く", () => {
     const flow = buildFlow({ steps: [buildStep({ name: "step1", status: "passed" })] });
     const tap = formatTap(buildRunResult([flow]));

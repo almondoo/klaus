@@ -24,13 +24,17 @@ function sanitizeForTap(text: string, secretVariants: readonly string[]): string
 /**
  * 1 ステップ分のテスト名(`<flowName> > <stepName>`)を組み立てる。
  * flow/step それぞれ独立にサニタイズしてから連結する(区切り文字 " > " 自体は攻撃者制御にならないため素通し)。
+ * --data 実行時(flow.iteration 指定あり)は formatJUnit の testsuite 名と同じ文言で
+ * flow 部分に " (iteration N)" を付与する。
  */
 function testDescription(
   flow: FlowResult,
   step: StepResult,
   secretVariants: readonly string[],
 ): string {
-  return `${sanitizeForTap(flow.name, secretVariants)} > ${sanitizeForTap(step.name, secretVariants)}`;
+  const flowName =
+    flow.iteration !== undefined ? `${flow.name} (iteration ${flow.iteration})` : flow.name;
+  return `${sanitizeForTap(flowName, secretVariants)} > ${sanitizeForTap(step.name, secretVariants)}`;
 }
 
 /** failed ステップの診断行(失敗したアサーションごとに1行の `# ...` コメント)を組み立てる */

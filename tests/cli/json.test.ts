@@ -152,6 +152,30 @@ describe("formatJson", () => {
     });
   });
 
+  it("historyEnabled=true かつ FlowResult.iteration が設定されている場合(--data 実行時)、historyRef.iteration に反映される", () => {
+    const flow = buildFlow({
+      iteration: 2,
+      steps: [buildStep({ name: "ok", status: "passed", startedAt: "2026-08-08T01:23:45.000Z" })],
+    });
+    const parsed = JSON.parse(formatJson(buildRunResult([flow]), { historyEnabled: true }));
+
+    expect(parsed.flows[0].steps[0].historyRef).toEqual({
+      date: "2026-08-08",
+      runId: "run-1",
+      step: "ok",
+      iteration: 2,
+    });
+  });
+
+  it("historyEnabled=true かつ FlowResult.iteration が未設定の場合(通常実行)、historyRef.iteration キー自体が存在しない", () => {
+    const flow = buildFlow({
+      steps: [buildStep({ name: "ok", status: "passed", startedAt: "2026-08-08T01:23:45.000Z" })],
+    });
+    const parsed = JSON.parse(formatJson(buildRunResult([flow]), { historyEnabled: true }));
+
+    expect(Object.hasOwn(parsed.flows[0].steps[0].historyRef, "iteration")).toBe(false);
+  });
+
   it("historyEnabled=false の場合、historyRef を省略する", () => {
     const flow = buildFlow({ steps: [buildStep({ name: "ok", status: "passed" })] });
     const parsed = JSON.parse(formatJson(buildRunResult([flow]), { historyEnabled: false }));

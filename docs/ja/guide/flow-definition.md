@@ -268,7 +268,8 @@ steps:
   - `ref op literal`(`ref` は `steps.<name>.status` または `captures.<name>`、`op` は `==` / `!=`、`literal` はダブルクォート文字列・シングルクォート文字列・空白を含まないベアトークンのいずれか)
   - `stepName` / `captureName` に `.` や空白は含められない
   - クォート文字列はエスケープシーケンスに対応しない。値に反対側のクォート文字を含めたい場合は逆のクォート種別で囲む(例: `"` を含めたいならシングルクォートで囲む)
-  - 比較は常に文字列として行う(`captures.<name>` 側の値のみ `String()` で強制変換する。`steps.<name>.status` は元々文字列)
+  - `'` または `"` で始まるリテラルは、同じクォート文字で終端していなければならない。未終端のクォート(例: `captures.token == "abc`)はベアトークンとして黙って解釈**されず**、不正な式として拒否される(RuntimeError)
+  - 比較は常に文字列として行う。`captures.<name>` 側の値は、テンプレート展開(例: <code v-pre>{{token}}</code>)と同じ方法で文字列化する(オブジェクト・配列は JSON 文字列化、それ以外は `String()`)。`steps.<name>.status` は元々文字列
 - **`if` の中では <code v-pre>{{...}}</code> テンプレート展開は行われない。**それまでのキャプチャは <code v-pre>{{name}}</code> ではなく `captures.<name>` で直接参照する
 - `steps.<name>.status` は同じフロー内で**それより前**にあり、かつ実行が完了しているステップのみ参照できる(`continueOnError` で継続したステップも、その実際の `failed` / `error` ステータスが後続の条件式から見える。これが `if` と `continueOnError` を組み合わせる狙いそのもの — 例: setup が passed のときだけ後始末を実行する)
 - 条件式が **false** の場合、ステップは**実行せず** `skipped` になる(リクエストは送られず `retry` も適用されない)。`error` には `"skipped because condition not met: <expression>"` が入る。これはフローの残りステップをスキップしない — 後続ステップは通常どおり実行される(「前のステップの失敗」による skip とは別理由。[ステップ失敗時のフロー挙動](#ステップ失敗時のフロー挙動) を参照)

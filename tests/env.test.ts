@@ -273,6 +273,25 @@ describe("loadEnvironment", () => {
       }
     });
 
+    it("相対パスは cwd 引数基準で解決する(process.cwd() は使わない)", async () => {
+      // dir(cwd 引数)には無く process.cwd()(テストプロセスの実行位置)直下にだけ同名ファイルが
+      // 存在するケースを作ることで、誤って process.cwd() を基準に解決していないことを検証する。
+      const relativeName = "relative-env.yaml";
+      await writeFile(
+        join(dir, relativeName),
+        "baseUrl: https://from-cwd-arg.example.com\n",
+        "utf-8",
+      );
+      const decoyPath = join(process.cwd(), relativeName);
+      await writeFile(decoyPath, "baseUrl: https://from-process-cwd.example.com\n", "utf-8");
+      try {
+        const env = await loadEnvironment(dir, undefined, undefined, relativeName);
+        expect(env.baseUrl).toBe("https://from-cwd-arg.example.com");
+      } finally {
+        await rm(decoyPath, { force: true });
+      }
+    });
+
     it("存在しないパスを指定すると ParseError になる", async () => {
       await expect(
         loadEnvironment(dir, undefined, undefined, join(dir, "no-such-file.yaml")),

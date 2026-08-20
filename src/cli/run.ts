@@ -46,12 +46,17 @@ type ResolveReportTargetsResult =
  * - --report 未指定なら何も書き出さない(targets: [])。--report-file の値は無視する
  *   (従来どおり: レポート形式を指定しない限り --report-file は使われない)。
  * - --report のフォーマット一覧(カンマ区切り)のいずれかが不明なら ok: false。
+ * - --report のフォーマット一覧に重複があれば ok: false(例: `--report junit,junit` は同じ既定パスへの
+ *   二重書き込みになり、一方が黙って失われるか、`--report-file` を2回とも同じパスに指定した場合は
+ *   同一パスへの writeFile が並行で競合するため、実行前に拒否する)。
  * - --report-file は文字列(単一値。klaus.config.yaml の run.reportFile 由来、または commander の
  *   デフォルト値の名残)か配列(commander の --report-file 複数回指定)のいずれかで渡ってくる。
  *   0個(配列なら空配列)= 各フォーマットの既定ファイル名(DEFAULT_REPORT_FILENAMES)を使う。
  *   フォーマット数と同数 = --report のフォーマット順とペアにする。
  *   それ以外の個数は ok: false にする(指定漏れ・過不足に気付かず一部のレポートが意図せず
  *   既定ファイル名で上書きされる事故を避けるため)。
+ * - 解決後の (フォーマット, 出力パス) の組で、出力パスが重複していれば ok: false
+ *   (フォーマットが異なっていても同一パスへの writeFile は一方が他方を上書きする事故になるため)。
  */
 function resolveReportTargets(
   report: string | undefined,
@@ -66,6 +71,14 @@ function resolveReportTargets(
     return {
       ok: false,
       message: `klaus: unknown report type in "${report}" (supported: ${REPORT_FORMATS.join(", ")})`,
+    };
+  }
+
+  const duplicateFormat = formats.find((format, index) => formats.indexOf(format) !== index);
+  if (duplicateFormat !== undefined) {
+    return {
+      ok: false,
+      message: `klaus: --report "${report}" contains duplicate format "${duplicateFormat}"`,
     };
   }
 
@@ -85,6 +98,16 @@ function resolveReportTargets(
     format,
     filePath: files[index] ?? DEFAULT_REPORT_FILENAMES[format],
   }));
+
+  const filePaths = targets.map((target) => target.filePath);
+  const duplicatePath = filePaths.find((filePath, index) => filePaths.indexOf(filePath) !== index);
+  if (duplicatePath !== undefined) {
+    return {
+      ok: false,
+      message: `klaus: multiple --report formats resolve to the same output path "${duplicatePath}"`,
+    };
+  }
+
   return { ok: true, targets };
 }
 

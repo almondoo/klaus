@@ -14,7 +14,13 @@ function isHistoryEntryV1(value: unknown): value is HistoryEntry {
   return typeof value === "object" && value !== null && (value as { v?: unknown }).v === 1;
 }
 
-/** .klaus/history 配下の全 jsonl を新しい順(日付ファイル降順 × ファイル内行降順)に読み出す */
+/**
+ * .klaus/history 配下の全 jsonl を新しい順(startedAt 降順)に読み出す。
+ * ファイル名降順 × ファイル内行降順を初期順序としつつ、最後に startedAt 降順の安定ソートを
+ * かけて確定させる。--jobs>1 での並列実行時は完了順に追記されるため、ファイル内の行順が
+ * 必ずしも startedAt の昇順(=追記順)と一致しない(実行完了順で書かれる)ためこの補正が必要。
+ * 安定ソートにより、startedAt が同一のエントリ同士は上記の初期順序を保つ。
+ */
 export async function readAllHistoryEntries(cwd: string): Promise<HistoryEntry[]> {
   const dir = join(cwd, ".klaus", "history");
   let fileNames: string[];
@@ -30,7 +36,8 @@ export async function readAllHistoryEntries(cwd: string): Promise<HistoryEntry[]
   for (const fileName of fileNames) {
     const content = await readFile(join(dir, fileName), "utf-8");
     const lines = content.split("\n").filter((line) => line.trim().length > 0);
-    // 1ファイル内は追記順(古い→新しい)で書かれているため、反転して新しい順にする
+    // 1ファイル内は基本的に追記順(古い→新しい)で書かれているため、反転して新しい順にする
+    // (並列実行時の完了順ずれは後段の startedAt 降順ソートで補正する)
     for (const line of lines.reverse()) {
       let parsed: unknown;
       try {
@@ -42,6 +49,9 @@ export async function readAllHistoryEntries(cwd: string): Promise<HistoryEntry[]
       entries.push(parsed);
     }
   }
+  // startedAt 降順で確定させる(Array#sort は ES2019 以降で安定ソートが仕様上保証されている)。
+  // これにより before カーソルによるフィルタ・ページングの前提(順序が startedAt と一致する)が成り立つ。
+  entries.sort((a, b) => (a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0));
   return entries;
 }
 

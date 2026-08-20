@@ -476,6 +476,31 @@ describe("runCommand", () => {
     expect(stderrSpy.join("")).toContain('unknown report type in "junit,bogus"');
   });
 
+  it("--report junit,junit のようにフォーマットが重複すると exit 1 で何も書き出さない", async () => {
+    const flowPath = join(workDir, "success-for-duplicate-format.yaml");
+    await writeFile(flowPath, "name: any\nsteps: []\n", "utf-8");
+
+    const exitCode = await runCommand([flowPath], baseOptions({ report: "junit,junit" }));
+
+    expect(exitCode).toBe(1);
+    expect(stderrSpy.join("")).toContain('duplicate format "junit"');
+  });
+
+  it("--report junit,tap で --report-file を2回とも同じパスに指定すると exit 1 で何も書き出さない", async () => {
+    const flowPath = join(workDir, "success-for-duplicate-path.yaml");
+    await writeFile(flowPath, "name: any\nsteps: []\n", "utf-8");
+    const samePath = join(workDir, "collide.out");
+
+    const exitCode = await runCommand(
+      [flowPath],
+      baseOptions({ report: "junit,tap", reportFile: [samePath, samePath] }),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(stderrSpy.join("")).toContain(`same output path "${samePath}"`);
+    await expect(access(samePath)).rejects.toThrow();
+  });
+
   it("--report を指定し --report-file を省略すると、フォーマットごとの既定ファイル名(klaus-report.xml / klaus-report.tap)に書き出す", async () => {
     // DEFAULT_REPORT_FILENAMES は相対パスのため、既定値どおりの挙動を確認するにはカレントディレクトリを
     // 一時的に workDir に切り替える(commander 経由で実際に klaus run を叩いたときの cwd 相対解決を再現する)

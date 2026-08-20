@@ -60,6 +60,17 @@ describe("evaluateCondition", () => {
       expect(evaluateCondition("captures.count != '4'", context)).toBe(true);
     });
 
+    it("オブジェクト capture はテンプレート展開と同じ JSON 文字列化で比較する", () => {
+      const context = makeContext({ captures: { user: { id: 1 } } });
+      expect(evaluateCondition("captures.user == '{\"id\":1}'", context)).toBe(true);
+      expect(evaluateCondition("captures.user != '{\"id\":2}'", context)).toBe(true);
+    });
+
+    it("配列 capture はテンプレート展開と同じ JSON 文字列化で比較する", () => {
+      const context = makeContext({ captures: { ids: [1, 2, 3] } });
+      expect(evaluateCondition("captures.ids == '[1,2,3]'", context)).toBe(true);
+    });
+
     it("未知の capture 名は RuntimeError(利用可能な capture 名一覧つき、値は含まない)", () => {
       const context = makeContext({ captures: { token: "secret-value-should-not-leak" } });
       expect(() => evaluateCondition("captures.unknown == 'x'", context)).toThrow(RuntimeError);
@@ -139,6 +150,22 @@ describe("evaluateCondition", () => {
       expect(() => evaluateCondition("nonsense", makeContext())).toThrow(
         /invalid condition expression: "nonsense" \(expected "ref op literal"/,
       );
+    });
+
+    it("文法ヒントの例は実在しない status 値 'ok' ではなく 'passed' を使う", () => {
+      expect(() => evaluateCondition("nonsense", makeContext())).toThrow(
+        /steps\.<name>\.status == "passed"/,
+      );
+    });
+
+    it("未終端のダブルクォートリテラルはベアトークンとして黙って比較せず RuntimeError", () => {
+      const context = makeContext({ captures: { token: "abc" } });
+      expect(() => evaluateCondition('captures.token == "abc', context)).toThrow(RuntimeError);
+    });
+
+    it("未終端のシングルクォートリテラルはベアトークンとして黙って比較せず RuntimeError", () => {
+      const context = makeContext({ captures: { token: "abc" } });
+      expect(() => evaluateCondition("captures.token == 'abc", context)).toThrow(RuntimeError);
     });
   });
 });
