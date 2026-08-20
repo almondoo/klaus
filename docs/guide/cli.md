@@ -28,6 +28,7 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 | `--record <dir>` | Record mode: sends real HTTP requests and saves masked request/response pairs to a cassette in `<dir>` | — |
 | `--replay <dir>` | Replay mode: serves HTTP responses from the cassette in `<dir>` instead of the network (unrecorded requests fail with exit code 3). Cannot be combined with `--record` | — |
 | `--allow-protected` | Allow running against an environment file marked `$protected: true` (otherwise refused with exit code 3) | — |
+| `--data <path>` | Run data-driven: for each row in this JSON/YAML data file, run all given flow files once (see "Data-driven runs" below) | — |
 
 Passing a value other than `junit` to `--report` prints an error to stderr and exits with 1. Passing `--json` and `--text` together, or `-e`/`--env` and `--env-file` together, also prints an error to stderr and exits with 1 (nothing is run). This `-e`/`--env` + `--env-file` conflict only fires for an `-e`/`--env` **typed on the command line**; a `run.env` default coming from `klaus.config.yaml` yields to an explicit `--env-file` instead of conflicting with it (see [Default CLI options](config.md)).
 
@@ -35,7 +36,18 @@ Passing a value other than `junit` to `--report` prints an error to stderr and e
 
 `--var` values are **not** registered as secrets and are **not** masked in output, unlike <code v-pre>{{env.X}}</code> (OS environment variable references). If a value is a real secret, pass it through an OS environment variable and reference it as <code v-pre>{{env.X}}</code> instead, so it benefits from the masking described in [Execution History](history.md).
 
-`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` can have their defaults set via `klaus.config.yaml`. `--var` and `--env-file` cannot — see [Default CLI options](config.md).
+`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` can have their defaults set via `klaus.config.yaml`. `--var`, `--env-file`, and `--data` cannot — see [Default CLI options](config.md).
+
+### Data-driven runs (`--data`)
+
+`--data <path>` runs every given flow file once **per row** in a JSON or YAML data file (Newman-style data-driven execution). The data file must be an array of objects; each value must be a scalar (string / number / boolean / null) — nested objects/arrays are rejected, and there is no CSV support (JSON/YAML only, chosen to avoid adding a new dependency; see the schema doc comment in `src/core/data.ts` for the full rationale). An empty array is also rejected.
+
+- **Iteration order**: rows are the outer loop and flows are the inner loop — `flowA(row1)`, `flowB(row1)`, `flowA(row2)`, `flowB(row2)`, ... (iteration-major order, matching Newman's collection-runner semantics)
+- **Variable injection**: each row's values land in the same template env namespace as `--var` and the environment file (bare <code v-pre>{{name}}</code>), overriding same-named keys from `--var`, which in turn overrides the environment file. Capture variable resolution is unaffected (captures still resolve before the env namespace, per the existing precedence rule)
+- **Value coercion**: `number`/`boolean` row values are stringified with `String(value)` before injection, same as capture values. A key whose value is `null` is **not injected at all** — referencing it in a template then fails with the usual unresolved-variable error (this is intentional, not a bug)
+- **Not masked**: like `--var`, row values are not registered as secrets and are not masked in output — use <code v-pre>{{env.X}}</code> (an OS environment variable) for real secrets
+- **Aggregation**: all iterations' flow results sit flat in the same run — a failure in any iteration fails the run as a whole (same `aggregateStatus` / exit-code rules as a normal multi-flow run)
+- **Reporting**: when `--data` is used, each flow result carries a 1-based `iteration` number. This surfaces as: the `iteration` field on each flow entry in the `--json` output (additive; `version` stays `2`), an `(iteration N)` suffix on the JUnit `<testsuite name="...">` (the `classname` on each `<testcase>` stays the plain flow name), an `(iteration N)` suffix on the text-output flow header, and an `iteration` field on each execution-history JSONL entry (additive; `v` stays `1`)
 
 ## Output Modes
 

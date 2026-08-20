@@ -178,6 +178,12 @@ export const jsonFlowReportSchema = z.strictObject({
     .number()
     .describe("Flow duration in milliseconds (rounded), summed across its steps."),
   steps: z.array(jsonStepReportSchema).describe("Per-step results, in execution order."),
+  iteration: z
+    .number()
+    .optional()
+    .describe(
+      "1-based data-driven iteration number, present only when `klaus run --data` was used (each row runs every given flow once, in iteration-major order).",
+    ),
 });
 export type JsonFlowReport = z.infer<typeof jsonFlowReportSchema>;
 
@@ -293,6 +299,7 @@ function buildFlow(flow: FlowResult, runId: string, historyEnabled: boolean): Js
     status: flow.status,
     durationMs: Math.round(flow.durationMs),
     steps: flow.steps.map((step) => buildStep(step, runId, historyEnabled)),
+    iteration: flow.iteration,
   };
 }
 

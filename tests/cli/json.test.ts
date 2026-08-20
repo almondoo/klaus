@@ -159,6 +159,20 @@ describe("formatJson", () => {
     expect(parsed.flows[0].steps[0].historyRef).toBeUndefined();
   });
 
+  it("FlowResult.iteration が設定されている場合(--data 実行時)、flows[].iteration に反映される", () => {
+    const flow = buildFlow({ iteration: 2, steps: [buildStep({ name: "ok", status: "passed" })] });
+    const parsed = JSON.parse(formatJson(buildRunResult([flow]), { historyEnabled: false }));
+
+    expect(parsed.flows[0].iteration).toBe(2);
+  });
+
+  it("FlowResult.iteration が未設定の場合(通常実行)、flows[].iteration キー自体が存在しない(null ではなくキー省略)", () => {
+    const flow = buildFlow({ steps: [buildStep({ name: "ok", status: "passed" })] });
+    const parsed = JSON.parse(formatJson(buildRunResult([flow]), { historyEnabled: false }));
+
+    expect(Object.hasOwn(parsed.flows[0], "iteration")).toBe(false);
+  });
+
   it("実出力は jsonReportSchema(zod)の検証を通る", () => {
     const flow = buildFlow({
       steps: [

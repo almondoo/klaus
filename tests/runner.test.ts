@@ -6,7 +6,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { WebSocketServer } from "ws";
 import type { HistoryEntry } from "../src/core/history.js";
 import { historyFilePath } from "../src/core/history.js";
-import { executeFlow, runFlows } from "../src/core/runner.js";
+import type { LoadedFlowEntry, StepCompleteContext, StepStartContext } from "../src/core/runner.js";
+import { executeFlow, runFlows, runLoadedFlows } from "../src/core/runner.js";
 import { flowSchema } from "../src/core/schema.js";
 import { closeServer, listenEphemeral, reserveClosedPort } from "./support/net.js";
 
@@ -1060,6 +1061,92 @@ describe("runFlows", () => {
     expect(result.status).toBe("error");
     expect(result.flows[0]?.status).toBe("failed");
     expect(result.flows[1]?.status).toBe("error");
+  });
+});
+
+describe("runLoadedFlows", () => {
+  let ctx: Awaited<ReturnType<typeof startAuthServer>>;
+  const tmpRoot = join(process.cwd(), "tmp");
+  let cwd: string;
+
+  beforeAll(async () => {
+    ctx = await startAuthServer();
+    await mkdir(tmpRoot, { recursive: true });
+  });
+
+  afterAll(async () => {
+    await closeServer(ctx.server);
+  });
+
+  afterEach(async () => {
+    if (cwd) {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * assert 未指定のステップは、リクエストが接続レベルで成功しさえすれば(ステータスは問わず)
+   * passed になる(evaluateAssertions が空配列を返し every() が true になるため)。
+   * このファイルの他の describe と同様、テンプレート解決自体の検証は目的ではないため、
+   * ここでは行の値を直接テンプレートに使わず単に options.dataRows の要素数だけを利用する。
+   */
+  function buildTrivialFlow(name: string) {
+    return flowSchema.parse({
+      name,
+      steps: [{ name: "step", request: { method: "GET", url: `${ctx.baseUrl}/nonexistent` } }],
+    });
+  }
+
+  it("dataRows 指定時、行(外側) × フロー(内側)のイテレーション優先順で実行し、flows[].iteration が 1,1,2,2 になる", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+    const entries: LoadedFlowEntry[] = [
+      { filePath: "flow-a.yaml", flow: buildTrivialFlow("flow a") },
+      { filePath: "flow-b.yaml", flow: buildTrivialFlow("flow b") },
+    ];
+
+    const result = await runLoadedFlows(entries, {
+      cwd,
+      history: false,
+      dataRows: [{ row: 1 }, { row: 2 }],
+    });
+
+    // flowA(it1), flowB(it1), flowA(it2), flowB(it2) の順(行が外側・フローが内側)
+    expect(result.flows.map((f) => f.name)).toEqual(["flow a", "flow b", "flow a", "flow b"]);
+    expect(result.flows.map((f) => f.iteration)).toEqual([1, 1, 2, 2]);
+    expect(result.status).toBe("passed");
+  });
+
+  it("dataRows 指定時、options.iteration が runId 共有のまま onStepStart/onStepComplete/履歴コールバックへ伝播する", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+    const entries: LoadedFlowEntry[] = [
+      { filePath: "flow-a.yaml", flow: buildTrivialFlow("flow a") },
+    ];
+
+    const startContexts: StepStartContext[] = [];
+    const completeContexts: StepCompleteContext[] = [];
+    const historyEntries: HistoryEntry[] = [];
+
+    const result = await runLoadedFlows(entries, {
+      cwd,
+      dataRows: [{ row: 1 }, { row: 2 }],
+      onStepStart: (context) => {
+        startContexts.push(context);
+      },
+      onStepComplete: (context) => {
+        completeContexts.push(context);
+      },
+      history: (entry) => {
+        historyEntries.push(entry);
+      },
+    });
+
+    expect(startContexts.map((c) => c.iteration)).toEqual([1, 2]);
+    expect(completeContexts.map((c) => c.iteration)).toEqual([1, 2]);
+    expect(historyEntries.map((e) => e.iteration)).toEqual([1, 2]);
+
+    // runId は runLoadedFlows が1回だけ生成し、全イテレーション・全フローの executeFlow 呼び出しで共有される
+    expect(new Set(historyEntries.map((e) => e.runId)).size).toBe(1);
+    expect(historyEntries[0]?.runId).toBe(result.runId);
   });
 });
 

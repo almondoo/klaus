@@ -56,10 +56,15 @@ export function isJsonOutputMode(json?: boolean): boolean {
   return json === true || !process.stdout.isTTY;
 }
 
-/** フロー切り替わり時のヘッダー行(フロー名・ファイル) */
-export function formatFlowHeader(flowName: string, file: string): string {
+/**
+ * フロー切り替わり時のヘッダー行(フロー名・ファイル)。
+ * --data 実行時のみ、iteration(1始まり)を末尾に ` (iteration N)` として付加する
+ * (通常実行ではこれまでどおりフロー名・ファイルのみ)。
+ */
+export function formatFlowHeader(flowName: string, file: string, iteration?: number): string {
   // flowName/file は flow YAML の name / ファイルパス由来で攻撃者制御になり得るためサニタイズする
-  return `${sanitizeForTerminal(flowName)} (${sanitizeForTerminal(file)})`;
+  const suffix = iteration !== undefined ? ` (iteration ${iteration})` : "";
+  return `${sanitizeForTerminal(flowName)} (${sanitizeForTerminal(file)})${suffix}`;
 }
 
 /** 1 ステップ分の結果行。FAIL の場合は失敗アサーションの詳細を複数行で付加する */
@@ -145,13 +150,20 @@ export function createTextReporter(
     process.stdout.write(text);
   },
 ): TextReporter {
-  let currentFlow: string | null = null;
+  // --data 実行時は同じフロー名がイテレーションごとに複数回現れるため、
+  // フロー名だけでなく iteration も含めて「切り替わったか」を判定する
+  // (iteration が無い通常実行では従来どおりフロー名だけで判定される)。
+  let currentFlow: { name: string; iteration: number | undefined } | null = null;
 
   return {
     onStepStart(context: StepStartContext): void {
-      if (context.flow !== currentFlow) {
-        currentFlow = context.flow;
-        write(`\n${formatFlowHeader(context.flow, context.file)}\n`);
+      if (
+        currentFlow === null ||
+        context.flow !== currentFlow.name ||
+        context.iteration !== currentFlow.iteration
+      ) {
+        currentFlow = { name: context.flow, iteration: context.iteration };
+        write(`\n${formatFlowHeader(context.flow, context.file, context.iteration)}\n`);
       }
     },
     onStepComplete(context: StepCompleteContext): void {

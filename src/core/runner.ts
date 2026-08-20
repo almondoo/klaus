@@ -10,6 +10,7 @@ import {
   loadCassetteIndex,
 } from "./cassette.js";
 import { evaluateCondition } from "./condition.js";
+import type { DataRow } from "./data.js";
 import { isProtectedEnvironment, loadEnvironment, toTemplateVariables } from "./env.js";
 import { KlausError, RuntimeError } from "./errors.js";
 import type { HistoryEntry } from "./history.js";
@@ -35,6 +36,8 @@ export interface StepStartContext {
   flow: string;
   file: string;
   step: string;
+  /** --data 実行時のみ設定される 1 始まりのイテレーション番号(runLoadedFlows のデータ駆動ループ参照) */
+  iteration?: number;
 }
 
 /** ステップ完了時(passed/failed/error/skipped 確定後)に onStepComplete へ渡されるコンテキスト */
@@ -42,6 +45,8 @@ export interface StepCompleteContext {
   flow: string;
   file: string;
   result: StepResult;
+  /** --data 実行時のみ設定される 1 始まりのイテレーション番号(runLoadedFlows のデータ駆動ループ参照) */
+  iteration?: number;
 }
 
 /**
@@ -110,6 +115,19 @@ export interface RunFlowOptions {
    * (黙って実ネットワークへ素通ししない)。
    */
   recording?: { mode: "record" | "replay"; dir: string } | undefined;
+  /**
+   * データ駆動実行(--data)の行データ。runLoadedFlows でのみ参照する(行(外側) × フロー(内側)の
+   * イテレーション優先順で反復し、各行を variables へ合成して executeFlow に渡す)。
+   * runFlow/executeFlow は dataRows を直接読まない(executeFlow は下記 iteration のみを見る)。
+   * 未指定・空配列の場合は従来どおり(--data 無し)の単一実行のまま
+   */
+  dataRows?: DataRow[] | undefined;
+  /**
+   * --data 実行時、この呼び出しが何行目(1 始まり)かを表す。runLoadedFlows がデータ行ごとの
+   * executeFlow 呼び出しに設定し、FlowResult.iteration・HistoryEntry.iteration・
+   * StepStartContext/StepCompleteContext.iteration に伝播させる。--data 未指定時は常に undefined
+   */
+  iteration?: number | undefined;
 }
 
 const DEFAULT_HISTORY = true;
@@ -260,8 +278,22 @@ function buildHistoryBase(
   startedAt: string,
   durationMs: number,
   status: "passed" | "failed" | "skipped",
-): Pick<HistoryEntry, "v" | "runId" | "flow" | "step" | "startedAt" | "durationMs" | "status"> {
-  return { v: 1, runId, flow, step, startedAt, durationMs, status };
+  /** --data 実行時のみ設定する 1 始まりのイテレーション番号(RunFlowOptions.iteration をそのまま伝播させる) */
+  iteration?: number,
+): Pick<
+  HistoryEntry,
+  "v" | "runId" | "flow" | "step" | "startedAt" | "durationMs" | "status" | "iteration"
+> {
+  return {
+    v: 1,
+    runId,
+    flow,
+    step,
+    startedAt,
+    durationMs,
+    status,
+    ...(iteration !== undefined ? { iteration } : {}),
+  };
 }
 
 /**
@@ -302,6 +334,8 @@ async function executeStep(
    * (record/replay モードで replayLoadError を遅延して投げるのと同じ考え方)。
    */
   blockedError?: RuntimeError,
+  /** --data 実行時のみ設定する 1 始まりのイテレーション番号(historyEntry.iteration に伝播させる) */
+  iteration?: number,
 ): Promise<{
   result: StepResult;
   captured: Record<string, unknown>;
@@ -382,6 +416,7 @@ async function executeStep(
             startedAt,
             wsResult.durationMs,
             ok ? "passed" : "failed",
+            iteration,
           ),
           request: requestSnapshot,
           // response 相当として受信メッセージを body に格納する(status は HTTP の 101 Switching Protocols 相当)
@@ -461,6 +496,7 @@ async function executeStep(
             startedAt,
             sseResult.durationMs,
             ok ? "passed" : "failed",
+            iteration,
           ),
           request: requestSnapshot,
           response: responseSnapshot,
@@ -511,6 +547,7 @@ async function executeStep(
           startedAt,
           response.durationMs,
           ok ? "passed" : "failed",
+          iteration,
         ),
         request: requestSnapshot,
         response: responseSnapshot,
@@ -635,7 +672,12 @@ export async function executeFlow(
   let skipRest = false;
 
   for (const step of flow.steps) {
-    await options.onStepStart?.({ flow: flow.name, file: filePath, step: step.name });
+    await options.onStepStart?.({
+      flow: flow.name,
+      file: filePath,
+      step: step.name,
+      ...(options.iteration !== undefined ? { iteration: options.iteration } : {}),
+    });
 
     let result: StepResult;
     let captured: Record<string, unknown> = {};
@@ -650,7 +692,15 @@ export async function executeFlow(
       };
       // skipped ステップはリクエストを送っていないため request/response を持たない
       historyEntry = {
-        ...buildHistoryBase(runId, flow.name, step.name, skippedStartedAt, 0, "skipped"),
+        ...buildHistoryBase(
+          runId,
+          flow.name,
+          step.name,
+          skippedStartedAt,
+          0,
+          "skipped",
+          options.iteration,
+        ),
         assertions: [],
       };
     } else {
@@ -688,7 +738,15 @@ export async function executeFlow(
         };
         // skipRest によるスキップと同様、リクエストを送っていないため request/response を持たない
         historyEntry = {
-          ...buildHistoryBase(runId, flow.name, step.name, skippedStartedAt, 0, "skipped"),
+          ...buildHistoryBase(
+            runId,
+            flow.name,
+            step.name,
+            skippedStartedAt,
+            0,
+            "skipped",
+            options.iteration,
+          ),
           assertions: [],
         };
       } else {
@@ -719,6 +777,7 @@ export async function executeFlow(
             flow.name,
             activeRecording,
             protectedBlockedError,
+            options.iteration,
           );
         } while (
           step.retry &&
@@ -774,13 +833,25 @@ export async function executeFlow(
       skipRest = true;
     }
 
-    await options.onStepComplete?.({ flow: flow.name, file: filePath, result });
+    await options.onStepComplete?.({
+      flow: flow.name,
+      file: filePath,
+      result,
+      ...(options.iteration !== undefined ? { iteration: options.iteration } : {}),
+    });
   }
 
   const durationMs = performance.now() - flowStartedAt;
   const status = aggregateStatus(steps.map((s) => s.status));
 
-  return { name: flow.name, file: filePath, status, steps, durationMs };
+  return {
+    name: flow.name,
+    file: filePath,
+    status,
+    steps,
+    durationMs,
+    ...(options.iteration !== undefined ? { iteration: options.iteration } : {}),
+  };
 }
 
 /** フロー定義 YAML ファイルを読み込んで実行する */
@@ -817,9 +888,30 @@ export interface LoadedFlowEntry {
 }
 
 /**
+ * データ行の値をテンプレートの env 名前空間へ注入できる形(Record<string, string>)に変換する。
+ * number/boolean は String() で文字列化し(captures の stringifyValue と同じ扱い)、
+ * null の値を持つキーは注入しない(未設定のまま残す。テンプレートで参照すれば通常の
+ * 未解決変数エラーになる、という仕様上の決定を data.ts の JSDoc と合わせてここに反映する)。
+ */
+function stringifyDataRow(row: DataRow): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(row)) {
+    if (value === null) continue;
+    result[key] = String(value);
+  }
+  return result;
+}
+
+/**
  * 既に loadFlow 済みの Flow 群を、runFlows と同じ集約ロジック(runId 共有・durationMs・status 集計)で
  * 順次実行する。呼び出し元(CLI の run コマンド等)が実行前検証で loadFlow 済みの Flow を保持している場合、
  * runFlows(ファイルパスから再度 loadFlow する)を経由せずに実行することで、同じファイルの二重パースを避けられる。
+ *
+ * options.dataRows が指定されている場合(--data 実行時)は、Newman 方式のイテレーション優先順
+ * (行(外側) × フロー(内側): flowA(it1), flowB(it1), flowA(it2), ...)で反復する。
+ * 各行の値は options.variables(--var 由来)を上書きする形で合成し、executeFlow に渡す
+ * (テンプレート側の優先順位は row > --var > 環境ファイルの値になる)。dataRows が未指定・空配列の場合は
+ * 従来どおり entries を1回ずつ実行するだけの経路のまま(挙動はバイト単位で変わらない)。
  */
 export async function runLoadedFlows(
   entries: LoadedFlowEntry[],
@@ -830,9 +922,26 @@ export async function runLoadedFlows(
   const runStartedAt = performance.now();
 
   const flows: FlowResult[] = [];
-  for (const { filePath, flow } of entries) {
-    const flowResult = await executeFlow(flow, filePath, { ...options, runId });
-    flows.push(flowResult);
+  if (options.dataRows && options.dataRows.length > 0) {
+    let iteration = 0;
+    for (const row of options.dataRows) {
+      iteration++;
+      const variables = { ...options.variables, ...stringifyDataRow(row) };
+      for (const { filePath, flow } of entries) {
+        const flowResult = await executeFlow(flow, filePath, {
+          ...options,
+          runId,
+          variables,
+          iteration,
+        });
+        flows.push(flowResult);
+      }
+    }
+  } else {
+    for (const { filePath, flow } of entries) {
+      const flowResult = await executeFlow(flow, filePath, { ...options, runId });
+      flows.push(flowResult);
+    }
   }
 
   const durationMs = performance.now() - runStartedAt;

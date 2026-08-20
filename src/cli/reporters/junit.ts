@@ -67,8 +67,12 @@ function testsuiteXml(flow: FlowResult, secretVariants: readonly string[]): stri
   // json.ts の buildSummary と同じ集計ロジックを共有する(text.ts の summarizeSteps)
   const { failed: failures, error: errors, skipped } = summarizeSteps(flow.steps);
   const time = (flow.durationMs / 1000).toFixed(3);
+  // --data 実行時のみ testsuite 名に " (iteration N)" を付ける(testcase の classname は
+  // flow.name のまま据え置く。同一フローのイテレーションを testsuite 名で区別できるようにする)
+  const suiteName =
+    flow.iteration !== undefined ? `${flow.name} (iteration ${flow.iteration})` : flow.name;
   const attrs = [
-    `name="${escapeXmlAttr(flow.name, secretVariants)}"`,
+    `name="${escapeXmlAttr(suiteName, secretVariants)}"`,
     `tests="${tests}"`,
     `failures="${failures}"`,
     `errors="${errors}"`,

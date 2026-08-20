@@ -893,4 +893,158 @@ describe("runCommand", () => {
 
     await expect(runCommand([flowPath], baseOptions())).rejects.toThrow(unexpectedError);
   });
+
+  describe("--data", () => {
+    it("2行のデータファイル × 1フローで RunResult.flows に iteration 1,2 が入り、行の値がテンプレートで解決される", async () => {
+      const dataPath = join(workDir, "rows.json");
+      await writeFile(dataPath, JSON.stringify([{ name: "alice" }, { name: "bob" }]), "utf-8");
+      const flowPath = join(workDir, "data-flow.yaml");
+      await writeFile(
+        flowPath,
+        `name: data flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/echo"\n      query:\n        u: "{{name}}"\n    assert:\n      status: 200\n      bodyText:\n        contains: "{{name}}"\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions({ data: dataPath }));
+
+      expect(exitCode).toBe(0);
+      const report = readJson() as {
+        status: string;
+        flows: Array<{ name: string; status: string; iteration?: number }>;
+      };
+      expect(report.status).toBe("passed");
+      expect(report.flows).toHaveLength(2);
+      expect(report.flows[0]?.iteration).toBe(1);
+      expect(report.flows[1]?.iteration).toBe(2);
+    });
+
+    it("行の値が --var の同名キーより優先される(row > --var)", async () => {
+      const dataPath = join(workDir, "precedence-rows.json");
+      await writeFile(dataPath, JSON.stringify([{ baseUrl: fixture.baseUrl }]), "utf-8");
+      const flowPath = join(workDir, "precedence-flow.yaml");
+      await writeFile(
+        flowPath,
+        'name: precedence flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "{{baseUrl}}/ok"\n    assert:\n      status: 200\n',
+        "utf-8",
+      );
+
+      // --var 側は到達不能なアドレスにしておき、row が優先されなかった場合は接続不能(exit 3)で検知できるようにする
+      const exitCode = await runCommand(
+        [flowPath],
+        baseOptions({ data: dataPath, var: { baseUrl: "http://127.0.0.1:1" } }),
+      );
+
+      expect(exitCode).toBe(0);
+      const report = readJson();
+      expect(report.status).toBe("passed");
+    });
+
+    it("値が null の行キーはテンプレート変数として注入されず、参照すると未解決変数エラーになる", async () => {
+      const dataPath = join(workDir, "null-rows.json");
+      await writeFile(dataPath, JSON.stringify([{ token: null }]), "utf-8");
+      const flowPath = join(workDir, "null-flow.yaml");
+      await writeFile(
+        flowPath,
+        `name: null flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok?token={{token}}"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions({ data: dataPath }));
+
+      expect(exitCode).toBe(3);
+      const report = readJson() as {
+        flows: Array<{ steps: Array<{ status: string; error?: string }> }>;
+      };
+      expect(report.flows[0]?.steps[0]?.status).toBe("error");
+      expect(report.flows[0]?.steps[0]?.error).toContain('template variable "token"');
+    });
+
+    it("一部の行だけアサーション失敗しても他のイテレーションには影響せず、run 全体は failed に集約される", async () => {
+      const dataPath = join(workDir, "agg-rows.json");
+      await writeFile(dataPath, JSON.stringify([{ path: "ok" }, { path: "missing" }]), "utf-8");
+      const flowPath = join(workDir, "agg-flow.yaml");
+      await writeFile(
+        flowPath,
+        `name: agg flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/{{path}}"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([flowPath], baseOptions({ data: dataPath }));
+
+      expect(exitCode).toBe(4);
+      const report = readJson() as {
+        status: string;
+        flows: Array<{ status: string; iteration?: number }>;
+      };
+      expect(report.status).toBe("failed");
+      expect(report.flows).toHaveLength(2);
+      expect(report.flows[0]?.status).toBe("passed");
+      expect(report.flows[1]?.status).toBe("failed");
+    });
+
+    it("履歴エントリに iteration が記録される", async () => {
+      const cwdSpy = process.cwd;
+      process.cwd = () => workDir;
+      try {
+        const dataPath = join(workDir, "history-rows.json");
+        await writeFile(dataPath, JSON.stringify([{ name: "alice" }, { name: "bob" }]), "utf-8");
+        const flowPath = join(workDir, "history-data-flow.yaml");
+        await writeFile(
+          flowPath,
+          `name: history data flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+          "utf-8",
+        );
+
+        const exitCode = await runCommand(
+          [flowPath],
+          baseOptions({ data: dataPath, history: true }),
+        );
+
+        expect(exitCode).toBe(0);
+        const historyContent = await readFile(historyFilePath(workDir), "utf-8");
+        const entries = historyContent
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as { iteration?: number });
+        expect(entries.map((entry) => entry.iteration)).toEqual([1, 2]);
+      } finally {
+        process.cwd = cwdSpy;
+      }
+    });
+
+    it("データファイルが配列でない場合、戻り値 2 になり ParseError メッセージ(ファイルパス含む)を stderr に出す", async () => {
+      const dataPath = join(workDir, "invalid-rows.json");
+      // オブジェクトの配列ではなく単一オブジェクト(loadDataFile のスキーマ違反)
+      await writeFile(dataPath, JSON.stringify({ name: "alice" }), "utf-8");
+      const flowPath = join(workDir, "data-invalid-flow.yaml");
+      await writeFile(flowPath, VALID_FLOW_YAML, "utf-8");
+
+      const exitCode = await runCommand([flowPath], baseOptions({ data: dataPath }));
+
+      expect(exitCode).toBe(2);
+      expect(stdoutSpy.join("")).toBe("");
+      expect(stderrSpy.join("")).toContain("klaus: parse error:");
+      expect(stderrSpy.join("")).toContain(dataPath);
+    });
+
+    it("--data の ParseError とフロー定義の ParseError が同時に起きた場合、戻り値 2 になり両方のメッセージが stderr に出る", async () => {
+      const dataPath = join(workDir, "invalid-rows-both.json");
+      await writeFile(dataPath, JSON.stringify({ name: "alice" }), "utf-8");
+      const brokenFlowPath = join(workDir, "broken-both-flow.yaml");
+      // request.url が無くスキーマ違反
+      await writeFile(
+        brokenFlowPath,
+        "name: broken flow\nsteps:\n  - name: step1\n    request:\n      method: GET\n",
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([brokenFlowPath], baseOptions({ data: dataPath }));
+
+      expect(exitCode).toBe(2);
+      expect(stdoutSpy.join("")).toBe("");
+      const stderrOutput = stderrSpy.join("");
+      expect(stderrOutput).toContain(dataPath);
+      expect(stderrOutput).toContain(brokenFlowPath);
+    });
+  });
 });

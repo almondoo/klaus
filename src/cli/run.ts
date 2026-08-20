@@ -1,8 +1,10 @@
 import { writeFile } from "node:fs/promises";
 import {
+  type DataRow,
   expandSecretVariants,
   type Flow,
   type LoadedFlowEntry,
+  loadDataFile,
   loadFlow,
   maskDeep,
   maskString,
@@ -45,13 +47,21 @@ export interface RunCommandOptions {
   replay?: string;
   /** --allow-protected 指定時、$protected: true の環境ファイルへの実行を許可する */
   allowProtected?: boolean;
+  /**
+   * --data <path> 指定時、データ駆動実行(Newman 方式)に使うデータファイル(JSON/YAML)のパス。
+   * 各行につき files 全体を1回ずつ実行する(行(外側) × フロー(内側)のイテレーション優先順)。
+   * loadDataFile の検証・エラー整形をそのまま再利用する(files の loadFlow と同じ、
+   * 実行前の並列読み込み → ParseError なら exit 2 という契約)
+   */
+  data?: string;
 }
 
 /**
  * run コマンド本体。
  * 0. --record と --replay、--json と --text の同時指定を検査(いずれも stderr + exit 1、何も実行しない)
- * 1. 全ファイルを loadFlow でパース検証(並列。1件でも ParseError なら exit 2、何も実行しない)
- * 2. runLoadedFlows で実行(1.で読み込み済みの Flow をそのまま渡し、二重パースを避ける。
+ * 1. 全ファイルを loadFlow でパース検証(--data 指定時は loadDataFile も並行して読み込む。
+ *    いずれか1件でも ParseError なら exit 2、何も実行しない)
+ * 2. runLoadedFlows で実行(1.で読み込み済みの Flow・データ行をそのまま渡し、二重パースを避ける。
  *    environments/*.yaml の ParseError もここで捕捉し exit 2 に丸める)
  * 3. 出力(text/JSON + 任意で JUnit ファイル)
  * 4. RunResult から exit code を決定して返す
@@ -87,23 +97,42 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   // 1. 実行前パース検証。loadFlow は読み込み専用のため各ファイルを並列に検証してよく、
   // Promise.all は入力順を保つため ParseError の報告順は元のシーケンシャル実行と変わらない
   // (validate.ts の並列検証と同じ方針)。ここで読み込んだ Flow はそのまま実行(2.)にも渡し、
-  // runFlows 経由での再読み込み(二重パース)を避ける。
+  // runFlows 経由での再読み込み(二重パース)を避ける。--data 指定時は loadDataFile も同じ
+  // Promise.all に加えて並行読み込みする(files のパース検証と独立しているため)。
   type LoadOutcome = { filePath: string; flow: Flow } | { filePath: string; error: ParseError };
-  const loadResults: LoadOutcome[] = await Promise.all(
-    files.map(async (filePath): Promise<LoadOutcome> => {
+  type DataLoadOutcome = { rows: DataRow[] } | { error: ParseError };
+  const [loadResults, dataLoadOutcome] = await Promise.all([
+    Promise.all(
+      files.map(async (filePath): Promise<LoadOutcome> => {
+        try {
+          const flow = await loadFlow(filePath);
+          return { filePath, flow };
+        } catch (error) {
+          if (error instanceof ParseError) {
+            return { filePath, error };
+          }
+          throw error;
+        }
+      }),
+    ),
+    (async (): Promise<DataLoadOutcome | undefined> => {
+      if (options.data === undefined) return undefined;
       try {
-        const flow = await loadFlow(filePath);
-        return { filePath, flow };
+        const rows = await loadDataFile(options.data);
+        return { rows };
       } catch (error) {
         if (error instanceof ParseError) {
-          return { filePath, error };
+          return { error };
         }
         throw error;
       }
-    }),
-  );
+    })(),
+  ]);
 
   const parseErrorMessages = loadResults.flatMap((r) => ("error" in r ? [r.error.message] : []));
+  if (dataLoadOutcome && "error" in dataLoadOutcome) {
+    parseErrorMessages.push(dataLoadOutcome.error.message);
+  }
   if (parseErrorMessages.length > 0) {
     for (const message of parseErrorMessages) {
       process.stderr.write(`klaus: parse error: ${message}\n`);
@@ -113,6 +142,8 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   const loadedFlows: LoadedFlowEntry[] = loadResults.flatMap((r) =>
     "flow" in r ? [{ filePath: r.filePath, flow: r.flow }] : [],
   );
+  const dataRows: DataRow[] | undefined =
+    dataLoadOutcome && "rows" in dataLoadOutcome ? dataLoadOutcome.rows : undefined;
 
   // 2. 実行(テキストモードは onStepStart/onStepComplete で逐次出力する)
   // stdout(text/JSON いずれも)と JUnit ファイル出力の両方で使う secrets({{env.X}} 等で解決した値)。
@@ -144,6 +175,7 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     variables: options.var,
     allowProtected: options.allowProtected,
     history: options.history,
+    dataRows,
     onStepStart: textReporter ? (context) => textReporter.onStepStart(context) : undefined,
     onStepComplete: textReporter ? (context) => textReporter.onStepComplete(context) : undefined,
     // 履歴書き込み失敗などステップの成否に影響しない警告を stderr に出力する

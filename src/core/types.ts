@@ -78,6 +78,8 @@ export interface FlowResult {
   status: "passed" | "failed" | "error";
   steps: StepResult[];
   durationMs: number;
+  /** --data 実行時のみ設定される 1 始まりのイテレーション番号(データ行ごとに同じフローが複数回実行される) */
+  iteration?: number;
 }
 
 /** 複数フローをまとめた実行結果(CLI の最終出力の元になる) */

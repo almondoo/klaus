@@ -155,6 +155,10 @@ program
     "--allow-protected",
     "allow running against an environment marked $protected: true (refused with exit code 3 otherwise)",
   )
+  .option(
+    "--data <path>",
+    "run data-driven: for each row in this JSON/YAML data file, run all given flow files once (iteration-major order). Row values land in the template env namespace, overriding same-named --var/environment values",
+  )
   .addHelpText(
     "after",
     `

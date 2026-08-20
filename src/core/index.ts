@@ -25,6 +25,8 @@ export {
   findCassetteEntry,
   loadCassetteIndex,
 } from "./cassette.js";
+export type { DataRow } from "./data.js";
+export { loadDataFile } from "./data.js";
 export { collectYamlFiles, discoverFlowCandidates, isFlowCandidate } from "./discovery.js";
 export {
   assertTrustedAncestorSource,

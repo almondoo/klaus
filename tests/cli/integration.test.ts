@@ -545,6 +545,43 @@ describe("cli integration", () => {
     await access(join(initWorkDir, "AGENTS.md"));
   });
 
+  it("(s) run --data: 2行のデータファイルで全フロー成功なら exit 0 になり、JSON 出力に iteration フィールドが含まれる", async () => {
+    const dataPath = join(workDir, "data-rows.json");
+    await writeFile(dataPath, JSON.stringify([{ name: "alice" }, { name: "bob" }]), "utf-8");
+    const flowPath = join(workDir, "data-flow.yaml");
+    await writeFile(
+      flowPath,
+      `name: data flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/echo"\n      query:\n        u: "{{name}}"\n    assert:\n      status: 200\n      bodyText:\n        contains: "{{name}}"\n`,
+      "utf-8",
+    );
+
+    const result = await runCli(["run", flowPath, "--no-history", "--data", dataPath], workDir);
+
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe("passed");
+    expect(parsed.flows).toHaveLength(2);
+    expect(parsed.flows[0].iteration).toBe(1);
+    expect(parsed.flows[1].iteration).toBe(2);
+  });
+
+  it("(t) run --data: 一部の行がアサーション失敗すると exit 4 になる", async () => {
+    const dataPath = join(workDir, "data-rows-fail.json");
+    await writeFile(dataPath, JSON.stringify([{ path: "ok" }, { path: "missing" }]), "utf-8");
+    const flowPath = join(workDir, "data-flow-fail.yaml");
+    await writeFile(
+      flowPath,
+      `name: data flow fail\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/{{path}}"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+
+    const result = await runCli(["run", flowPath, "--no-history", "--data", dataPath], workDir);
+
+    expect(result.status).toBe(4);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe("failed");
+  });
+
   it("(r) history / history show: 既存の履歴ディレクトリから JSON を出力し exit 0 になる", async () => {
     const historyWorkDir = join(workDir, "history-scenario");
     const historyDir = join(historyWorkDir, ".klaus", "history");

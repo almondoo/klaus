@@ -28,6 +28,7 @@ klaus run <files...> [options]
 | `--record <dir>` | record モード: 実際に HTTP リクエストを送信し、マスク済みの request/response ペアを `<dir>` のカセットに保存する | — |
 | `--replay <dir>` | replay モード: 実ネットワークではなく `<dir>` のカセットから HTTP レスポンスを再生する(記録外リクエストは exit code 3 で失敗する)。`--record` とは併用不可 | — |
 | `--allow-protected` | `$protected: true` の環境ファイルへの実行を許可する(未指定時は exit code 3 で拒否) | — |
+| `--data <path>` | データ駆動実行: この JSON/YAML データファイルの各行につき、指定した全フローファイルを1回ずつ実行する(詳細は後述の「データ駆動実行(--data)」を参照) | — |
 
 `--report` に `junit` 以外の値を渡すと stderr にエラーを出して exit 1。`--json` と `--text`、または `-e`/`--env` と `--env-file` を同時に指定した場合も同様に stderr にエラーを出して exit 1(何も実行しない)。この `-e`/`--env` と `--env-file` の併用エラーは、**コマンドラインで明示的に指定した** `-e`/`--env` に対してのみ発生する。`klaus.config.yaml` の `run.env` による既定値は、明示指定された `--env-file` と衝突せずそちらに道を譲る([CLI オプションの既定値](config.md)参照)。
 
@@ -35,7 +36,18 @@ klaus run <files...> [options]
 
 `--var` の値は <code v-pre>{{env.X}}</code>(OS 環境変数参照)と異なり、シークレットとして登録されず、出力でもマスクされない。真のシークレットを渡したい場合は OS 環境変数経由で <code v-pre>{{env.X}}</code> として参照し、[実行履歴](history.md)に記載のマスキングの恩恵を受けること。
 
-`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` は `klaus.config.yaml` で既定値を設定できる。`--var` と `--env-file` は設定できない。詳細は [CLI オプションの既定値](config.md) を参照。
+`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` は `klaus.config.yaml` で既定値を設定できる。`--var`・`--env-file`・`--data` は設定できない。詳細は [CLI オプションの既定値](config.md) を参照。
+
+### データ駆動実行(--data)
+
+`--data <path>` を指定すると、指定した JSON/YAML データファイルの**行ごとに**、指定した全フローファイルを1回ずつ実行する(Newman 方式のデータ駆動実行)。データファイルはオブジェクトの配列でなければならず、各値はスカラー(string / number / boolean / null)のみ許容する(ネストしたオブジェクト・配列は拒否される)。CSV には非対応(JSON/YAML のみ。新規依存を追加しないための判断。詳細は `src/core/data.ts` のスキーマ定義コメントを参照)。空配列も拒否される。
+
+- **反復順序**: 行(外側)× フロー(内側)の順で反復する — `flowA(行1)`, `flowB(行1)`, `flowA(行2)`, `flowB(行2)`, ...(Newman のコレクションランナーと同じイテレーション優先順)
+- **変数注入**: 各行の値は `--var` や環境ファイルと同じテンプレートの env 名前空間(裸の <code v-pre>{{name}}</code>)に入り、`--var` の同名キーを上書きし、`--var` は環境ファイルの同名キーを上書きする(この優先順位を維持)。capture 変数の解決順序には影響しない(従来どおり capture が env 名前空間より先に解決される)
+- **値の変換**: 行の値が number/boolean の場合は capture 変数と同様 `String(value)` で文字列化してから注入する。値が `null` のキーは**そもそも注入されない** — テンプレートで参照すると通常の未解決変数エラーになる(意図的な仕様)
+- **マスク対象外**: `--var` と同様、行の値はシークレットとして登録されず、出力でもマスクされない。真のシークレットには <code v-pre>{{env.X}}</code>(OS 環境変数参照)を使うこと
+- **集約**: 全イテレーションのフロー結果は同じ実行結果にフラットに並ぶ — いずれかのイテレーションが失敗すれば実行全体も失敗として扱われる(通常の複数フロー実行と同じ `aggregateStatus`・exit code のルール)
+- **レポートへの反映**: `--data` 使用時、各フロー結果には 1 始まりの `iteration` が付く。反映先は次のとおり: `--json` 出力の各フローエントリの `iteration` フィールド(追加のみの変更のため `version` は `2` のまま)、JUnit の `<testsuite name="...">` に付く `(iteration N)` サフィックス(各 `<testcase>` の `classname` はフロー名のまま)、text 出力のフローヘッダーに付く `(iteration N)` サフィックス、実行履歴 JSONL の各エントリの `iteration` フィールド(追加のみの変更のため `v` は `1` のまま)
 
 ## 出力モード
 

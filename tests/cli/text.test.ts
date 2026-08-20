@@ -84,6 +84,12 @@ describe("formatFlowHeader", () => {
     expect(header).toContain("\\r");
     expect(header).toContain("\\x07");
   });
+
+  it("--data 実行時(iteration 指定あり)は末尾に (iteration N) を付ける", () => {
+    expect(formatFlowHeader("data flow", "data.yaml", 2)).toBe(
+      "data flow (data.yaml) (iteration 2)",
+    );
+  });
 });
 
 describe("formatStepLine", () => {
@@ -337,5 +343,30 @@ describe("createTextReporter", () => {
       (text) => text.includes("(a.yaml)") || text.includes("(b.yaml)"),
     ).length;
     expect(headerCount).toBe(2);
+  });
+
+  it("--data 実行時、同じフロー名でも iteration が変われば再度ヘッダーを出力する", () => {
+    const written: string[] = [];
+    const reporter = createTextReporter(false, (text) => written.push(text));
+
+    reporter.onStepStart({ flow: "data flow", file: "data.yaml", step: "s1", iteration: 1 });
+    reporter.onStepComplete({
+      flow: "data flow",
+      file: "data.yaml",
+      result: buildStep({ name: "s1", status: "passed" }),
+      iteration: 1,
+    });
+    reporter.onStepStart({ flow: "data flow", file: "data.yaml", step: "s1", iteration: 2 });
+    reporter.onStepComplete({
+      flow: "data flow",
+      file: "data.yaml",
+      result: buildStep({ name: "s1", status: "passed" }),
+      iteration: 2,
+    });
+
+    const headers = written.filter((text) => text.includes("(data.yaml)"));
+    expect(headers).toHaveLength(2);
+    expect(headers[0]).toContain("(iteration 1)");
+    expect(headers[1]).toContain("(iteration 2)");
   });
 });
