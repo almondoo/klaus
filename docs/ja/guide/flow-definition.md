@@ -236,6 +236,32 @@ assert:
 - body が存在しない SSE / WS ステップでは ok:false になる。body が存在するが JSON としてパースできない HTTP レスポンスは、生の文字列のままスキーマ検証にかけられる(例: `type: object` を要求するスキーマなら失敗し、`type: string` なら通り得る)
 - スキーマ自体が不正で ajv がコンパイルできない場合も、例外にはならず ok:false のアサーション失敗として報告される
 
+## if
+
+```yaml
+steps:
+  - name: login
+    request: { method: POST, url: "{{env.baseUrl}}/login" }
+    assert: { status: 200 }
+  - name: cleanup
+    request: { method: DELETE, url: "{{env.baseUrl}}/session" }
+    if: steps.login.status == "passed"   # login が passed のときだけ実行する
+  - name: use-token
+    request: { method: GET, url: "{{env.baseUrl}}/me", headers: { Authorization: "Bearer {{token}}" } }
+    if: captures.token != ""
+```
+
+- `if` はステップを実行するかどうかのゲートになる。汎用の式言語では**なく**、意図的に小さく留めた文法(`src/core/condition.ts` が評価する)を持つ:
+  - `ref op literal`(`ref` は `steps.<name>.status` または `captures.<name>`、`op` は `==` / `!=`、`literal` はダブルクォート文字列・シングルクォート文字列・空白を含まないベアトークンのいずれか)
+  - `stepName` / `captureName` に `.` や空白は含められない
+  - クォート文字列はエスケープシーケンスに対応しない。値に反対側のクォート文字を含めたい場合は逆のクォート種別で囲む(例: `"` を含めたいならシングルクォートで囲む)
+  - 比較は常に文字列として行う(`captures.<name>` 側の値のみ `String()` で強制変換する。`steps.<name>.status` は元々文字列)
+- **`if` の中では <code v-pre>{{...}}</code> テンプレート展開は行われない。**それまでのキャプチャは <code v-pre>{{name}}</code> ではなく `captures.<name>` で直接参照する
+- `steps.<name>.status` は同じフロー内で**それより前**にあり、かつ実行が完了しているステップのみ参照できる(`continueOnError` で継続したステップも、その実際の `failed` / `error` ステータスが後続の条件式から見える。これが `if` と `continueOnError` を組み合わせる狙いそのもの — 例: setup が passed のときだけ後始末を実行する)
+- 条件式が **false** の場合、ステップは**実行せず** `skipped` になる(リクエストは送られず `retry` も適用されない)。`error` には `"skipped because condition not met: <expression>"` が入る。これはフローの残りステップをスキップしない — 後続ステップは通常どおり実行される(「前のステップの失敗」による skip とは別理由。[ステップ失敗時のフロー挙動](#ステップ失敗時のフロー挙動) を参照)
+- 条件式が**例外を投げた**場合(文法エラー、または未知のステップ/capture 名の参照)、そのステップは元のメッセージ(利用可能なステップ/capture 名一覧を含むことがある)とともに `error` になり、後述の通常のエラーセマンティクスに従う(`continueOnError` が無ければ残りステップは skipped になる)
+- それより前の未処理の失敗による `skipRest`(後述)が優先する: フローが既に残りステップをスキップ中の場合、このステップの `if` はそもそも評価されない
+
 ## retry
 
 ```yaml
@@ -270,7 +296,8 @@ steps:
 
 ## ステップ失敗時のフロー挙動
 
-- ステップが **failed**(アサーション失敗)または **error**(runtime エラー)になると、そのフローの**残りステップは実行されず skipped** として記録される。ただし失敗したステップに `continueOnError: true` が設定されている場合は残りステップが実行される([continueOnError](#continueonerror) を参照)
+- ステップが **failed**(アサーション失敗)または **error**(runtime エラー)になると、そのフローの**残りステップは実行されず skipped**(`error: "skipped because a previous step failed"`)として記録される。ただし失敗したステップに `continueOnError: true` が設定されている場合は残りステップが実行される([continueOnError](#continueonerror) を参照)
+- [`if`](#if) の条件式が false になったステップも `skipped` として記録されるが、理由は別(`error: "skipped because condition not met: <expression>"`)で、上記の「残りステップをスキップする」挙動は**発生しない** — いずれの場合もフローは次のステップから実行を続ける
 - 複数フローファイルを渡した場合、あるフローが失敗しても**他のフローは実行される**
 - 最終 exit code は [CLI リファレンス](cli.md#exit-code) の優先ルールに従う
 

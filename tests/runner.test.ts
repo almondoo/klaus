@@ -1524,3 +1524,252 @@ describe("step.continueOnError", () => {
     }
   });
 });
+
+describe("step.if", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let cwd: string;
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+  });
+
+  afterEach(async () => {
+    if (cwd) {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("条件が true の場合、ステップは通常通り実行される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-if-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "if true flow",
+        steps: [
+          { name: "step1", request: { method: "GET", url: baseUrl }, assert: { status: 200 } },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            if: "steps.step1.status == 'passed'",
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "if-true-flow.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(result.steps[1]?.status).toBe("passed");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("条件が false の場合、リクエストを送らず skipped になる(exact message)。後続ステップは通常通り実行され、履歴にも記録される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-if-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "if false flow",
+        steps: [
+          { name: "step1", request: { method: "GET", url: baseUrl }, assert: { status: 200 } },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            if: "steps.step1.status == 'failed'",
+            assert: { status: 200 },
+          },
+          { name: "step3", request: { method: "GET", url: baseUrl }, assert: { status: 200 } },
+        ],
+      });
+
+      const captured: HistoryEntry[] = [];
+      const result = await executeFlow(flow, "if-false-flow.yaml", {
+        cwd,
+        history: (entry) => {
+          captured.push(entry);
+        },
+      });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(result.steps[1]?.status).toBe("skipped");
+      expect(result.steps[1]?.error).toBe(
+        "skipped because condition not met: steps.step1.status == 'failed'",
+      );
+      expect(result.steps[1]?.attempts).toBeUndefined();
+      expect(result.steps[2]?.status).toBe("passed");
+
+      const entry = captured.find((e) => e.step === "step2");
+      expect(entry?.status).toBe("skipped");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("captures.<name> を条件式に使える(== の一致・!= の不一致をどちらも判定できる)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-if-"));
+    const server = createServer((req, res) => {
+      if (req.url === "/status") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ state: "active" }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "if capture flow",
+        steps: [
+          {
+            name: "check-status",
+            request: { method: "GET", url: `${baseUrl}/status` },
+            capture: { state: "$.state" },
+          },
+          {
+            name: "when-active",
+            request: { method: "GET", url: baseUrl },
+            if: "captures.state == 'active'",
+          },
+          {
+            name: "when-not-inactive",
+            request: { method: "GET", url: baseUrl },
+            if: "captures.state != 'inactive'",
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "if-capture-flow.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(result.steps[1]?.status).toBe("passed");
+      expect(result.steps[2]?.status).toBe("passed");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("continueOnError で failed のまま継続した前段ステップの実ステータスを条件式が参照できる", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-if-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "if continueOnError flow",
+        steps: [
+          {
+            name: "step1",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 999 },
+            continueOnError: true,
+          },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            if: "steps.step1.status == 'failed'",
+          },
+          {
+            name: "step3",
+            request: { method: "GET", url: baseUrl },
+            if: "steps.step1.status == 'passed'",
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "if-continue-on-error-flow.yaml", {
+        cwd,
+        history: false,
+      });
+
+      expect(result.steps[0]?.status).toBe("failed");
+      expect(result.steps[1]?.status).toBe("passed");
+      expect(result.steps[2]?.status).toBe("skipped");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("未知のステップ名を参照する条件式は error になり(利用可能なステップ名一覧つき)、後続ステップは skipped になる", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-if-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "if unknown step flow",
+        steps: [
+          { name: "step1", request: { method: "GET", url: baseUrl }, assert: { status: 200 } },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            if: "steps.nonexistent.status == 'passed'",
+          },
+          { name: "step3", request: { method: "GET", url: baseUrl } },
+        ],
+      });
+
+      // 条件式エラーのステップは履歴に書かれない(executeStep の catch と同じ挙動)ことも検証する
+      const captured: HistoryEntry[] = [];
+      const result = await executeFlow(flow, "if-unknown-step-flow.yaml", {
+        cwd,
+        history: (entry) => {
+          captured.push(entry);
+        },
+      });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(result.steps[1]?.status).toBe("error");
+      expect(result.steps[1]?.error).toMatch(
+        /unknown step "nonexistent" in condition \(available steps: step1\)/,
+      );
+      expect(result.steps[2]?.status).toBe("skipped");
+      expect(captured.find((entry) => entry.step === "step2")).toBeUndefined();
+      expect(captured.find((entry) => entry.step === "step1")?.status).toBe("passed");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("文法に合わない条件式は error になる", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-if-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "if malformed flow",
+        steps: [
+          { name: "step1", request: { method: "GET", url: baseUrl }, if: "not a valid condition" },
+        ],
+      });
+
+      const result = await executeFlow(flow, "if-malformed-flow.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.status).toBe("error");
+    } finally {
+      await closeServer(server);
+    }
+  });
+});

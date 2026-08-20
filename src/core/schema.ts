@@ -370,6 +370,18 @@ export type RetryDef = z.infer<typeof retrySchema>;
 export const stepSchema = z
   .strictObject({
     name: z.string().min(1).describe("Step name. Must be non-empty and unique within the flow."),
+    if: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Condition expression gating this step's execution. Grammar: " +
+          '"steps.<name>.status" or "captures.<name>" followed by "==" or "!=" and a literal ' +
+          "(quoted string or bare token). No {{...}} template rendering is applied inside this " +
+          "expression. When the condition evaluates to false, the step becomes `skipped` without " +
+          "executing (no retry, no request). A malformed expression or unknown step/capture name " +
+          "makes the step `error`. See src/core/condition.ts for the exact grammar.",
+      ),
     request: requestSchema
       .optional()
       .describe("HTTP request definition. Exactly one of `request`, `ws`, or `use` must be set."),

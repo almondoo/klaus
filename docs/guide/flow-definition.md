@@ -236,6 +236,32 @@ Common semantics for `events` / `messages`:
 - SSE / WS steps, which have no body, always yield ok:false. An HTTP response whose body exists but fails to parse as JSON is validated against the schema as the raw string (e.g. a schema requiring `type: object` fails, while `type: string` may pass)
 - If the schema itself is invalid and ajv fails to compile it, this does not throw; it's reported as an ok:false assertion failure instead
 
+## if
+
+```yaml
+steps:
+  - name: login
+    request: { method: POST, url: "{{env.baseUrl}}/login" }
+    assert: { status: 200 }
+  - name: cleanup
+    request: { method: DELETE, url: "{{env.baseUrl}}/session" }
+    if: steps.login.status == "passed"   # only run when login passed
+  - name: use-token
+    request: { method: GET, url: "{{env.baseUrl}}/me", headers: { Authorization: "Bearer {{token}}" } }
+    if: captures.token != ""
+```
+
+- `if` gates whether the step runs at all. It is a small, intentionally limited condition grammar — **not** a general expression language — evaluated by `src/core/condition.ts`:
+  - `ref op literal`, where `ref` is `steps.<name>.status` or `captures.<name>`, `op` is `==` or `!=`, and `literal` is a double-quoted string, a single-quoted string, or a bare token with no whitespace
+  - `stepName` / `captureName` may not contain `.` or whitespace
+  - Quoted literals do not support escape sequences; to include the other quote character in a value, wrap it in the opposite quote style (e.g. use single quotes to include a `"`)
+  - Comparison is always done as a string (the `captures.<name>` side is coerced with `String()`; `steps.<name>.status` is already a string)
+- **No <code v-pre>{{...}}</code> template rendering is applied inside `if`.** Reference prior captures directly via `captures.<name>` (not <code v-pre>{{name}}</code>)
+- `steps.<name>.status` can only reference a step that appears **earlier** in the same flow and has already completed (including one that finished via `continueOnError`, in which case its real `failed`/`error` status is visible to later conditions — this is the point of combining `if` with `continueOnError`, e.g. running cleanup only when setup passed)
+- When the condition evaluates to **false**, the step becomes `skipped` **without executing** (no request is sent, `retry` does not apply) with `error: "skipped because condition not met: <expression>"`. This does not skip the rest of the flow — later steps still run as normal (see [Flow Behavior on Step Failure](#flow-behavior-on-step-failure) for the distinct "previous step failed" skip reason)
+- When the condition **throws** — a malformed expression, or a reference to an unknown step/capture name — the step becomes `error` with the underlying message (e.g. listing the available step/capture names), and this follows the normal error semantics described below (remaining steps are skipped unless `continueOnError` is set)
+- A `skipRest` in effect from an earlier unhandled failure (see below) takes priority: if the flow is already skipping remaining steps, `if` is not even evaluated for this step
+
 ## retry
 
 ```yaml
@@ -270,7 +296,8 @@ steps:
 
 ## Flow Behavior on Step Failure
 
-- When a step becomes **failed** (assertion failure) or **error** (runtime error), the **remaining steps in that flow are not run and are recorded as skipped** — unless the failing step has `continueOnError: true` set, in which case the remaining steps still run (see [continueOnError](#continueonerror))
+- When a step becomes **failed** (assertion failure) or **error** (runtime error), the **remaining steps in that flow are not run and are recorded as skipped** (`error: "skipped because a previous step failed"`) — unless the failing step has `continueOnError: true` set, in which case the remaining steps still run (see [continueOnError](#continueonerror))
+- A step whose [`if`](#if) condition evaluates to false is also recorded as `skipped`, but for a different reason (`error: "skipped because condition not met: <expression>"`) and **without** triggering the above "remaining steps skipped" behavior — the flow keeps running from the next step either way
 - When multiple flow files are passed, **other flows still run** even if one flow fails
 - The final exit code follows the priority rules in the [CLI Reference](cli.md#exit-code)
 

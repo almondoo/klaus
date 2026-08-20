@@ -9,6 +9,7 @@ import {
   findCassetteEntry,
   loadCassetteIndex,
 } from "./cassette.js";
+import { evaluateCondition } from "./condition.js";
 import { isProtectedEnvironment, loadEnvironment, toTemplateVariables } from "./env.js";
 import { KlausError, RuntimeError } from "./errors.js";
 import type { HistoryEntry } from "./history.js";
@@ -626,6 +627,10 @@ export async function executeFlow(
   // onSecrets で既に通知済みの値(重複通知を避けるため、ステップをまたいで蓄積する)
   const notifiedSecrets = new Set<string>();
   const steps: StepResult[] = [];
+  // if 条件式が参照する「ここまでに完了したステップの status」(ステップ名 → status)。
+  // continueOnError で継続したステップも実際の status(failed/error)をそのまま入れる
+  // (「continueOnError で失敗した前段の実ステータスを条件が見られる」ことが本機能の狙いのため)。
+  const stepStatuses = new Map<string, string>();
   const flowStartedAt = performance.now();
   let skipRest = false;
 
@@ -649,50 +654,89 @@ export async function executeFlow(
         assertions: [],
       };
     } else {
-      const templateContext: TemplateContext = {
-        captures,
-        // --var で渡した変数は環境ファイルの値を上書きする(env namespace 内での優先順位)
-        env: { ...toTemplateVariables(environment), ...options.variables },
-        secrets,
-      };
-      // step.retry がある場合、failed/error の間だけ再試行する(passed で即打ち切り)。
-      // 中間試行の結果は捨て、最終試行のみを記録する(履歴・onStepStart/onStepComplete も1回ずつ)。
-      const maxAttempts = step.retry ? step.retry.count + 1 : 1;
-      let attempt = 0;
-      let outcome: {
-        result: StepResult;
-        captured: Record<string, unknown>;
-        historyEntry?: HistoryEntry;
-      };
-      do {
-        attempt++;
-        if (attempt > 1 && step.retry) {
-          await sleep(step.retry.intervalMs);
-        }
-        outcome = await executeStep(
-          step,
-          templateContext,
-          runId,
-          flow.name,
-          activeRecording,
-          protectedBlockedError,
-        );
-      } while (
-        step.retry &&
-        attempt < maxAttempts &&
-        (outcome.result.status === "failed" || outcome.result.status === "error")
-      );
-
-      if (step.retry) {
-        outcome.result = { ...outcome.result, attempts: attempt };
-        if (outcome.historyEntry) {
-          outcome.historyEntry = { ...outcome.historyEntry, attempts: attempt };
+      // skipRest によるスキップが優先されるため、条件式の評価はここに来た場合のみ行う。
+      // 評価結果は「true(実行する)」「false(条件不成立でスキップ)」「例外(不正な式・未知の名前)」の3通り。
+      let conditionMet = true;
+      let conditionError: RuntimeError | undefined;
+      if (step.if !== undefined) {
+        try {
+          conditionMet = evaluateCondition(step.if, { stepStatuses, captures });
+        } catch (error) {
+          conditionError = error instanceof RuntimeError ? error : new RuntimeError(String(error));
         }
       }
 
-      result = outcome.result;
-      captured = outcome.captured;
-      historyEntry = outcome.historyEntry;
+      if (conditionError) {
+        // 不正な条件式(文法エラー・未知のステップ/capture 名)はリクエストを送らずステップを error にする。
+        // executeStep の catch 節(RuntimeError → ステップ error)と同じ扱いに揃え、historyEntry は書かない
+        // (executeStep の catch 節も historyEntry を返さないため、一貫性を優先しここでも undefined のままにする)。
+        const erroredAt = new Date().toISOString();
+        result = {
+          name: step.name,
+          status: "error",
+          startedAt: erroredAt,
+          durationMs: 0,
+          assertions: [],
+          error: conditionError.message,
+        };
+      } else if (!conditionMet) {
+        const skippedStartedAt = new Date().toISOString();
+        result = {
+          ...buildStepResultBase(step.name, skippedStartedAt, 0, "skipped"),
+          assertions: [],
+          error: `skipped because condition not met: ${step.if}`,
+        };
+        // skipRest によるスキップと同様、リクエストを送っていないため request/response を持たない
+        historyEntry = {
+          ...buildHistoryBase(runId, flow.name, step.name, skippedStartedAt, 0, "skipped"),
+          assertions: [],
+        };
+      } else {
+        const templateContext: TemplateContext = {
+          captures,
+          // --var で渡した変数は環境ファイルの値を上書きする(env namespace 内での優先順位)
+          env: { ...toTemplateVariables(environment), ...options.variables },
+          secrets,
+        };
+        // step.retry がある場合、failed/error の間だけ再試行する(passed で即打ち切り)。
+        // 中間試行の結果は捨て、最終試行のみを記録する(履歴・onStepStart/onStepComplete も1回ずつ)。
+        const maxAttempts = step.retry ? step.retry.count + 1 : 1;
+        let attempt = 0;
+        let outcome: {
+          result: StepResult;
+          captured: Record<string, unknown>;
+          historyEntry?: HistoryEntry;
+        };
+        do {
+          attempt++;
+          if (attempt > 1 && step.retry) {
+            await sleep(step.retry.intervalMs);
+          }
+          outcome = await executeStep(
+            step,
+            templateContext,
+            runId,
+            flow.name,
+            activeRecording,
+            protectedBlockedError,
+          );
+        } while (
+          step.retry &&
+          attempt < maxAttempts &&
+          (outcome.result.status === "failed" || outcome.result.status === "error")
+        );
+
+        if (step.retry) {
+          outcome.result = { ...outcome.result, attempts: attempt };
+          if (outcome.historyEntry) {
+            outcome.historyEntry = { ...outcome.historyEntry, attempts: attempt };
+          }
+        }
+
+        result = outcome.result;
+        captured = outcome.captured;
+        historyEntry = outcome.historyEntry;
+      }
     }
 
     // 履歴書き込みはステップ結果確定後・主 try/catch の外で行う。
@@ -721,6 +765,7 @@ export async function executeFlow(
     }
 
     steps.push(result);
+    stepStatuses.set(step.name, result.status);
     Object.assign(captures, captured);
 
     // continueOnError が true の場合、retry を使い切った後の failed/error でも
