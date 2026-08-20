@@ -10,7 +10,7 @@ import {
 } from "yaml";
 import { ZodError } from "zod";
 import { ParseError } from "./errors.js";
-import { isPathWithinDir } from "./path-guard.js";
+import { isPathWithinDir, isRealPathWithinDir } from "./path-guard.js";
 import {
   type AssertDef,
   type Environment,
@@ -392,7 +392,10 @@ async function resolveUseStep(
 
   const resolvedPath = resolve(dirname(filePath), useTarget);
   const cwd = resolve(process.cwd());
-  if (!isPathWithinDir(cwd, resolvedPath)) {
+  // 文字列上の境界チェック(isPathWithinDir)に加え、シンボリックリンク解決後の実パスでも
+  // 境界チェックを行う(isRealPathWithinDir)。プロジェクト配下に仕込まれたシンボリックリンク
+  // 経由で cwd の外を読み出す攻撃を防ぐため
+  if (!isPathWithinDir(cwd, resolvedPath) || !isRealPathWithinDir(cwd, resolvedPath)) {
     throw new UseResolutionError(
       `step.use resolves outside the project directory: "${useTarget}"`,
       issuePath,

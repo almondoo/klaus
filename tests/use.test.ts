@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -520,6 +520,127 @@ steps:
     expect(flow.name).toBe("ep check");
     expect(flow.steps).toHaveLength(1);
     expect(flow.steps[0]?.request?.url).toBe("https://example.com/ep");
+  });
+
+  describe("use: シンボリックリンク境界(isRealPathWithinDir)", () => {
+    let outsideDir: string;
+
+    beforeEach(async () => {
+      outsideDir = await mkdtemp(join(tmpRoot, "klaus-use-symlink-outside-"));
+    });
+
+    afterEach(async () => {
+      await rm(outsideDir, { recursive: true, force: true });
+    });
+
+    it("プロジェクト配下のシンボリックリンクが cwd の外を指す場合は hint 付き FlowIssue で拒否する(readFile が追随する前に検知する)", async () => {
+      await writeFile(
+        join(outsideDir, "outside.yaml"),
+        `
+name: outside
+steps:
+  - name: check
+    request:
+      method: GET
+      url: "https://example.com/outside"
+`,
+        "utf-8",
+      );
+      await mkdir(join(dir, "api"), { recursive: true });
+      await symlink(join(outsideDir, "outside.yaml"), join(dir, "api", "linked.yaml"));
+      const callerPath = await writeYaml(
+        "flows/f.yaml",
+        `
+name: f
+steps:
+  - name: step1
+    use: ../api/linked.yaml
+`,
+      );
+
+      // resolveUseStep の境界は process.cwd() 基準のため、テストの隔離のため
+      // process.cwd() を一時的にこの fixture の dir へ差し替える(tests/cli/run.test.ts と同じ作法)
+      const cwdSpy = process.cwd;
+      process.cwd = () => dir;
+      try {
+        const result = await validateFlowFile(callerPath);
+        expect(result.valid).toBe(false);
+        if (result.valid) return;
+        expect(result.errors[0]?.message).toContain("outside the project directory");
+        expect(result.errors[0]?.hint).toBeDefined();
+      } finally {
+        process.cwd = cwdSpy;
+      }
+    });
+
+    it("プロジェクト配下の通常ファイル(シンボリックリンクでない)は従来どおり use: で解決される", async () => {
+      await writeYaml(
+        "api/ep.yaml",
+        `
+name: ep
+steps:
+  - name: check
+    request:
+      method: GET
+      url: "https://example.com/ep"
+`,
+      );
+      const callerPath = await writeYaml(
+        "flows/f.yaml",
+        `
+name: f
+steps:
+  - name: step1
+    use: ../api/ep.yaml
+`,
+      );
+
+      const cwdSpy = process.cwd;
+      process.cwd = () => dir;
+      try {
+        const flow = await loadFlow(callerPath);
+        expect(flow.steps[0]?.request?.url).toBe("https://example.com/ep");
+      } finally {
+        process.cwd = cwdSpy;
+      }
+    });
+
+    it("cwd 自身がシンボリックリンク経由で到達される場合でも誤って拒否しない(境界ディレクトリの realpath 解決)", async () => {
+      await writeYaml(
+        "api/ep.yaml",
+        `
+name: ep
+steps:
+  - name: check
+    request:
+      method: GET
+      url: "https://example.com/ep"
+`,
+      );
+      await writeYaml(
+        "flows/f.yaml",
+        `
+name: f
+steps:
+  - name: step1
+    use: ../api/ep.yaml
+`,
+      );
+      // dir 自体をシンボリックリンク経由(linkedDir)で参照し、process.cwd() をそちらに差し替える
+      const linkedDir = join(tmpRoot, `klaus-use-symlink-link-${process.pid}-${Date.now()}`);
+      await symlink(dir, linkedDir, "dir");
+      const linkedCallerPath = join(linkedDir, "flows", "f.yaml");
+
+      const cwdSpy = process.cwd;
+      process.cwd = () => linkedDir;
+      try {
+        const flow = await loadFlow(linkedCallerPath);
+        expect(flow.steps[0]?.request?.url).toBe("https://example.com/ep");
+      } finally {
+        process.cwd = cwdSpy;
+        await rm(linkedDir, { force: true });
+      }
+    });
   });
 });
 

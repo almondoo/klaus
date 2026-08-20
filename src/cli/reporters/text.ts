@@ -58,21 +58,24 @@ export function isJsonOutputMode(json?: boolean): boolean {
 
 /** フロー切り替わり時のヘッダー行(フロー名・ファイル) */
 export function formatFlowHeader(flowName: string, file: string): string {
-  return `${flowName} (${file})`;
+  // flowName/file は flow YAML の name / ファイルパス由来で攻撃者制御になり得るためサニタイズする
+  return `${sanitizeForTerminal(flowName)} (${sanitizeForTerminal(file)})`;
 }
 
 /** 1 ステップ分の結果行。FAIL の場合は失敗アサーションの詳細を複数行で付加する */
 export function formatStepLine(result: StepResult, useColor: boolean): string {
   const durationMs = Math.round(result.durationMs);
+  // ステップ名は flow YAML の name 由来で攻撃者制御になり得るため、truncate/colorize より前にサニタイズする
+  const name = sanitizeForTerminal(result.name);
 
   if (result.status === "passed") {
     const status = result.response?.status ?? "-";
-    return colorize(`  PASS ${result.name} (${status}, ${durationMs}ms)`, "green", useColor);
+    return colorize(`  PASS ${name} (${status}, ${durationMs}ms)`, "green", useColor);
   }
 
   if (result.status === "failed") {
     const status = result.response?.status ?? "-";
-    const lines = [colorize(`  FAIL ${result.name} (${status}, ${durationMs}ms)`, "red", useColor)];
+    const lines = [colorize(`  FAIL ${name} (${status}, ${durationMs}ms)`, "red", useColor)];
     for (const assertion of result.assertions.filter((a) => !a.ok)) {
       // 制御文字のサニタイズは truncate/colorize より前に行う(colorize が付与する ANSI コードを壊さないため)
       lines.push(`    - ${truncate(sanitizeForTerminal(assertion.message))}`);
@@ -81,13 +84,13 @@ export function formatStepLine(result: StepResult, useColor: boolean): string {
   }
 
   if (result.status === "skipped") {
-    const reason = result.error ? `: ${result.error}` : "";
-    return colorize(`  SKIP ${result.name}${reason}`, "yellow", useColor);
+    const reason = result.error ? `: ${sanitizeForTerminal(result.error)}` : "";
+    return colorize(`  SKIP ${name}${reason}`, "yellow", useColor);
   }
 
   // error(runtime エラー)
   const message = truncate(sanitizeForTerminal(result.error ?? "unknown error"));
-  return colorize(`  ERROR ${result.name}: ${message}`, "red", useColor);
+  return colorize(`  ERROR ${name}: ${message}`, "red", useColor);
 }
 
 /** ステップ配列を4状態(passed/failed/error/skipped)で集計した結果 */

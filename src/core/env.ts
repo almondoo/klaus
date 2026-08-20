@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseDocument } from "yaml";
 import { KlausError, ParseError } from "./errors.js";
 import { loadEnvironmentFile } from "./loader.js";
-import { isPathWithinDir } from "./path-guard.js";
+import { isPathWithinDir, isRealPathWithinDir } from "./path-guard.js";
 import type { Environment } from "./schema.js";
 
 /**
@@ -29,9 +29,12 @@ export function toTemplateVariables(environment: Environment): Record<string, st
  * envName に `..` やセパレータ・絶対パスが含まれる場合に検知する(path traversal 防止。
  * UI サーバー経由では env がリクエストボディ由来の untrusted 入力になるため必須)。
  * ファイルシステムへアクセスする前に必ず呼び出すこと。
+ * 文字列上の境界チェック(isPathWithinDir)に加え、シンボリックリンク解決後の実パスでも
+ * 境界チェックを行う(isRealPathWithinDir)。environments/ 配下に他ユーザーが仕込んだ
+ * シンボリックリンク(例: prod.yaml -> /etc/secrets)経由で境界外を読み出す攻撃を防ぐため。
  */
 function assertWithinEnvironmentsDir(envDir: string, resolvedPath: string, envName: string): void {
-  if (!isPathWithinDir(envDir, resolvedPath)) {
+  if (!isPathWithinDir(envDir, resolvedPath) || !isRealPathWithinDir(envDir, resolvedPath)) {
     throw new ParseError(
       `invalid environment name (resolves outside the environments dir): ${envName}`,
     );

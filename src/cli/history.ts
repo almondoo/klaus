@@ -1,5 +1,6 @@
 import type { HistoryEntry } from "../core/index.js";
 import { getHistoryPage, readAllHistoryEntries, resolveHistoryEntryStatus } from "../core/index.js";
+import { sanitizeForTerminal } from "./reporters/sanitize.js";
 import { isJsonOutputMode } from "./reporters/text.js";
 
 /**
@@ -48,12 +49,18 @@ function pickFields(entry: HistoryEntry, fields: string[]): Record<string, unkno
   return result;
 }
 
-/** テキスト表の1セル分の値を文字列化する(オブジェクト/配列は compact JSON にする) */
+/**
+ * テキスト表の1セル分の値を文字列化する(オブジェクト/配列は compact JSON にする)。
+ * flow/step 等は flow YAML の name 由来、request/response/assertions 等は外部サーバー由来で
+ * いずれも攻撃者制御になり得るため、ここで一括してサニタイズする。renderTable は formatCell の
+ * 返り値から列幅を計算するので、後段でサニタイズすると幅計算と実際の出力がずれてしまう
+ * (このため sanitize はここでしか行わない)。
+ */
 function formatCell(value: unknown): string {
   if (value === undefined) return "";
-  if (typeof value === "string") return value;
+  if (typeof value === "string") return sanitizeForTerminal(value);
   if (typeof value === "number" || typeof value === "boolean") return String(value);
-  return JSON.stringify(value);
+  return sanitizeForTerminal(JSON.stringify(value));
 }
 
 /** フィールド名をヘッダーにした簡易テキスト表(列は2スペース区切り、左寄せパディング)を組み立てる */

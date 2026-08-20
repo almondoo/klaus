@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -148,6 +148,60 @@ describe("resolveEnvironmentPath", () => {
         }
       },
     );
+  });
+});
+
+describe("resolveEnvironmentPath / シンボリックリンク境界(isRealPathWithinDir)", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let root: string;
+  let outsideRoot: string;
+
+  beforeEach(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    root = await mkdtemp(join(tmpRoot, "klaus-env-symlink-"));
+    outsideRoot = await mkdtemp(join(tmpRoot, "klaus-env-symlink-outside-"));
+    // 上方探索が実リポジトリ側まで及ばないよう境界にする(resolveEnvironmentPath の他テストと同様の理由)
+    await mkdir(join(root, ".git"), { recursive: true });
+    await mkdir(join(root, "environments"), { recursive: true });
+    await writeFile(
+      join(root, "environments", "local.yaml"),
+      "baseUrl: http://localhost:3000\n",
+      "utf-8",
+    );
+  });
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+    await rm(outsideRoot, { recursive: true, force: true });
+  });
+
+  it("environments/ 配下のシンボリックリンクが境界外を指す場合は ParseError で拒否する(readFile が追随する前に検知する)", async () => {
+    await writeFile(join(outsideRoot, "secret.yaml"), "apiKey: leaked\n", "utf-8");
+    await symlink(join(outsideRoot, "secret.yaml"), join(root, "environments", "prod.yaml"));
+
+    expect(() => resolveEnvironmentPath(root, "prod")).toThrow(ParseError);
+  });
+
+  it("environments/ 配下の通常ファイル(シンボリックリンクでない)は従来どおり解決される", () => {
+    expect(resolveEnvironmentPath(root, "local")).toBe(join(root, "environments", "local.yaml"));
+  });
+
+  it("environments/<name>.yaml がまだ存在しない場合(新規作成前)も境界チェックを通過する(saveEnvironment の新規ファイルケース)", () => {
+    expect(resolveEnvironmentPath(root, "brand-new")).toBe(
+      join(root, "environments", "brand-new.yaml"),
+    );
+  });
+
+  it("cwd 自身がシンボリックリンク経由で到達される場合でも誤って拒否しない(境界ディレクトリの realpath 解決)", async () => {
+    const linkedCwd = join(tmpRoot, `klaus-env-symlink-link-${process.pid}-${Date.now()}`);
+    await symlink(root, linkedCwd, "dir");
+    try {
+      expect(resolveEnvironmentPath(linkedCwd, "local")).toBe(
+        join(linkedCwd, "environments", "local.yaml"),
+      );
+    } finally {
+      await rm(linkedCwd, { force: true });
+    }
   });
 });
 

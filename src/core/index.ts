@@ -62,7 +62,7 @@ export {
   validateFlowFile,
   validateFlowYaml,
 } from "./loader.js";
-export { isPathWithinDir } from "./path-guard.js";
+export { isPathWithinDir, isRealPathWithinDir } from "./path-guard.js";
 export type {
   ExecuteSingleRequestOptions,
   ExecuteSingleRequestResult,

@@ -74,6 +74,16 @@ describe("formatFlowHeader", () => {
       "認証フロー (api/auth-flow.yaml)",
     );
   });
+
+  it("フロー名・ファイルに制御文字が含まれても可視エスケープに変換する", () => {
+    const header = formatFlowHeader("flow\x1b[32mPASS fake\x1b[0m\n", "file\r\x07.yaml");
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: 生の制御バイトが残っていないことを検証する意図的な正規表現
+    expect(header).not.toMatch(/[\x00-\x1f\x7f]/);
+    expect(header).toContain("\\x1B[32m");
+    expect(header).toContain("\\n");
+    expect(header).toContain("\\r");
+    expect(header).toContain("\\x07");
+  });
 });
 
 describe("formatStepLine", () => {
@@ -216,6 +226,39 @@ describe("formatStepLine: 制御文字のサニタイズ", () => {
     expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
     expect(line).toContain("\\x1B[31m");
     expect(line).toContain("\\n");
+  });
+
+  it("PASS: result.name(flow YAML の name)に制御文字が含まれても可視エスケープに変換する", () => {
+    const line = formatStepLine(
+      buildStep({
+        name: "login\x1b[32mPASS fake\x1b[0m\n",
+        status: "passed",
+      }),
+      false,
+    );
+    expect(line.split("\n")).toHaveLength(1);
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: 生の制御バイトが残っていないことを検証する意図的な正規表現
+    expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
+    expect(line).toContain("\\x1B[32m");
+    expect(line).toContain("\\n");
+  });
+
+  it("SKIP: result.name と reason(result.error)に制御文字が含まれても可視エスケープに変換する", () => {
+    const line = formatStepLine(
+      buildStep({
+        name: "get-me\x1b[33mSKIP fake",
+        status: "skipped",
+        error: "skipped\nbecause\r\x07 previous step failed",
+      }),
+      false,
+    );
+    expect(line.split("\n")).toHaveLength(1);
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: 生の制御バイトが残っていないことを検証する意図的な正規表現
+    expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
+    expect(line).toContain("\\x1B[33m");
+    expect(line).toContain("\\n");
+    expect(line).toContain("\\r");
+    expect(line).toContain("\\x07");
   });
 });
 

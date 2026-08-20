@@ -11,6 +11,7 @@ import {
   formatZodError,
   isFlowCandidate,
   isPathWithinDir,
+  isRealPathWithinDir,
   resolveRequestMethod,
 } from "../../core/index.js";
 import type { Step } from "../../core/schema.js";
@@ -85,6 +86,9 @@ export function summarizeStep(step: Step): { name: string; method: string; url: 
  */
 export function resolveWithinCwd(cwd: string, relPath: string): string | null {
   const resolvedPath = resolve(cwd, relPath);
-  // 境界判定は core/path-guard.ts の isPathWithinDir に委譲する(env.ts・loader.ts と同じロジックを共有する)
-  return isPathWithinDir(cwd, resolvedPath) ? resolvedPath : null;
+  // 境界判定は core/path-guard.ts の isPathWithinDir に委譲する(env.ts・loader.ts と同じロジックを共有する)。
+  // 加えて isRealPathWithinDir でシンボリックリンク解決後の実パスも検証し、cwd 配下に仕込まれた
+  // シンボリックリンク経由で境界外を読み出す攻撃を防ぐ
+  if (!isPathWithinDir(cwd, resolvedPath) || !isRealPathWithinDir(cwd, resolvedPath)) return null;
+  return resolvedPath;
 }
