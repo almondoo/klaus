@@ -62,14 +62,24 @@ export {
   validateFlowFile,
   validateFlowYaml,
 } from "./loader.js";
+export { isPathWithinDir } from "./path-guard.js";
 export type {
   ExecuteSingleRequestOptions,
   ExecuteSingleRequestResult,
+  LoadedFlowEntry,
   RunFlowOptions,
   StepCompleteContext,
   StepStartContext,
 } from "./runner.js";
-export { captureValues, executeFlow, executeSingleRequest, runFlow, runFlows } from "./runner.js";
+export {
+  captureValues,
+  executeFlow,
+  executeSingleRequest,
+  resolveRequestMethod,
+  runFlow,
+  runFlows,
+  runLoadedFlows,
+} from "./runner.js";
 export type {
   AssertDef,
   BodyAssertion,

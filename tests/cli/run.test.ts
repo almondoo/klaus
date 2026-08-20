@@ -6,20 +6,24 @@ import { type RunCommandOptions, runCommand } from "../../src/cli/run.js";
 import { historyFilePath } from "../../src/core/history.js";
 import { closeServer, listenEphemeral, reserveClosedPort } from "../support/net.js";
 
-// loadFlow/runFlows が ParseError 以外を投げた場合、runCommand が catch せずそのまま呼び出し元へ
+// loadFlow/runLoadedFlows が ParseError 以外を投げた場合、runCommand が catch せずそのまま呼び出し元へ
 // 伝播させる契約(run.ts の JSDoc に明記)をテストするため、実装は素通しのままフックできるようにする。
 vi.mock("../../src/core/index.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/core/index.js")>();
-  return { ...actual, loadFlow: vi.fn(actual.loadFlow), runFlows: vi.fn(actual.runFlows) };
+  return {
+    ...actual,
+    loadFlow: vi.fn(actual.loadFlow),
+    runLoadedFlows: vi.fn(actual.runLoadedFlows),
+  };
 });
-const { loadFlow: mockedLoadFlow, runFlows: mockedRunFlows } = await import(
+const { loadFlow: mockedLoadFlow, runLoadedFlows: mockedRunLoadedFlows } = await import(
   "../../src/core/index.js"
 );
 
 const projectRoot = join(__dirname, "..", "..");
 const tmpRoot = join(projectRoot, "tmp");
 
-/** mock 経由の伝播テストなど、実際には実行されない(loadFlow/runFlows をモックする)ケース向けの最小フロー定義 */
+/** mock 経由の伝播テストなど、実際には実行されない(loadFlow/runLoadedFlows をモックする)ケース向けの最小フロー定義 */
 const VALID_FLOW_YAML = `
 name: sample flow
 steps:
@@ -182,7 +186,7 @@ describe("runCommand", () => {
     }
   });
 
-  it("--allow-protected オプションが RunFlowOptions.allowProtected として runFlows に渡り、$protected な環境でも実行される", async () => {
+  it("--allow-protected オプションが RunFlowOptions.allowProtected として runLoadedFlows に渡り、$protected な環境でも実行される", async () => {
     const cwdSpy = process.cwd;
     process.cwd = () => workDir;
     try {
@@ -198,8 +202,8 @@ describe("runCommand", () => {
       const exitCode = await runCommand([flowPath], baseOptions({ allowProtected: true }));
 
       expect(exitCode).toBe(0);
-      expect(mockedRunFlows).toHaveBeenCalledWith(
-        [flowPath],
+      expect(mockedRunLoadedFlows).toHaveBeenCalledWith(
+        [expect.objectContaining({ filePath: flowPath })],
         expect.objectContaining({ allowProtected: true }),
       );
       const report = readJson();
@@ -209,7 +213,7 @@ describe("runCommand", () => {
     }
   });
 
-  it("--env オプションが RunFlowOptions.envNameOverride として runFlows に渡り、指定した環境ファイルが使われる", async () => {
+  it("--env オプションが RunFlowOptions.envNameOverride として runLoadedFlows に渡り、指定した環境ファイルが使われる", async () => {
     const cwdSpy = process.cwd;
     process.cwd = () => workDir;
     try {
@@ -229,8 +233,8 @@ describe("runCommand", () => {
       const exitCode = await runCommand([flowPath], baseOptions({ env: "custom" }));
 
       expect(exitCode).toBe(0);
-      expect(mockedRunFlows).toHaveBeenCalledWith(
-        [flowPath],
+      expect(mockedRunLoadedFlows).toHaveBeenCalledWith(
+        [expect.objectContaining({ filePath: flowPath })],
         expect.objectContaining({ envNameOverride: "custom" }),
       );
       const report = readJson();
@@ -499,7 +503,7 @@ describe("runCommand", () => {
     await expect(access(reportPath)).rejects.toThrow();
   });
 
-  it('--record <dir> が RunFlowOptions.recording に { mode: "record", dir } として変換されて runFlows に渡る', async () => {
+  it('--record <dir> が RunFlowOptions.recording に { mode: "record", dir } として変換されて runLoadedFlows に渡る', async () => {
     const recordDir = await mkdtemp(join(tmpRoot, "klaus-run-record-"));
     try {
       const flowPath = join(workDir, "record-single.yaml");
@@ -512,8 +516,8 @@ describe("runCommand", () => {
       const exitCode = await runCommand([flowPath], baseOptions({ record: recordDir }));
 
       expect(exitCode).toBe(0);
-      expect(mockedRunFlows).toHaveBeenCalledWith(
-        [flowPath],
+      expect(mockedRunLoadedFlows).toHaveBeenCalledWith(
+        [expect.objectContaining({ filePath: flowPath })],
         expect.objectContaining({ recording: { mode: "record", dir: recordDir } }),
       );
     } finally {
@@ -521,8 +525,8 @@ describe("runCommand", () => {
     }
   });
 
-  it('--replay <dir> が RunFlowOptions.recording に { mode: "replay", dir } として変換されて runFlows に渡る', async () => {
-    // カセットが存在しなくても(replay 実行自体が失敗しても)runFlows への引数変換は検証できる
+  it('--replay <dir> が RunFlowOptions.recording に { mode: "replay", dir } として変換されて runLoadedFlows に渡る', async () => {
+    // カセットが存在しなくても(replay 実行自体が失敗しても)runLoadedFlows への引数変換は検証できる
     // (同時指定エラーは tests/record-replay.test.ts で別途検証済みのため、ここでは変換のみを見る)
     const replayDir = await mkdtemp(join(tmpRoot, "klaus-run-replay-"));
     try {
@@ -535,8 +539,8 @@ describe("runCommand", () => {
 
       await runCommand([flowPath], baseOptions({ replay: replayDir }));
 
-      expect(mockedRunFlows).toHaveBeenCalledWith(
-        [flowPath],
+      expect(mockedRunLoadedFlows).toHaveBeenCalledWith(
+        [expect.objectContaining({ filePath: flowPath })],
         expect.objectContaining({ recording: { mode: "replay", dir: replayDir } }),
       );
     } finally {
@@ -612,7 +616,7 @@ describe("runCommand", () => {
     expect(report.flows.map((flow) => flow.name)).toEqual(["flow a", "flow b"]);
   });
 
-  it("環境ファイル(environments/<name>.yaml)が壊れている場合、runFlows 側の ParseError も戻り値 2 に丸められる", async () => {
+  it("環境ファイル(environments/<name>.yaml)が壊れている場合、runLoadedFlows 側の ParseError も戻り値 2 に丸められる", async () => {
     const cwdSpy = process.cwd;
     process.cwd = () => workDir;
     try {
@@ -766,11 +770,11 @@ describe("runCommand", () => {
     await expect(runCommand([flowPath], baseOptions())).rejects.toThrow(unexpectedError);
   });
 
-  it("runFlows が ParseError 以外を投げた場合、runCommand は catch せずそのまま呼び出し元へ伝播させる", async () => {
+  it("runLoadedFlows が ParseError 以外を投げた場合、runCommand は catch せずそのまま呼び出し元へ伝播させる", async () => {
     const flowPath = join(workDir, "any-runflows.yaml");
     await writeFile(flowPath, VALID_FLOW_YAML, "utf-8");
     const unexpectedError = new Error("unexpected runtime bug unrelated to environment parsing");
-    vi.mocked(mockedRunFlows).mockRejectedValueOnce(unexpectedError);
+    vi.mocked(mockedRunLoadedFlows).mockRejectedValueOnce(unexpectedError);
 
     await expect(runCommand([flowPath], baseOptions())).rejects.toThrow(unexpectedError);
   });

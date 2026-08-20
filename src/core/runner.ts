@@ -146,6 +146,15 @@ async function resolveHttpResponse(
   return response;
 }
 
+/**
+ * request.method 省略時(graphql ステップのみ省略可)の既定値を解決する。
+ * 実行時(executeStep)とサーバー側の表示(server/routes/flows.ts の summarizeStep)の両方が
+ * 同じ既定値を参照するための共通ヘルパー。
+ */
+export function resolveRequestMethod(request: RequestDef): string {
+  return request.method ?? "POST";
+}
+
 /** Accept ヘッダーまたは sse ブロックの存在で SSE モードかどうかを判定する(ws ステップは対象外) */
 function isSseStep(step: Step): boolean {
   if (!step.request) return false;
@@ -375,7 +384,7 @@ async function executeStep(
 
     // テンプレート展開(未解決変数・OS 環境変数未定義は RuntimeError として catch 節に落ちる)
     // graphql 指定時のみ method 省略可であり、その場合は POST を既定にする
-    const method = request.method ?? "POST";
+    const method = resolveRequestMethod(request);
     const url = applyQueryParams(
       renderString(request.url, templateContext),
       request.query,
@@ -692,6 +701,37 @@ export async function runFlows(
   const flows: FlowResult[] = [];
   for (const filePath of filePaths) {
     const flowResult = await runFlow(filePath, { ...options, runId });
+    flows.push(flowResult);
+  }
+
+  const durationMs = performance.now() - runStartedAt;
+  const status = aggregateStatus(flows.map((f) => f.status));
+
+  return { runId, startedAt, durationMs, flows, status };
+}
+
+/** 既に読み込み済みの Flow と、その読み込み元ファイルパスの組 */
+export interface LoadedFlowEntry {
+  filePath: string;
+  flow: Flow;
+}
+
+/**
+ * 既に loadFlow 済みの Flow 群を、runFlows と同じ集約ロジック(runId 共有・durationMs・status 集計)で
+ * 順次実行する。呼び出し元(CLI の run コマンド等)が実行前検証で loadFlow 済みの Flow を保持している場合、
+ * runFlows(ファイルパスから再度 loadFlow する)を経由せずに実行することで、同じファイルの二重パースを避けられる。
+ */
+export async function runLoadedFlows(
+  entries: LoadedFlowEntry[],
+  options: RunFlowOptions = {},
+): Promise<RunResult> {
+  const runId = options.runId ?? randomUUID();
+  const startedAt = new Date().toISOString();
+  const runStartedAt = performance.now();
+
+  const flows: FlowResult[] = [];
+  for (const { filePath, flow } of entries) {
+    const flowResult = await executeFlow(flow, filePath, { ...options, runId });
     flows.push(flowResult);
   }
 

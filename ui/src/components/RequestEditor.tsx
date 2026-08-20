@@ -1,4 +1,5 @@
 import { Play, Plus, Trash2 } from "lucide-react";
+import type { Dispatch, SetStateAction } from "react";
 import { useState } from "react";
 import type { SingleRequestRequestBody } from "@/api/client";
 import { LabeledSelect } from "@/components/LabeledSelect";
@@ -11,6 +12,32 @@ import type { KeyValueRow } from "@/utils/request";
 import { parseRequestBody, rowsToRecord } from "@/utils/request";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"];
+
+interface RowHandlers {
+  onAdd: () => void;
+  onRemove: (id: string) => void;
+  onChangeKey: (id: string, key: string) => void;
+  onChangeValue: (id: string, value: string) => void;
+}
+
+/**
+ * headerRows/queryRows それぞれの onAdd/onRemove/onChangeKey/onChangeValue は
+ * setter と id prefix が異なるだけで処理内容は完全に同一なため、ファクトリ関数として共通化する。
+ */
+function createRowHandlers(
+  setRows: Dispatch<SetStateAction<KeyValueRow[]>>,
+  makeRowId: (prefix: string) => string,
+  prefix: string,
+): RowHandlers {
+  return {
+    onAdd: () => setRows((rows) => [...rows, { id: makeRowId(prefix), key: "", value: "" }]),
+    onRemove: (id) => setRows((rows) => rows.filter((row) => row.id !== id)),
+    onChangeKey: (id, key) =>
+      setRows((rows) => rows.map((row) => (row.id === id ? { ...row, key } : row))),
+    onChangeValue: (id, value) =>
+      setRows((rows) => rows.map((row) => (row.id === id ? { ...row, value } : row))),
+  };
+}
 
 export interface RequestEditorProps {
   onExecute: (request: SingleRequestRequestBody["request"]) => void;
@@ -39,6 +66,9 @@ export function RequestEditor({ onExecute, executing }: RequestEditorProps) {
     { id: makeRowId("q"), key: "", value: "" },
   ]);
   const [bodyText, setBodyText] = useState("");
+
+  const headerHandlers = createRowHandlers(setHeaderRows, makeRowId, "h");
+  const queryHandlers = createRowHandlers(setQueryRows, makeRowId, "q");
 
   const canExecute = url.trim() !== "" && !executing;
 
@@ -98,14 +128,7 @@ export function RequestEditor({ onExecute, executing }: RequestEditorProps) {
         valueLabel="ヘッダー値"
         keyPlaceholder="Content-Type"
         valuePlaceholder="application/json"
-        onAdd={() => setHeaderRows((rows) => [...rows, { id: makeRowId("h"), key: "", value: "" }])}
-        onRemove={(id) => setHeaderRows((rows) => rows.filter((row) => row.id !== id))}
-        onChangeKey={(id, key) =>
-          setHeaderRows((rows) => rows.map((row) => (row.id === id ? { ...row, key } : row)))
-        }
-        onChangeValue={(id, value) =>
-          setHeaderRows((rows) => rows.map((row) => (row.id === id ? { ...row, value } : row)))
-        }
+        {...headerHandlers}
       />
 
       <KeyValueEditor
@@ -115,14 +138,7 @@ export function RequestEditor({ onExecute, executing }: RequestEditorProps) {
         valueLabel="クエリパラメータ値"
         keyPlaceholder="page"
         valuePlaceholder="1"
-        onAdd={() => setQueryRows((rows) => [...rows, { id: makeRowId("q"), key: "", value: "" }])}
-        onRemove={(id) => setQueryRows((rows) => rows.filter((row) => row.id !== id))}
-        onChangeKey={(id, key) =>
-          setQueryRows((rows) => rows.map((row) => (row.id === id ? { ...row, key } : row)))
-        }
-        onChangeValue={(id, value) =>
-          setQueryRows((rows) => rows.map((row) => (row.id === id ? { ...row, value } : row)))
-        }
+        {...queryHandlers}
       />
 
       <div className="flex flex-col gap-1.5">

@@ -174,23 +174,29 @@ function collectOperations(document: OpenApiDocument): GeneratedOperation[] {
   return operations;
 }
 
+/** candidates を先頭から見て、最初に undefined でない値を返す(example のフォールバック連鎖を共通化する) */
+function firstDefined(...candidates: unknown[]): unknown {
+  for (const candidate of candidates) {
+    if (candidate !== undefined) return candidate;
+  }
+  return undefined;
+}
+
 /** example / examples / schema.example / schema.default の優先順でパラメータの example 値を探す */
 function exampleForParameter(parameter: OpenApiParameterObject): unknown {
-  if (parameter.example !== undefined) return parameter.example;
   const firstExample = parameter.examples && Object.values(parameter.examples)[0];
-  if (firstExample?.value !== undefined) return firstExample.value;
-  if (parameter.schema?.example !== undefined) return parameter.schema.example;
-  if (parameter.schema?.default !== undefined) return parameter.schema.default;
-  return undefined;
+  return firstDefined(
+    parameter.example,
+    firstExample?.value,
+    parameter.schema?.example,
+    parameter.schema?.default,
+  );
 }
 
 /** example / examples / schema.example の優先順で requestBody media type の example 値を探す */
 function exampleForMediaType(media: OpenApiMediaTypeObject): unknown {
-  if (media.example !== undefined) return media.example;
   const firstExample = media.examples && Object.values(media.examples)[0];
-  if (firstExample?.value !== undefined) return firstExample.value;
-  if (media.schema?.example !== undefined) return media.schema.example;
-  return undefined;
+  return firstDefined(media.example, firstExample?.value, media.schema?.example);
 }
 
 /**

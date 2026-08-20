@@ -1,13 +1,15 @@
 import { writeFile } from "node:fs/promises";
 import {
   expandSecretVariants,
+  type Flow,
+  type LoadedFlowEntry,
   loadFlow,
   maskDeep,
   maskString,
   ParseError,
   type RunFlowOptions,
   type RunResult,
-  runFlows,
+  runLoadedFlows,
 } from "../core/index.js";
 import { determineExitCode } from "./exit-code.js";
 import { formatJson } from "./reporters/json.js";
@@ -40,8 +42,9 @@ export interface RunCommandOptions {
 /**
  * run コマンド本体。
  * 0. --record と --replay、--json と --text の同時指定を検査(いずれも stderr + exit 1、何も実行しない)
- * 1. 全ファイルを loadFlow でパース検証(1件でも ParseError なら exit 2、何も実行しない)
- * 2. runFlows で実行(environments/*.yaml の ParseError もここで捕捉し exit 2 に丸める)
+ * 1. 全ファイルを loadFlow でパース検証(並列。1件でも ParseError なら exit 2、何も実行しない)
+ * 2. runLoadedFlows で実行(1.で読み込み済みの Flow をそのまま渡し、二重パースを避ける。
+ *    environments/*.yaml の ParseError もここで捕捉し exit 2 に丸める)
  * 3. 出力(text/JSON + 任意で JUnit ファイル)
  * 4. RunResult から exit code を決定して返す
  *
@@ -67,25 +70,35 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     options.json === true ? true : options.text === true ? false : !process.stdout.isTTY;
   const useColor = !useJson && resolveUseColor(Boolean(process.stdout.isTTY));
 
-  // 1. 実行前パース検証
-  const parseErrorMessages: string[] = [];
-  for (const filePath of files) {
-    try {
-      await loadFlow(filePath);
-    } catch (error) {
-      if (error instanceof ParseError) {
-        parseErrorMessages.push(error.message);
-      } else {
+  // 1. 実行前パース検証。loadFlow は読み込み専用のため各ファイルを並列に検証してよく、
+  // Promise.all は入力順を保つため ParseError の報告順は元のシーケンシャル実行と変わらない
+  // (validate.ts の並列検証と同じ方針)。ここで読み込んだ Flow はそのまま実行(2.)にも渡し、
+  // runFlows 経由での再読み込み(二重パース)を避ける。
+  type LoadOutcome = { filePath: string; flow: Flow } | { filePath: string; error: ParseError };
+  const loadResults: LoadOutcome[] = await Promise.all(
+    files.map(async (filePath): Promise<LoadOutcome> => {
+      try {
+        const flow = await loadFlow(filePath);
+        return { filePath, flow };
+      } catch (error) {
+        if (error instanceof ParseError) {
+          return { filePath, error };
+        }
         throw error;
       }
-    }
-  }
+    }),
+  );
+
+  const parseErrorMessages = loadResults.flatMap((r) => ("error" in r ? [r.error.message] : []));
   if (parseErrorMessages.length > 0) {
     for (const message of parseErrorMessages) {
       process.stderr.write(`klaus: parse error: ${message}\n`);
     }
     return 2;
   }
+  const loadedFlows: LoadedFlowEntry[] = loadResults.flatMap((r) =>
+    "flow" in r ? [{ filePath: r.filePath, flow: r.flow }] : [],
+  );
 
   // 2. 実行(テキストモードは onStepStart/onStepComplete で逐次出力する)
   // stdout(text/JSON いずれも)と JUnit ファイル出力の両方で使う secrets({{env.X}} 等で解決した値)。
@@ -137,7 +150,7 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
 
   let runResult: RunResult;
   try {
-    runResult = await runFlows(files, runOptions);
+    runResult = await runLoadedFlows(loadedFlows, runOptions);
   } catch (error) {
     // environments/*.yaml のパース・検証失敗など、loadFlow 以外から来る ParseError もここで exit 2 に丸める
     if (error instanceof ParseError) {

@@ -14,6 +14,28 @@ import type {
 import type { AssertionResult, SseEvent, WsMessage } from "./types.js";
 
 /**
+ * assertBodySchema 専用の Ajv インスタンス。呼び出しごとに new Ajv2020() すると
+ * コンパイルコストが毎回かかるため、モジュールレベルで1つだけ生成して使い回す。
+ * オプションは従来 assertBodySchema 内で生成していたものと同一にする。
+ */
+const ajv = new Ajv2020({ allErrors: true, strict: false });
+
+/**
+ * スキーマオブジェクトの参照をキーにコンパイル済み validator をキャッシュする。
+ * 同じ schema オブジェクトに対する複数回のアサーション評価(例: リトライ・複数レスポンスでの再利用)で
+ * 再コンパイルを避ける。コンパイル失敗時はキャッシュしない(呼び出し元でエラーメッセージ化するのみ)。
+ */
+const compiledSchemaCache = new WeakMap<Record<string, unknown>, ReturnType<Ajv2020["compile"]>>();
+
+function compileBodySchema(schema: Record<string, unknown>): ReturnType<Ajv2020["compile"]> {
+  const cached = compiledSchemaCache.get(schema);
+  if (cached) return cached;
+  const validate = ajv.compile(schema);
+  compiledSchemaCache.set(schema, validate);
+  return validate;
+}
+
+/**
  * アサーション評価に使う入力値一式。
  * runner.ts がリクエスト実行結果から組み立てて渡す。
  */
@@ -90,6 +112,12 @@ function pushMatchResults(
   matchers: MatchOptions,
   resolvedExists: boolean,
   resolvedValue: unknown,
+  /**
+   * regex マッチャーを事前コンパイル済みの RegExp で渡したい場合に指定する。
+   * 未指定時は従来どおり matchers.regex から都度 new RegExp する(assertItems の
+   * 要素ループのように同一 def を何度も評価する呼び出し元だけが、ループの外でコンパイルして渡す)。
+   */
+  precompiledRegex?: RegExp,
 ): void {
   if (matchers.exists !== undefined) {
     const ok = resolvedExists === matchers.exists;
@@ -130,7 +158,8 @@ function pushMatchResults(
   }
   if (matchers.regex !== undefined) {
     const actualStr = stringifyForMatch(resolvedValue);
-    const ok = resolvedExists && new RegExp(matchers.regex).test(actualStr);
+    const regex = precompiledRegex ?? new RegExp(matchers.regex);
+    const ok = resolvedExists && regex.test(actualStr);
     results.push({
       ok,
       kind: `${kindPrefix}.regex`,
@@ -220,10 +249,9 @@ export function assertBodySchema(
     ];
   }
 
-  const ajv = new Ajv2020({ allErrors: true, strict: false });
   let validate: ReturnType<Ajv2020["compile"]>;
   try {
-    validate = ajv.compile(schema);
+    validate = compileBodySchema(schema);
   } catch (err) {
     return [
       {
@@ -407,6 +435,9 @@ function assertItems(
     for (const key of matcherKeys) {
       const expected = def[key];
       if (expected === undefined) continue;
+      // regex は items 件数分 new RegExp するとイベント/メッセージ数に比例してコストがかかるため、
+      // ループの外で1回だけコンパイルして使い回す
+      const precompiledRegex = key === "regex" ? new RegExp(expected as string) : undefined;
       let anyOk = false;
       for (const item of items) {
         const { exists, value } = resolveItemValue(item, def.path);
@@ -418,6 +449,7 @@ function assertItems(
           { [key]: expected } as MatchOptions,
           exists,
           value,
+          precompiledRegex,
         );
         if (tmp[0]?.ok) {
           anyOk = true;
