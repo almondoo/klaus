@@ -120,6 +120,7 @@ export interface RunOptionSources {
   reportFile?: CliOptionSource;
   history?: CliOptionSource;
   mask?: CliOptionSource;
+  jobs?: CliOptionSource;
 }
 
 /**
@@ -163,6 +164,7 @@ export function applyConfigToRunOptions(
       ? { history: runConfig.history }
       : {}),
     ...(runConfig.mask !== undefined && sources.mask !== "cli" ? { mask: runConfig.mask } : {}),
+    ...(runConfig.jobs !== undefined && sources.jobs !== "cli" ? { jobs: runConfig.jobs } : {}),
   };
 }
 

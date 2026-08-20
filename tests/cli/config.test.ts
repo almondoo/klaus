@@ -147,6 +147,7 @@ describe("applyConfigToRunOptions", () => {
         reportFile: "default",
         history: "default",
         mask: "default",
+        jobs: "default",
       },
       {
         run: {
@@ -155,6 +156,7 @@ describe("applyConfigToRunOptions", () => {
           reportFile: "custom.xml",
           history: false,
           mask: false,
+          jobs: 4,
         },
       },
     );
@@ -164,6 +166,7 @@ describe("applyConfigToRunOptions", () => {
       reportFile: "custom.xml",
       env: "local",
       report: "junit",
+      jobs: 4,
     });
   });
 
@@ -171,6 +174,12 @@ describe("applyConfigToRunOptions", () => {
     const options = baseOptions({ env: "cli-env" });
     const merged = applyConfigToRunOptions(options, { env: "cli" }, { run: { env: "config-env" } });
     expect(merged.env).toBe("cli-env");
+  });
+
+  it("CLI で明示指定された --jobs は config の run.jobs より優先される", () => {
+    const options = baseOptions({ jobs: 2 });
+    const merged = applyConfigToRunOptions(options, { jobs: "cli" }, { run: { jobs: 8 } });
+    expect(merged.jobs).toBe(2);
   });
 
   it("--env-file が明示指定されている場合、config の run.env は注入しない(--env-file との誤った競合防止)", () => {

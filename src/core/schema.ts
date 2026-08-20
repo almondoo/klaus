@@ -571,6 +571,13 @@ export const configSchema = z.strictObject({
         .describe(
           "Default for whether secret masking is applied to stdout. Equivalent to omitting --no-mask (true) or passing it (false).",
         ),
+      jobs: z
+        .number()
+        .int()
+        .min(1)
+        .max(32)
+        .optional()
+        .describe("Default value for `klaus run --jobs <n>` (1-32)."),
     })
     .optional()
     .describe("Default values for `klaus run` options."),

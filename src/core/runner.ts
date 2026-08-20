@@ -38,6 +38,14 @@ export interface StepStartContext {
   step: string;
   /** --data 実行時のみ設定される 1 始まりのイテレーション番号(runLoadedFlows のデータ駆動ループ参照) */
   iteration?: number;
+  /**
+   * --jobs 2 以上での並列実行時のみ設定される、runLoadedFlows が展開したユニット(行 × フローの組)の
+   * 0 始まりの入力順インデックス。フロー名は複数ファイルにまたがって重複し得るため
+   * (klaus にファイル間のフロー名一意性制約は無い)、flow 名 + iteration だけでは実行ユニットを
+   * 一意に特定できない。呼び出し元(CLI の text レポーター)が完了順ではなく入力順で出力を
+   * 並び替えるためのキーとして使う想定。--jobs 未指定・1 の場合(既定の逐次実行)は常に undefined
+   */
+  unitIndex?: number;
 }
 
 /** ステップ完了時(passed/failed/error/skipped 確定後)に onStepComplete へ渡されるコンテキスト */
@@ -47,6 +55,8 @@ export interface StepCompleteContext {
   result: StepResult;
   /** --data 実行時のみ設定される 1 始まりのイテレーション番号(runLoadedFlows のデータ駆動ループ参照) */
   iteration?: number;
+  /** StepStartContext.unitIndex と同じ意味・同じ条件でのみ設定される */
+  unitIndex?: number;
 }
 
 /**
@@ -128,6 +138,21 @@ export interface RunFlowOptions {
    * StepStartContext/StepCompleteContext.iteration に伝播させる。--data 未指定時は常に undefined
    */
   iteration?: number | undefined;
+  /**
+   * --jobs 2 以上の並列実行時のみ runLoadedFlows が設定する、実行ユニット(行 × フローの組)の
+   * 0 始まりの入力順インデックス。StepStartContext/StepCompleteContext.unitIndex にそのまま伝播させる。
+   * executeFlow を直接呼ぶ場合(runLoadedFlows を経由しない場合)は指定不要
+   */
+  unitIndex?: number | undefined;
+  /**
+   * runLoadedFlows でのみ参照する、実行ユニット(行 × フローの組。--data 未指定時は行がフロー数に一致)を
+   * 並列実行するワーカー数。1(既定)なら従来どおりの逐次実行(コード経路も分岐しない: 出力・履歴の
+   * バイト単位の後方互換を保つため)。2 以上を指定すると、entries(× dataRows)を展開したユニット列に対して
+   * この数のワーカーで同時実行する。RunResult.flows の順序は常に入力順(行(外側) × フロー(内側))を保つ
+   * (完了順ではなく、実行前に確保した配列へ index 書き込みする)。executeFlow/runFlow は本フィールドを
+   * 読まない(runLoadedFlows 専用)
+   */
+  jobs?: number | undefined;
 }
 
 const DEFAULT_HISTORY = true;
@@ -677,6 +702,7 @@ export async function executeFlow(
       file: filePath,
       step: step.name,
       ...(options.iteration !== undefined ? { iteration: options.iteration } : {}),
+      ...(options.unitIndex !== undefined ? { unitIndex: options.unitIndex } : {}),
     });
 
     let result: StepResult;
@@ -838,6 +864,7 @@ export async function executeFlow(
       file: filePath,
       result,
       ...(options.iteration !== undefined ? { iteration: options.iteration } : {}),
+      ...(options.unitIndex !== undefined ? { unitIndex: options.unitIndex } : {}),
     });
   }
 
@@ -902,9 +929,82 @@ function stringifyDataRow(row: DataRow): Record<string, string> {
   return result;
 }
 
+/** runLoadedFlows が --jobs 2 以上で展開する実行ユニット(行 × フローの組)1件分 */
+interface RunUnit {
+  filePath: string;
+  flow: Flow;
+  /** --data 実行時のみ設定する(stringifyDataRow 済みの行の値を options.variables に上書きマージ済み) */
+  iteration?: number;
+  variables?: Record<string, string>;
+}
+
+/**
+ * entries(× options.dataRows)を、runLoadedFlows の逐次実行(jobs=1)と同じ入力順
+ * (行(外側) × フロー(内側)のイテレーション優先順)でユニット配列に展開する。
+ * --jobs 2 以上の並列実行専用のヘルパー(逐次実行の既存コードパスはこの関数を経由しない。
+ * 出力・履歴のバイト単位の後方互換を壊さないよう、既存分岐に手を入れないための意図的な重複)。
+ */
+function buildRunUnits(entries: LoadedFlowEntry[], options: RunFlowOptions): RunUnit[] {
+  const units: RunUnit[] = [];
+  if (options.dataRows && options.dataRows.length > 0) {
+    let iteration = 0;
+    for (const row of options.dataRows) {
+      iteration++;
+      const variables = { ...options.variables, ...stringifyDataRow(row) };
+      for (const { filePath, flow } of entries) {
+        units.push({ filePath, flow, iteration, variables });
+      }
+    }
+  } else {
+    for (const { filePath, flow } of entries) {
+      units.push({ filePath, flow });
+    }
+  }
+  return units;
+}
+
+/**
+ * units を jobs 個のワーカーで並列実行し、FlowResult を入力順(index)で保持した配列を返す。
+ * 各ワーカーは共有カウンター(nextIndex)を取り合って次のユニットを取得する単純なプルモデルのため、
+ * 早く終わったワーカーがより多くのユニットを処理できる(静的な等分割ではない)。
+ * 完了順に関わらず results[i] へ直接書き込むため、戻り値の順序は常に units の入力順になる。
+ */
+async function runUnitsInParallel(
+  units: RunUnit[],
+  options: RunFlowOptions,
+  runId: string,
+  jobs: number,
+): Promise<FlowResult[]> {
+  const results: FlowResult[] = new Array(units.length);
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    while (true) {
+      const index = nextIndex;
+      nextIndex++;
+      if (index >= units.length) return;
+      const unit = units[index] as RunUnit;
+      const flowResult = await executeFlow(unit.flow, unit.filePath, {
+        ...options,
+        runId,
+        unitIndex: index,
+        ...(unit.iteration !== undefined ? { iteration: unit.iteration } : {}),
+        ...(unit.variables !== undefined ? { variables: unit.variables } : {}),
+      });
+      results[index] = flowResult;
+    }
+  }
+
+  // ワーカー数は units.length を超えても意味が無いため、小さい方に丸める
+  const workerCount = Math.min(jobs, units.length);
+  await Promise.all(Array.from({ length: workerCount }, () => worker()));
+
+  return results;
+}
+
 /**
  * 既に loadFlow 済みの Flow 群を、runFlows と同じ集約ロジック(runId 共有・durationMs・status 集計)で
- * 順次実行する。呼び出し元(CLI の run コマンド等)が実行前検証で loadFlow 済みの Flow を保持している場合、
+ * 実行する。呼び出し元(CLI の run コマンド等)が実行前検証で loadFlow 済みの Flow を保持している場合、
  * runFlows(ファイルパスから再度 loadFlow する)を経由せずに実行することで、同じファイルの二重パースを避けられる。
  *
  * options.dataRows が指定されている場合(--data 実行時)は、Newman 方式のイテレーション優先順
@@ -912,6 +1012,11 @@ function stringifyDataRow(row: DataRow): Record<string, string> {
  * 各行の値は options.variables(--var 由来)を上書きする形で合成し、executeFlow に渡す
  * (テンプレート側の優先順位は row > --var > 環境ファイルの値になる)。dataRows が未指定・空配列の場合は
  * 従来どおり entries を1回ずつ実行するだけの経路のまま(挙動はバイト単位で変わらない)。
+ *
+ * options.jobs が 2 以上の場合、上記のユニット列(行 × フローの組)を jobs 個のワーカーで並列実行する
+ * (1ユニット = 1回の executeFlow 呼び出し。フロー内のステップは常に逐次のまま変わらない)。
+ * RunResult.flows は完了順ではなく常に入力順を保つ(runUnitsInParallel が index 書き込みで保証する)。
+ * jobs 未指定・1 の場合は既存の逐次実行コードパスをそのまま通る(このブロックには一切触れない)。
  */
 export async function runLoadedFlows(
   entries: LoadedFlowEntry[],
@@ -920,27 +1025,34 @@ export async function runLoadedFlows(
   const runId = options.runId ?? randomUUID();
   const startedAt = new Date().toISOString();
   const runStartedAt = performance.now();
+  const jobs = options.jobs ?? 1;
 
-  const flows: FlowResult[] = [];
-  if (options.dataRows && options.dataRows.length > 0) {
-    let iteration = 0;
-    for (const row of options.dataRows) {
-      iteration++;
-      const variables = { ...options.variables, ...stringifyDataRow(row) };
+  let flows: FlowResult[];
+  if (jobs > 1) {
+    const units = buildRunUnits(entries, options);
+    flows = await runUnitsInParallel(units, options, runId, jobs);
+  } else {
+    flows = [];
+    if (options.dataRows && options.dataRows.length > 0) {
+      let iteration = 0;
+      for (const row of options.dataRows) {
+        iteration++;
+        const variables = { ...options.variables, ...stringifyDataRow(row) };
+        for (const { filePath, flow } of entries) {
+          const flowResult = await executeFlow(flow, filePath, {
+            ...options,
+            runId,
+            variables,
+            iteration,
+          });
+          flows.push(flowResult);
+        }
+      }
+    } else {
       for (const { filePath, flow } of entries) {
-        const flowResult = await executeFlow(flow, filePath, {
-          ...options,
-          runId,
-          variables,
-          iteration,
-        });
+        const flowResult = await executeFlow(flow, filePath, { ...options, runId });
         flows.push(flowResult);
       }
-    }
-  } else {
-    for (const { filePath, flow } of entries) {
-      const flowResult = await executeFlow(flow, filePath, { ...options, runId });
-      flows.push(flowResult);
     }
   }
 

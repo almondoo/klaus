@@ -791,6 +791,48 @@ describe("runCommand", () => {
     }
   });
 
+  it("--jobs 2 以上でも履歴 JSONL には全エントリが書き込まれる(行の順序は保証しない)", async () => {
+    const cwdSpy = process.cwd;
+    process.cwd = () => workDir;
+    try {
+      // 各フロー2ステップ × 3フロー = 6行を期待する。並行 appendFile(O_APPEND)により行の順序は
+      // 実行のたびに変わり得るため、ここでは件数と (flow, step) の組の集合のみを検証する
+      // (順序に依存しないアサーション)。
+      const flowNames = ["history a", "history b", "history c"];
+      const flowPaths = flowNames.map((name, index) => {
+        const flowPath = join(workDir, `history-jobs-${index}.yaml`);
+        return { name, flowPath };
+      });
+      for (const { name, flowPath } of flowPaths) {
+        await writeFile(
+          flowPath,
+          `name: ${name}\nsteps:\n  - name: step1\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n  - name: step2\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+          "utf-8",
+        );
+      }
+
+      const exitCode = await runCommand(
+        flowPaths.map((f) => f.flowPath),
+        baseOptions({ history: true, jobs: 3 }),
+      );
+
+      expect(exitCode).toBe(0);
+      const historyContent = await readFile(historyFilePath(workDir), "utf-8");
+      const lines = historyContent.trim().split("\n");
+      expect(lines).toHaveLength(6);
+      const entries = lines.map(
+        (line) => JSON.parse(line) as { flow: string; step: string; runId: string },
+      );
+      const keys = new Set(entries.map((e) => `${e.flow}:${e.step}`));
+      const expectedKeys = new Set(flowNames.flatMap((name) => [`${name}:step1`, `${name}:step2`]));
+      expect(keys).toEqual(expectedKeys);
+      // runId は全エントリで共有される
+      expect(new Set(entries.map((e) => e.runId)).size).toBe(1);
+    } finally {
+      process.cwd = cwdSpy;
+    }
+  });
+
   it("複数ファイルを指定すると全ファイルが実行され、JSON の flows に両方含まれる", async () => {
     const flowPathA = join(workDir, "multi-a.yaml");
     const flowPathB = join(workDir, "multi-b.yaml");
@@ -919,6 +961,113 @@ describe("runCommand", () => {
     const output = stdoutSpy.join("");
     expect(output).toContain(`success flow (${flowPath})`);
     expect(output).toContain("PASS ok");
+  });
+
+  it("--jobs 2 の text 出力は完了順ではなく入力順を保つ(先頭フローを最も遅くする)", async () => {
+    process.stdout.isTTY = true;
+
+    // /order-slow は /order-fast が呼ばれるまで応答を保留する(先頭ユニットが最後に完了することを保証する)
+    let releaseSlow: (() => void) | undefined;
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const server = createServer((req, res) => {
+      if (req.url === "/order-fast") {
+        releaseSlow?.();
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (req.url === "/order-slow") {
+        slowGate.then(() => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        });
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const slowPath = join(workDir, "order-slow.yaml");
+      await writeFile(
+        slowPath,
+        `name: flow slow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${baseUrl}/order-slow"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+      const fastPath = join(workDir, "order-fast.yaml");
+      await writeFile(
+        fastPath,
+        `name: flow fast\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${baseUrl}/order-fast"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+
+      const exitCode = await runCommand([slowPath, fastPath], baseOptions({ jobs: 2 }));
+
+      expect(exitCode).toBe(0);
+      const output = stdoutSpy.join("");
+      // flow fast のリクエストが先に完了する(それが flow slow のゲートを開ける)にも関わらず、
+      // text 出力は入力順(flow slow のブロックが先)のまま
+      const slowHeaderIndex = output.indexOf(`flow slow (${slowPath})`);
+      const fastHeaderIndex = output.indexOf(`flow fast (${fastPath})`);
+      expect(slowHeaderIndex).toBeGreaterThanOrEqual(0);
+      expect(fastHeaderIndex).toBeGreaterThan(slowHeaderIndex);
+      // サマリー行は全ユニット完了後、最後に1回だけ出る
+      expect(output).toMatch(/2 flows, 2 steps: 2 passed/);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("--jobs 2: skipRest によるスキップ・if 条件不成立のスキップ・retry 失敗が混在していても、各ユニットの完了カウントが崩れず全ブロックが入力順で漏れなくフラッシュされる", async () => {
+    process.stdout.isTTY = true;
+
+    // flow skiprest: 1つ目が失敗し(continueOnError 無し)、後続2ステップが skipRest によりスキップされる。
+    // 「onStepComplete が flow.steps.length(=3)回揃うまで待つ」createOrderedTextFlusher の完了カウントが、
+    // skipRest によるスキップでも正しく1回ずつ計上されることを検証する対象
+    const skipRestPath = join(workDir, "risky-skiprest.yaml");
+    await writeFile(
+      skipRestPath,
+      `name: flow skiprest\nsteps:\n  - name: fail-first\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 500\n  - name: after-fail-1\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n  - name: after-fail-2\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+
+    // flow retry-if: if 条件不成立によるスキップ(skipRest とは別経路)と、retry(count:1 で2回試行して
+    // 最終的に failed)が同じフロー内に混在する。retry は中間試行を含め onStepComplete が1回だけ
+    // 呼ばれる契約のため、この完了カウントがずれるとユニットが永遠に flush されず出力がハングし得る
+    const retryIfPath = join(workDir, "risky-retry-if.yaml");
+    await writeFile(
+      retryIfPath,
+      `name: flow retry-if\nsteps:\n  - name: passing-step\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n  - name: conditional-skip\n    if: "steps.passing-step.status == 'failed'"\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n  - name: retry-fail\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 500\n    retry:\n      count: 1\n      intervalMs: 0\n`,
+      "utf-8",
+    );
+
+    const exitCode = await runCommand([skipRestPath, retryIfPath], baseOptions({ jobs: 2 }));
+
+    // fail-first・retry-fail のアサーション失敗により、両フローとも failed(exit code 4)
+    expect(exitCode).toBe(4);
+    const output = stdoutSpy.join("");
+
+    const skipRestHeaderIndex = output.indexOf(`flow skiprest (${skipRestPath})`);
+    const retryIfHeaderIndex = output.indexOf(`flow retry-if (${retryIfPath})`);
+    expect(skipRestHeaderIndex).toBeGreaterThanOrEqual(0);
+    // 入力順(flow skiprest が先)のまま、途中で欠落せずに次のブロックへ進む
+    expect(retryIfHeaderIndex).toBeGreaterThan(skipRestHeaderIndex);
+
+    const skipRestBlock = output.slice(skipRestHeaderIndex, retryIfHeaderIndex);
+    expect(skipRestBlock).toContain("FAIL fail-first");
+    expect(skipRestBlock).toContain("SKIP after-fail-1");
+    expect(skipRestBlock).toContain("SKIP after-fail-2");
+
+    const retryIfBlock = output.slice(retryIfHeaderIndex);
+    expect(retryIfBlock).toContain("PASS passing-step");
+    expect(retryIfBlock).toContain("SKIP conditional-skip");
+    expect(retryIfBlock).toContain("FAIL retry-fail");
+    // サマリー行(1 passed / 2 failed / 3 skipped、計6ステップ)まで到達する = 最後のユニットまで
+    // flush が止まらず(ハングせず)完了したことの証拠
+    expect(output).toMatch(/2 flows, 6 steps: 1 passed, 2 failed, 3 skipped/);
   });
 
   it("--json と --text の同時指定は戻り値 1 になり stderr にエラーを出す", async () => {

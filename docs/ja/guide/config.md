@@ -28,6 +28,7 @@ run:
   reportFile: klaus-report.xml
   history: true
   mask: true
+  jobs: 4
 ui:
   port: 4884
   host: 127.0.0.1
@@ -41,6 +42,7 @@ ui:
 | `run.reportFile` | `klaus run --report-file <path>` | string |
 | `run.history` | `klaus run --no-history`(`false` で無効化に相当) | boolean |
 | `run.mask` | `klaus run --no-mask`(`false` で無効化に相当) | boolean |
+| `run.jobs` | `klaus run --jobs <n>` | number(1〜32) |
 | `ui.port` | `klaus ui --port <n>` | number(1〜65535) |
 | `ui.host` | `klaus ui --host <host>` | string |
 | `ui.open` | `klaus ui --no-open`(`false` で無効化に相当) | boolean |

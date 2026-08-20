@@ -674,6 +674,63 @@ describe("cli integration", () => {
     expect(result.stderr).not.toMatch(/^\s+at\s/m);
   });
 
+  it("(x) run --jobs 2: 2フローが並列実行され exit 0 になり、JSON 出力の flows は入力順のまま", async () => {
+    const flowPathA = join(workDir, "jobs-happy-a.yaml");
+    await writeFile(
+      flowPathA,
+      `name: jobs flow a\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+    const flowPathB = join(workDir, "jobs-happy-b.yaml");
+    await writeFile(
+      flowPathB,
+      `name: jobs flow b\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+
+    const result = await runCli(
+      ["run", flowPathA, flowPathB, "--no-history", "--jobs", "2"],
+      workDir,
+    );
+
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe("passed");
+    expect(parsed.flows.map((flow: { name: string }) => flow.name)).toEqual([
+      "jobs flow a",
+      "jobs flow b",
+    ]);
+  });
+
+  it("(y) run --jobs 0: 不正な --jobs は exit 0 以外になり未捕捉スタックトレースも出ない", async () => {
+    const flowPath = join(workDir, "jobs-invalid.yaml");
+    await writeFile(flowPath, "name: any\nsteps: []\n", "utf-8");
+
+    const result = await runCli(["run", flowPath, "--no-history", "--jobs", "0"], workDir);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("invalid --jobs value (expected an integer 1-32): 0");
+    expect(result.stderr).not.toMatch(/^\s+at\s/m);
+  });
+
+  it("(z) run --record と --jobs 2 の同時指定は exit 1 になる", async () => {
+    const flowPath = join(workDir, "jobs-record-conflict.yaml");
+    await writeFile(
+      flowPath,
+      `name: success flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+    const recordDir = join(workDir, "jobs-record-conflict-cassette");
+
+    const result = await runCli(
+      ["run", flowPath, "--no-history", "--record", recordDir, "--jobs", "2"],
+      workDir,
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--record and --jobs > 1 cannot be used together");
+  });
+
   it("(r) history / history show: 既存の履歴ディレクトリから JSON を出力し exit 0 になる", async () => {
     const historyWorkDir = join(workDir, "history-scenario");
     const historyDir = join(historyWorkDir, ".klaus", "history");

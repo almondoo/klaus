@@ -187,6 +187,18 @@ program
     "exclude flows carrying any of these comma-separated tags. Takes precedence over --tags when a flow matches both",
     parseTagList,
   )
+  .option(
+    "--jobs <n>",
+    "run this many execution units (a flow file, or a flow-file x data-row pair when --data is given) in parallel (1-32). Steps within a single flow always stay sequential. Cannot be combined with --record",
+    (value) => {
+      const parsed = Number.parseInt(value, 10);
+      // 理由は --port/--last と同じ(InvalidArgumentError のみ commander が整形して扱う)
+      if (Number.isNaN(parsed) || parsed < 1 || parsed > 32) {
+        throw new InvalidArgumentError(`invalid --jobs value (expected an integer 1-32): ${value}`);
+      }
+      return parsed;
+    },
+  )
   .addHelpText(
     "after",
     `
@@ -210,6 +222,7 @@ ${exitCodesHelpLine}
           reportFile: command.getOptionValueSource("reportFile"),
           history: command.getOptionValueSource("history"),
           mask: command.getOptionValueSource("mask"),
+          jobs: command.getOptionValueSource("jobs"),
         },
         configResult.config,
       );

@@ -1148,6 +1148,166 @@ describe("runLoadedFlows", () => {
     expect(new Set(historyEntries.map((e) => e.runId)).size).toBe(1);
     expect(historyEntries[0]?.runId).toBe(result.runId);
   });
+
+  describe("options.jobs(--jobs による並列実行)", () => {
+    /**
+     * requiredConcurrent 件のリクエストが同時に in-flight になるまで、全リクエストの応答を保留するゲートサーバー。
+     * sleep に頼らず「実際に requiredConcurrent 件が重なった」ことを決定的に証明するための仕掛け
+     * (in-flight 件数が閾値に達した瞬間にゲートを開き、以降に届いたリクエストも含め全て応答を返す)。
+     */
+    async function startConcurrencyGateServer(requiredConcurrent: number) {
+      let inFlight = 0;
+      let maxObserved = 0;
+      let releaseGate: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+      const server = createServer((_req, res) => {
+        inFlight++;
+        maxObserved = Math.max(maxObserved, inFlight);
+        if (inFlight >= requiredConcurrent) releaseGate?.();
+        gate.then(() => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        });
+      });
+      const { baseUrl } = await listenEphemeral(server);
+      return { server, baseUrl, getMaxObserved: () => maxObserved };
+    }
+
+    it("jobs: 3 で3フローを並列実行すると、少なくとも2ユニットが同時に in-flight になる(ゲートサーバーで検証)", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+      const gate = await startConcurrencyGateServer(2);
+
+      try {
+        const entries: LoadedFlowEntry[] = [
+          {
+            filePath: "gate-a.yaml",
+            flow: flowSchema.parse({
+              name: "gate a",
+              steps: [{ name: "step", request: { method: "GET", url: `${gate.baseUrl}/gate` } }],
+            }),
+          },
+          {
+            filePath: "gate-b.yaml",
+            flow: flowSchema.parse({
+              name: "gate b",
+              steps: [{ name: "step", request: { method: "GET", url: `${gate.baseUrl}/gate` } }],
+            }),
+          },
+          {
+            filePath: "gate-c.yaml",
+            flow: flowSchema.parse({
+              name: "gate c",
+              steps: [{ name: "step", request: { method: "GET", url: `${gate.baseUrl}/gate` } }],
+            }),
+          },
+        ];
+
+        const result = await runLoadedFlows(entries, { cwd, history: false, jobs: 3 });
+
+        expect(result.status).toBe("passed");
+        expect(result.flows).toHaveLength(3);
+        expect(gate.getMaxObserved()).toBeGreaterThanOrEqual(2);
+      } finally {
+        await closeServer(gate.server);
+      }
+    });
+
+    it("jobs>1 でも RunResult.flows は完了順ではなく常に入力順を保つ(先頭フローを最も遅くする)", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+
+      // /order-slow は /order-fast が2回呼ばれるまで応答を保留する(先頭ユニットが最後に完了することを保証する)
+      let fastCount = 0;
+      let releaseSlow: (() => void) | undefined;
+      const slowGate = new Promise<void>((resolve) => {
+        releaseSlow = resolve;
+      });
+      const completionOrder: string[] = [];
+      const server = createServer((req, res) => {
+        if (req.url === "/order-fast") {
+          fastCount++;
+          completionOrder.push("fast");
+          if (fastCount >= 2) releaseSlow?.();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+        if (req.url === "/order-slow") {
+          slowGate.then(() => {
+            completionOrder.push("slow");
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true }));
+          });
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+      const { baseUrl } = await listenEphemeral(server);
+
+      try {
+        const entries: LoadedFlowEntry[] = [
+          {
+            filePath: "order-slow.yaml",
+            flow: flowSchema.parse({
+              name: "flow slow",
+              steps: [{ name: "step", request: { method: "GET", url: `${baseUrl}/order-slow` } }],
+            }),
+          },
+          {
+            filePath: "order-fast-1.yaml",
+            flow: flowSchema.parse({
+              name: "flow fast 1",
+              steps: [{ name: "step", request: { method: "GET", url: `${baseUrl}/order-fast` } }],
+            }),
+          },
+          {
+            filePath: "order-fast-2.yaml",
+            flow: flowSchema.parse({
+              name: "flow fast 2",
+              steps: [{ name: "step", request: { method: "GET", url: `${baseUrl}/order-fast` } }],
+            }),
+          },
+        ];
+
+        const result = await runLoadedFlows(entries, { cwd, history: false, jobs: 3 });
+
+        // サーバー側で観測した完了順は fast, fast, slow(先頭ユニットが最後に完了した)
+        expect(completionOrder).toEqual(["fast", "fast", "slow"]);
+        // にも関わらず RunResult.flows は入力順(slow, fast1, fast2)のまま
+        expect(result.flows.map((f) => f.name)).toEqual([
+          "flow slow",
+          "flow fast 1",
+          "flow fast 2",
+        ]);
+        expect(result.status).toBe("passed");
+      } finally {
+        await closeServer(server);
+      }
+    });
+
+    it("--data 指定 + jobs>1 でも行(外側) × フロー(内側)のイテレーション優先順を保つ", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+      const entries: LoadedFlowEntry[] = [
+        { filePath: "flow-a.yaml", flow: buildTrivialFlow("flow a") },
+        { filePath: "flow-b.yaml", flow: buildTrivialFlow("flow b") },
+      ];
+
+      const result = await runLoadedFlows(entries, {
+        cwd,
+        history: false,
+        dataRows: [{ row: 1 }, { row: 2 }],
+        jobs: 2,
+      });
+
+      expect(result.flows.map((f) => f.name)).toEqual(["flow a", "flow b", "flow a", "flow b"]);
+      expect(result.flows.map((f) => f.iteration)).toEqual([1, 1, 2, 2]);
+      expect(result.status).toBe("passed");
+      // runId は jobs>1 でも1回だけ生成され、全ユニットで共有される
+      expect(result.runId).toBeTruthy();
+    });
+  });
 });
 
 describe("ws steps", () => {

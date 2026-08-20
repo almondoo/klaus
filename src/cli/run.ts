@@ -15,12 +15,14 @@ import {
   type RunFlowOptions,
   type RunResult,
   runLoadedFlows,
+  type StepCompleteContext,
+  type StepStartContext,
 } from "../core/index.js";
 import { determineExitCode } from "./exit-code.js";
 import { formatJson } from "./reporters/json.js";
 import { formatJUnit } from "./reporters/junit.js";
 import { formatTap } from "./reporters/tap.js";
-import { createTextReporter, resolveUseColor } from "./reporters/text.js";
+import { createTextReporter, resolveUseColor, type TextReporter } from "./reporters/text.js";
 
 /** --report のフォーマットごとの既定ファイル名(--report-file を1回も指定しなかった場合に使う) */
 const DEFAULT_REPORT_FILENAMES: Record<ReportFormat, string> = {
@@ -140,6 +142,15 @@ export interface RunCommandOptions {
    * 未指定の場合は除外を行わない。
    */
   excludeTags?: string[];
+  /**
+   * --jobs <n> 指定時、実行ユニット(行 × フローの組。--data 未指定時は行がフロー数に一致)を並列実行する
+   * ワーカー数(1-32、index.ts の InvalidArgumentError 検証済み)。未指定時は 1(既定の逐次実行、
+   * 出力・履歴とも従来どおりバイト単位で変わらない)。1ユニット = 1回の executeFlow 呼び出しであり、
+   * フロー内のステップは --jobs の値に関わらず常に逐次実行のまま変わらない。RunResult.flows の順序は
+   * 常に入力順(runLoadedFlows の jobs>1 分岐が保証)。--record と同時指定はできない
+   * (下記 runCommand の 0. 検査を参照)
+   */
+  jobs?: number;
 }
 
 /**
@@ -173,15 +184,105 @@ function filterFlowsByTags(
 }
 
 /**
+ * --jobs 2 以上の並列実行時、runLoadedFlows が展開する実行ユニット(行 × フローの組)ごとの
+ * ステップ数を、buildRunUnits(runner.ts)と同じ入力順(行(外側) × フロー(内側))で並べた配列を返す。
+ * createOrderedTextFlusher が「そのユニットの全ステップの onStepComplete が揃ったか」を判定するために使う
+ * (フロー内の全ステップは skipped であっても必ず onStepStart/onStepComplete が1回ずつ呼ばれるため、
+ * flow.steps.length がそのユニットで期待される onStepComplete 回数と一致する。runner.ts 側の実装参照)。
+ */
+function buildUnitStepCounts(
+  entries: LoadedFlowEntry[],
+  dataRows: DataRow[] | undefined,
+): number[] {
+  const iterations = dataRows && dataRows.length > 0 ? dataRows.length : 1;
+  const counts: number[] = [];
+  for (let i = 0; i < iterations; i++) {
+    for (const entry of entries) {
+      counts.push(entry.flow.steps.length);
+    }
+  }
+  return counts;
+}
+
+/** createOrderedTextFlusher が1ユニット分バッファする onStepStart/onStepComplete イベント */
+type OrderedTextEvent =
+  | { kind: "start"; context: StepStartContext }
+  | { kind: "complete"; context: StepCompleteContext };
+
+/**
+ * --jobs 2 以上の並列実行時、text レポーターへの出力を「完了順」ではなく「入力順(行(外側) × フロー(内側)の
+ * イテレーション優先順、runLoadedFlows と同じ)」に並び替えて渡すラッパー。
+ *
+ * 採用した方式(設計ドキュメント記載の2案のうち、簡易な方): 各ユニットの onStepStart/onStepComplete を
+ * そのユニットの全ステップが完了する(onStepComplete が unitStepCounts[unitIndex] 回揃う)までまるごと
+ * バッファし、入力順で次に flush 可能になったユニットから順に、そのユニットの全イベントをまとめて
+ * reporter へ流す。現在実行中の最先頭ユニットをライブストリーミングする変形は採用していない
+ * (実装・検証の複雑さに対して、jobs>1 時の体感速度向上効果が小さいと判断したため)。
+ *
+ * unitIndex は StepStartContext/StepCompleteContext.unitIndex を使う(--jobs 2 以上の実行でのみ
+ * runner.ts が設定する。未設定の場合は 0 として扱うが、jobs>1 時は runLoadedFlows が必ず設定するため
+ * 実際には発生しない)。
+ */
+function createOrderedTextFlusher(
+  reporter: TextReporter,
+  unitStepCounts: number[],
+): Pick<TextReporter, "onStepStart" | "onStepComplete"> {
+  const buffers = new Map<number, OrderedTextEvent[]>();
+  const completedCounts = new Map<number, number>();
+  let nextToFlush = 0;
+
+  function isReady(index: number): boolean {
+    const expected = unitStepCounts[index] ?? 0;
+    const completed = completedCounts.get(index) ?? 0;
+    return completed >= expected;
+  }
+
+  function flushReady(): void {
+    while (nextToFlush < unitStepCounts.length && isReady(nextToFlush)) {
+      const events = buffers.get(nextToFlush) ?? [];
+      for (const event of events) {
+        if (event.kind === "start") {
+          reporter.onStepStart(event.context);
+        } else {
+          reporter.onStepComplete(event.context);
+        }
+      }
+      buffers.delete(nextToFlush);
+      completedCounts.delete(nextToFlush);
+      nextToFlush++;
+    }
+  }
+
+  return {
+    onStepStart(context: StepStartContext): void {
+      const index = context.unitIndex ?? 0;
+      const events = buffers.get(index) ?? [];
+      events.push({ kind: "start", context });
+      buffers.set(index, events);
+    },
+    onStepComplete(context: StepCompleteContext): void {
+      const index = context.unitIndex ?? 0;
+      const events = buffers.get(index) ?? [];
+      events.push({ kind: "complete", context });
+      buffers.set(index, events);
+      completedCounts.set(index, (completedCounts.get(index) ?? 0) + 1);
+      flushReady();
+    },
+  };
+}
+
+/**
  * run コマンド本体。
- * 0. --record と --replay、--json と --text、--report/--report-file の組み合わせを検査
+ * 0. --record と --replay、--record と --jobs>1、--json と --text、--report/--report-file の組み合わせを検査
  *    (いずれも stderr + exit 1、何も実行しない)
  * 1. 全ファイルを loadFlow でパース検証(--data 指定時は loadDataFile も並行して読み込む。
  *    いずれか1件でも ParseError なら exit 2、何も実行しない)
  * 2. --tags / --exclude-tags でフローを絞り込む(filterFlowsByTags。--data によるイテレーション展開より前、
  *    runLoadedFlows に渡す前に行う。絞り込んだ結果が0件なら stderr + exit 1、何も実行しない)
  * 3. runLoadedFlows で実行(1.で読み込み・2.で絞り込み済みの Flow・データ行をそのまま渡し、二重パースを避ける。
- *    environments/*.yaml の ParseError もここで捕捉し exit 2 に丸める)
+ *    environments/*.yaml の ParseError もここで捕捉し exit 2 に丸める。--jobs 2 以上の場合は実行ユニット
+ *    (行 × フローの組)を並列実行するが、RunResult.flows の順序・text 出力の順序はいずれも入力順を保つ
+ *    (後者は createOrderedTextFlusher が担う。jobs=1 では従来どおり textReporter を直結し逐次出力する))
  * 4. 出力(text/JSON + 任意で 0.で解決したレポートファイル1つ以上)
  * 5. RunResult から exit code を決定して返す
  *
@@ -191,6 +292,17 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   // --record と --replay は同時指定不可(record-replay モードは片方のみ有効にする契約)
   if (options.record !== undefined && options.replay !== undefined) {
     process.stderr.write("klaus: --record and --replay cannot be used together\n");
+    return 1;
+  }
+
+  // --record + --jobs>1 は禁止する。カセット追記自体は appendFile(O_APPEND)の単一 write なので
+  // 1行単位の破損は起きないが(history.ts の appendHistory と同じ理由)、同一 method+URL への
+  // リクエストが複数ユニットから並行して発生する場合、カセットに書き込まれる行の順序が
+  // 実行のたびに変わり得る。replay 側は「同一キーの最初の行を採用する」非消費型の索引(loadCassetteIndex)
+  // のため、どのレスポンスが再生されるかが記録のたびに変わる非決定的なカセットになってしまう。
+  // --replay は実行前に一度だけ読み込んだ索引を並行実行中は読み取るだけ(書き込みが無い)のため対象外。
+  if (options.record !== undefined && options.jobs !== undefined && options.jobs > 1) {
+    process.stderr.write("klaus: --record and --jobs > 1 cannot be used together\n");
     return 1;
   }
 
@@ -307,6 +419,14 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
         process.stdout.write(text);
       };
   const textReporter = useJson ? undefined : createTextReporter(useColor, write);
+  const jobs = options.jobs ?? 1;
+  // --jobs 2 以上のときだけ順序制御ラッパーを介す(jobs=1 の既定経路は従来どおり textReporter を直結し、
+  // バッファ層を一切挟まない)。textReporter 自体は useJson の場合 undefined のままなので、
+  // JSON 出力時はここでも stepHandler は undefined になる。
+  const stepHandler: Pick<TextReporter, "onStepStart" | "onStepComplete"> | undefined =
+    textReporter && jobs > 1
+      ? createOrderedTextFlusher(textReporter, buildUnitStepCounts(filteredFlows, dataRows))
+      : textReporter;
   const runOptions: RunFlowOptions = {
     envNameOverride: options.env,
     envFilePath: options.envFile,
@@ -314,8 +434,9 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     allowProtected: options.allowProtected,
     history: options.history,
     dataRows,
-    onStepStart: textReporter ? (context) => textReporter.onStepStart(context) : undefined,
-    onStepComplete: textReporter ? (context) => textReporter.onStepComplete(context) : undefined,
+    jobs,
+    onStepStart: stepHandler ? (context) => stepHandler.onStepStart(context) : undefined,
+    onStepComplete: stepHandler ? (context) => stepHandler.onStepComplete(context) : undefined,
     // 履歴書き込み失敗などステップの成否に影響しない警告を stderr に出力する
     onWarning: (message) => {
       process.stderr.write(`klaus: warning: ${message}\n`);
