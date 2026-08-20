@@ -16,6 +16,13 @@ async function startFixtureServer() {
       res.end(JSON.stringify({ ok: true }));
       return;
     }
+    // WHATWG URL 正規化形でリクエスト行に載ったままの req.url をそのままエコーする
+    // (tests/cli/run.test.ts の同名エンドポイントと同じ用途: クエリ文字列の組み立て結果を検証する)
+    if (req.url?.startsWith("/echo") && req.method === "GET") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ url: req.url }));
+      return;
+    }
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "not found" }));
   });
@@ -187,6 +194,120 @@ describe("cli integration", () => {
     expect(parsed.status).toBe("passed");
   });
 
+  it("(l2) run --env と --env-file の同時指定は exit 1", async () => {
+    const flowPath = join(workDir, "env-envfile-conflict.yaml");
+    await writeFile(
+      flowPath,
+      `name: conflict flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+    const envFilePath = join(workDir, "conflict-env.yaml");
+    await writeFile(envFilePath, "baseUrl: https://example.com\n", "utf-8");
+
+    const result = await runCli(
+      ["run", flowPath, "--no-history", "-e", "local", "--env-file", envFilePath],
+      workDir,
+    );
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("--env and --env-file cannot be used together");
+  });
+
+  it("(l3) run --var と --env-file を組み合わせた実行が成功する(--var が env-file の同名キーを上書きする)", async () => {
+    const varWorkDir = join(workDir, "var-envfile-scenario");
+    await mkdir(varWorkDir, { recursive: true });
+    const envFilePath = join(varWorkDir, "outside-env.yaml");
+    // baseUrl はわざと到達不能なアドレスにしておき、--var による上書きが効いていない場合は
+    // 接続不能(exit 3)になって検知できるようにする
+    await writeFile(envFilePath, "baseUrl: http://127.0.0.1:1\n", "utf-8");
+    const flowPath = join(varWorkDir, "var-envfile-flow.yaml");
+    await writeFile(
+      flowPath,
+      'name: var envfile flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "{{baseUrl}}/ok"\n    assert:\n      status: 200\n',
+      "utf-8",
+    );
+
+    const result = await runCli(
+      [
+        "run",
+        flowPath,
+        "--no-history",
+        "--env-file",
+        envFilePath,
+        "--var",
+        `baseUrl=${fixture.baseUrl}`,
+      ],
+      varWorkDir,
+    );
+
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe("passed");
+  });
+
+  it("(l4) run --var に = を含まない値を渡すと exit 0 以外になり未捕捉スタックトレースも出ない", async () => {
+    const flowPath = join(workDir, "var-invalid.yaml");
+    await writeFile(flowPath, "name: any\nsteps: []\n", "utf-8");
+
+    const result = await runCli(["run", flowPath, "--no-history", "--var", "novalue"], workDir);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("invalid --var value (expected key=value): novalue");
+    expect(result.stderr).not.toMatch(/^\s+at\s/m);
+  });
+
+  it("(l5) run --var は繰り返し指定すると累積し、両方の変数が解決される", async () => {
+    // /echo は受け取った req.url(クエリ込み)をそのまま JSON body として返すため、
+    // bodyText.contains で実際に組み立てられたクエリ文字列を確認できる
+    // (この時点で assert は成功=ステップ passed になるが、bodyText の中身自体で解決結果を検証できる)
+    const flowPath = join(workDir, "var-repeat.yaml");
+    await writeFile(
+      flowPath,
+      `name: var repeat flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/echo"\n      query:\n        a: "{{a}}"\n        b: "{{b}}"\n    assert:\n      status: 200\n      bodyText:\n        contains: "a=1&b=2"\n`,
+      "utf-8",
+    );
+
+    const result = await runCli(
+      ["run", flowPath, "--no-history", "--var", "a=1", "--var", "b=2"],
+      workDir,
+    );
+
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe("passed");
+  });
+
+  it("(l6) run --var の値自体が = を含む場合、最初の = のみを区切りとして扱う", async () => {
+    // request.query は URLSearchParams 経由でクエリ文字列に組み込まれるため、
+    // 値中の "=" は application/x-www-form-urlencoded 形でパーセントエンコードされる(%3D)
+    const flowPath = join(workDir, "var-equals-in-value.yaml");
+    await writeFile(
+      flowPath,
+      `name: var equals in value flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/echo"\n      query:\n        token: "{{token}}"\n    assert:\n      status: 200\n      bodyText:\n        contains: "token=abc%3D123"\n`,
+      "utf-8",
+    );
+
+    const result = await runCli(
+      ["run", flowPath, "--no-history", "--var", "token=abc=123"],
+      workDir,
+    );
+
+    expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe("passed");
+  });
+
+  it("(l7) run --var のキーが空('=value')だと exit 0 以外になり未捕捉スタックトレースも出ない", async () => {
+    const flowPath = join(workDir, "var-empty-key.yaml");
+    await writeFile(flowPath, "name: any\nsteps: []\n", "utf-8");
+
+    const result = await runCli(["run", flowPath, "--no-history", "--var", "=value"], workDir);
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("invalid --var value (expected key=value): =value");
+    expect(result.stderr).not.toMatch(/^\s+at\s/m);
+  });
+
   it("(g) --report invalid のような未対応レポート形式を指定すると exit 1", async () => {
     const flowPath = join(workDir, "success-for-invalid-report.yaml");
     await writeFile(
@@ -284,6 +405,40 @@ describe("cli integration", () => {
     const result = await runCli(["run", flowPath, "--no-history"], configWorkDir);
 
     expect(result.status).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.status).toBe("passed");
+  });
+
+  it("(i2) klaus.config.yaml の run.env が設定されていても、--env-file を明示指定すれば -e/--env との競合エラーにならず env-file が使われる(回帰確認)", async () => {
+    // config の run.env は「CLI で -e/--env を明示指定しなかった場合の既定値」に過ぎないため、
+    // --env-file を明示指定したこのシナリオでは注入されず、-e/--env と --env-file の
+    // 同時指定エラー(exit 1)には抵触しない
+    const configWorkDir = join(workDir, "config-envfile-scenario");
+    await mkdir(join(configWorkDir, "environments"), { recursive: true });
+    // config の run.env(local)が指す環境は到達不能なアドレスにしておき、
+    // 誤って config 側が使われた場合は接続不能(exit 3)で検知できるようにする
+    await writeFile(
+      join(configWorkDir, "environments", "local.yaml"),
+      "baseUrl: http://127.0.0.1:1\n",
+      "utf-8",
+    );
+    await writeFile(join(configWorkDir, "klaus.config.yaml"), "run:\n  env: local\n", "utf-8");
+    const envFilePath = join(configWorkDir, "outside-env.yaml");
+    await writeFile(envFilePath, `baseUrl: "${fixture.baseUrl}"\n`, "utf-8");
+    const flowPath = join(configWorkDir, "needs-env.yaml");
+    await writeFile(
+      flowPath,
+      'name: needs env flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "{{baseUrl}}/ok"\n    assert:\n      status: 200\n',
+      "utf-8",
+    );
+
+    const result = await runCli(
+      ["run", flowPath, "--no-history", "--env-file", envFilePath],
+      configWorkDir,
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).not.toContain("--env and --env-file cannot be used together");
     const parsed = JSON.parse(result.stdout);
     expect(parsed.status).toBe("passed");
   });

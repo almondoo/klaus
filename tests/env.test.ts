@@ -243,6 +243,57 @@ describe("loadEnvironment", () => {
     const env = await loadEnvironment(dir, undefined);
     expect(env).toEqual({});
   });
+
+  describe("envFilePath(--env-file 相当)", () => {
+    it("environments/ の外にある任意パスの環境ファイルを、上方探索・境界チェックを経ずに直接読み込む", async () => {
+      const outsideDir = await mkdtemp(join(tmpRoot, "klaus-env-outside-"));
+      try {
+        const filePath = join(outsideDir, "custom.yaml");
+        await writeFile(filePath, "baseUrl: https://outside.example.com\n", "utf-8");
+
+        const env = await loadEnvironment(dir, undefined, undefined, filePath);
+
+        expect(env.baseUrl).toBe("https://outside.example.com");
+      } finally {
+        await rm(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it("envNameOverride より優先される", async () => {
+      const outsideDir = await mkdtemp(join(tmpRoot, "klaus-env-outside-"));
+      try {
+        const filePath = join(outsideDir, "custom.yaml");
+        await writeFile(filePath, "baseUrl: https://from-file.example.com\n", "utf-8");
+
+        const env = await loadEnvironment(dir, "local", "staging", filePath);
+
+        expect(env.baseUrl).toBe("https://from-file.example.com");
+      } finally {
+        await rm(outsideDir, { recursive: true, force: true });
+      }
+    });
+
+    it("存在しないパスを指定すると ParseError になる", async () => {
+      await expect(
+        loadEnvironment(dir, undefined, undefined, join(dir, "no-such-file.yaml")),
+      ).rejects.toThrow(ParseError);
+    });
+
+    it("$protected: true のファイルも通常どおり読み込む(拒否は runner 側の checkEnvironmentAllowed の責務)", async () => {
+      const outsideDir = await mkdtemp(join(tmpRoot, "klaus-env-outside-"));
+      try {
+        const filePath = join(outsideDir, "protected.yaml");
+        await writeFile(filePath, "$protected: true\nbaseUrl: https://prod.example.com\n", "utf-8");
+
+        const env = await loadEnvironment(dir, undefined, undefined, filePath);
+
+        expect(isProtectedEnvironment(env)).toBe(true);
+        expect(env.baseUrl).toBe("https://prod.example.com");
+      } finally {
+        await rm(outsideDir, { recursive: true, force: true });
+      }
+    });
+  });
 });
 
 describe("isProtectedEnvironment / toTemplateVariables", () => {

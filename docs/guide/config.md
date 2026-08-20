@@ -56,6 +56,7 @@ The following options cannot be set in `klaus.config.yaml` (the schema has no fi
 | `--allow-protected` | Setting this to `true` by default via config would erode the guardrail that refuses execution against `$protected: true` environments |
 | `--record` / `--replay` | These record/replay modes change the execution side effects (whether real network access happens) significantly, so they must be made explicit on every invocation |
 | `--json` / `--text` | The output mode depends on the caller (a human reading it vs. an agent or script parsing it), so it should be made explicit on every command-line invocation |
+| `--var` / `--env-file` | Both are ad-hoc, per-invocation overrides by nature (a one-off variable, or a one-off environment file path); giving them a persistent default in config would defeat that purpose |
 
 ## Error handling
 

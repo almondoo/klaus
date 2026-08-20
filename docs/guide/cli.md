@@ -16,7 +16,9 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 
 | Option | Description | Default |
 |---|---|---|
-| `--env <name>` | Overrides the flow definition's `env:` | the flow's `env:` |
+| `--env <name>` | Overrides the flow definition's `env:` (cannot be combined with `--env-file`) | the flow's `env:` |
+| `--env-file <path>` | Loads environment variables from an arbitrary YAML file path (relative to cwd or absolute), instead of a named environment under `environments/`. Overrides the flow definition's `env:`. Cannot be combined with `-e`/`--env` | — |
+| `--var <key=value>` | Sets an ad-hoc template variable (repeatable; the value may itself contain `=`, only the first `=` is treated as the separator). Lands in the same namespace as environment file values (bare <code v-pre>{{name}}</code>), overriding same-named keys loaded from the environment | — |
 | `--json` | Forces JSON output even on a TTY | — |
 | `--text` | Forces text output even when not a TTY (cannot be combined with `--json`) | — |
 | `--report junit` | Generates a JUnit XML report | — |
@@ -27,9 +29,13 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 | `--replay <dir>` | Replay mode: serves HTTP responses from the cassette in `<dir>` instead of the network (unrecorded requests fail with exit code 3). Cannot be combined with `--record` | — |
 | `--allow-protected` | Allow running against an environment file marked `$protected: true` (otherwise refused with exit code 3) | — |
 
-Passing a value other than `junit` to `--report` prints an error to stderr and exits with 1. Passing `--json` and `--text` together also prints an error to stderr and exits with 1 (nothing is run).
+Passing a value other than `junit` to `--report` prints an error to stderr and exits with 1. Passing `--json` and `--text` together, or `-e`/`--env` and `--env-file` together, also prints an error to stderr and exits with 1 (nothing is run). This `-e`/`--env` + `--env-file` conflict only fires for an `-e`/`--env` **typed on the command line**; a `run.env` default coming from `klaus.config.yaml` yields to an explicit `--env-file` instead of conflicting with it (see [Default CLI options](config.md)).
 
-`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` can have their defaults set via `klaus.config.yaml`. See [Default CLI options](config.md).
+`--env-file` honors a `$protected: true` key in the loaded file exactly like a named environment: the run is refused with exit code 3 unless `--allow-protected` is also passed.
+
+`--var` values are **not** registered as secrets and are **not** masked in output, unlike <code v-pre>{{env.X}}</code> (OS environment variable references). If a value is a real secret, pass it through an OS environment variable and reference it as <code v-pre>{{env.X}}</code> instead, so it benefits from the masking described in [Execution History](history.md).
+
+`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` can have their defaults set via `klaus.config.yaml`. `--var` and `--env-file` cannot — see [Default CLI options](config.md).
 
 ## Output Modes
 

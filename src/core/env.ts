@@ -143,14 +143,21 @@ export function resolveEnvironmentPath(cwd: string, envName: string): string {
 
 /**
  * 環境ファイルを読み込む。
- * - envNameOverride が指定されればそれを優先し、未指定ならフロー定義の env を使う
- * - どちらも未指定なら空の環境(変数なし)を返す
+ * - envFilePath が指定されれば最優先で、そのパスを environments/ の探索・境界チェックを経ずに
+ *   直接 loadEnvironmentFile へ渡す(CLI の --env-file 向け。任意パスを許すのが目的のため、
+ *   上方探索や isPathWithinDir 等の境界チェックは意図的に行わない)
+ * - envFilePath が未指定なら、envNameOverride が指定されればそれを優先し、未指定ならフロー定義の env を使う
+ * - いずれも未指定なら空の環境(変数なし)を返す
  */
 export async function loadEnvironment(
   cwd: string,
   flowEnvName: string | undefined,
   envNameOverride?: string,
+  envFilePath?: string,
 ): Promise<Environment> {
+  if (envFilePath !== undefined) {
+    return loadEnvironmentFile(envFilePath);
+  }
   const envName = envNameOverride ?? flowEnvName;
   if (!envName) {
     return {};

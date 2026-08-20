@@ -15,7 +15,7 @@ steps:                 # Required: at least one. name must be unique within the 
     assert: { ... }    # Optional: assertions
 ```
 
-- Environment files are resolved as `environments/<name>.yaml` by searching upward from the cwd (stopping at the first ancestor directory containing `.git`, or at the filesystem root). See [Getting Started](getting-started.md) for details. `klaus run --env <name>` overrides the flow's `env:`
+- Environment files are resolved as `environments/<name>.yaml` by searching upward from the cwd (stopping at the first ancestor directory containing `.git`, or at the filesystem root). See [Getting Started](getting-started.md) for details. `klaus run --env <name>` overrides the flow's `env:`. `klaus run --env-file <path>` loads an environment file from an arbitrary path instead (no upward search), and `klaus run --var <key=value>` adds or overrides individual variables on top — see [CLI Reference](cli.md#klaus-run)
 - Environment files are a flat map of `key: string value`. Values can use templates (such as <code v-pre>{{env.X}}</code>)
 - Setting the reserved key `$protected: true` in an environment file makes `klaus run` refuse to run against that environment by default (exit 3). It only runs when `--allow-protected` is explicitly passed. This is a guardrail against accidentally running against a production-like environment; `$protected` cannot be referenced as a template variable (<code v-pre>{{...}}</code>). Execution via `klaus ui` / the server API never passes this flag, so protected environments are always refused there
 - `$protected` can only be set or unset by editing the file directly. It is not shown in the `klaus ui` environment editor, and saving from the UI leaves any existing `$protected` value untouched

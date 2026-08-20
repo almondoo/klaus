@@ -160,6 +160,17 @@ describe("applyConfigToRunOptions", () => {
     expect(merged.env).toBe("cli-env");
   });
 
+  it("--env-file が明示指定されている場合、config の run.env は注入しない(--env-file との誤った競合防止)", () => {
+    // CLI で -e/--env を一度も打っていない(source: default)のに、config の run.env が
+    // options.env に注入されてしまうと、run.ts の -e/--env・--env-file 同時指定チェックに
+    // 誤って抵触する(このリグレッションの再現条件)。envFile が設定されている間は
+    // run.env の注入自体をスキップすることで、config 由来の既定値が明示指定の --env-file に道を譲る。
+    const options = baseOptions({ envFile: "/tmp/custom-env.yaml" });
+    const merged = applyConfigToRunOptions(options, { env: "default" }, { run: { env: "local" } });
+    expect(merged.env).toBeUndefined();
+    expect(merged.envFile).toBe("/tmp/custom-env.yaml");
+  });
+
   it("--no-history / --no-mask の負論理も source 判定で自然に扱える", () => {
     // CLI で明示的に --no-history / --no-mask を指定した場合(source: cli)は config を上書きしない
     const explicitOptions = baseOptions({ history: false, mask: false });

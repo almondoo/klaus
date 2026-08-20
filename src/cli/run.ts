@@ -19,6 +19,14 @@ import { createTextReporter, resolveUseColor } from "./reporters/text.js";
 /** run コマンドのオプション(commander から渡される値を正規化した形) */
 export interface RunCommandOptions {
   env?: string;
+  /** --env-file <path> 指定時の任意パスの環境ファイル。-e/--env と同時指定はできない */
+  envFile?: string;
+  /**
+   * --var <key=value> の累積結果(commander 側で index.ts の collect コールバックが
+   * Record<string,string> に集約済み)。テンプレートの env 名前空間へ、環境ファイルの値を
+   * 上書きする形でマージする。秘密情報としては扱わず、マスク対象にもしない(利用者の明示的な選択)
+   */
+  var?: Record<string, string>;
   json?: boolean;
   /** commander の --text。--json と同時指定はできない(非 TTY でも text 出力を強制する) */
   text?: boolean;
@@ -60,6 +68,12 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   // --json と --text も同時指定不可(--record/--replay と同じ流儀で片方のみ有効にする契約)
   if (options.json === true && options.text === true) {
     process.stderr.write("klaus: --json and --text cannot be used together\n");
+    return 1;
+  }
+
+  // -e/--env と --env-file も同時指定不可(--record/--replay と同じ流儀で片方のみ有効にする契約)
+  if (options.env !== undefined && options.envFile !== undefined) {
+    process.stderr.write("klaus: --env and --env-file cannot be used together\n");
     return 1;
   }
 
@@ -126,6 +140,8 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   const textReporter = useJson ? undefined : createTextReporter(useColor, write);
   const runOptions: RunFlowOptions = {
     envNameOverride: options.env,
+    envFilePath: options.envFile,
+    variables: options.var,
     allowProtected: options.allowProtected,
     history: options.history,
     onStepStart: textReporter ? (context) => textReporter.onStepStart(context) : undefined,

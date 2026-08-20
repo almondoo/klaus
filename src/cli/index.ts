@@ -110,7 +110,28 @@ program
   .argument("<files...>", "flow definition YAML files to run")
   .option(
     "-e, --env <name>",
-    "environment name (references environments/<name>.yaml and overrides the flow definition's env)",
+    "environment name (references environments/<name>.yaml and overrides the flow definition's env; cannot be combined with --env-file)",
+  )
+  .option(
+    "--env-file <path>",
+    "load environment variables from an arbitrary YAML file path (relative to cwd or absolute) instead of a named environment; overrides the flow definition's env; cannot be combined with -e/--env",
+  )
+  .option(
+    "--var <key=value>",
+    "set an ad-hoc template variable (repeatable; the value may itself contain '='). Overrides same-named keys loaded from the environment. NOT masked as a secret in output — use OS env + {{env.X}} for real secrets",
+    (value: string, previous: Record<string, string>) => {
+      const separatorIndex = value.indexOf("=");
+      if (separatorIndex <= 0) {
+        // separatorIndex === -1(区切りの "=" が無い)、0(キーが空)のいずれも不正値として拒否する。
+        // commander の _callParseArg は InvalidArgumentError のみ特別扱いする(--port と同じ理由)
+        throw new InvalidArgumentError(`invalid --var value (expected key=value): ${value}`);
+      }
+      // 値側に "=" を含められるよう、最初の "=" だけで分割する
+      const key = value.slice(0, separatorIndex);
+      const varValue = value.slice(separatorIndex + 1);
+      return { ...previous, [key]: varValue };
+    },
+    {} as Record<string, string>,
   )
   .option("--json", "force JSON output (prints JSON even when running on a TTY)")
   .option("--text", "force text output (prints text even when stdout is not a TTY)")

@@ -53,6 +53,19 @@ export interface RunFlowOptions {
   /** フロー定義の env を上書きする環境名。呼び出し元(CLI オプション等)から明示的に undefined が渡ることがある */
   envNameOverride?: string | undefined;
   /**
+   * -e/--env(envNameOverride)の代わりに、任意パス(cwd 相対または絶対)の環境ファイルを直接読み込む場合のパス。
+   * 指定時は environments/ ディレクトリへの上方探索・境界チェックを行わず、指定パスをそのまま
+   * loadEnvironmentFile に渡す(利用者が明示的に選んだファイルのため)。envNameOverride との排他制御は
+   * 呼び出し元(CLI の run コマンド)の責務であり、ここでは envFilePath が優先される
+   */
+  envFilePath?: string | undefined;
+  /**
+   * テンプレートの env 名前空間(environments/<name>.yaml または envFilePath で読み込んだ値)へ
+   * 上書きマージする追加変数(CLI の --var 等から渡す想定)。環境ファイルの値と同じ扱いで
+   * secrets には登録されない(マスク対象外。真のシークレットは {{env.X}}(OS 環境変数)経由にする)
+   */
+  variables?: Record<string, string> | undefined;
+  /**
    * $protected: true を付けた環境ファイルへの実行を許可するかどうか。
    * 既定は false(未指定)で、その場合 $protected な環境への実行は RuntimeError で拒否される
    * (CLI の --allow-protected から渡される想定。サーバー/UI 経由の実行はこのオプションを渡さないため、
@@ -572,9 +585,16 @@ export async function executeFlow(
 ): Promise<FlowResult> {
   const cwd = options.cwd ?? process.cwd();
   const runId = options.runId ?? randomUUID();
-  const environment = await loadEnvironment(cwd, flow.env, options.envNameOverride);
+  const environment = await loadEnvironment(
+    cwd,
+    flow.env,
+    options.envNameOverride,
+    options.envFilePath,
+  );
+  // 保護環境チェックの表示名は、--env-file 指定時はそのファイルパスを使う(名前付き環境と同様、
+  // 何を保護対象と判定したかが利用者に伝わるようにするため)
   const protectedBlockedError = checkEnvironmentAllowed(
-    options.envNameOverride ?? flow.env,
+    options.envFilePath ?? options.envNameOverride ?? flow.env,
     environment,
     options.allowProtected,
   );
@@ -631,7 +651,8 @@ export async function executeFlow(
     } else {
       const templateContext: TemplateContext = {
         captures,
-        env: toTemplateVariables(environment),
+        // --var で渡した変数は環境ファイルの値を上書きする(env namespace 内での優先順位)
+        env: { ...toTemplateVariables(environment), ...options.variables },
         secrets,
       };
       // step.retry がある場合、failed/error の間だけ再試行する(passed で即打ち切り)。

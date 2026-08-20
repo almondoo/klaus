@@ -16,7 +16,9 @@ klaus run <files...> [options]
 
 | オプション | 説明 | デフォルト |
 |---|---|---|
-| `--env <name>` | フロー定義の `env:` 指定を上書き | フローの `env:` |
+| `--env <name>` | フロー定義の `env:` 指定を上書き(`--env-file` とは併用不可) | フローの `env:` |
+| `--env-file <path>` | `environments/` 配下の名前付き環境の代わりに、任意パス(cwd 相対または絶対)の YAML ファイルから環境変数を読み込む。フロー定義の `env:` を上書きする。`-e`/`--env` とは併用不可 | — |
+| `--var <key=value>` | その場限りのテンプレート変数を設定する(繰り返し指定可。値自体に `=` を含められる。最初の `=` のみを区切りとして扱う)。環境ファイルの値と同じ名前空間(裸の <code v-pre>{{name}}</code>)に入り、環境から読み込んだ同名キーを上書きする | — |
 | `--json` | TTY でも JSON 出力を強制 | — |
 | `--text` | 非 TTY でも text 出力を強制(`--json` とは併用不可) | — |
 | `--report junit` | JUnit XML レポートを生成 | — |
@@ -27,9 +29,13 @@ klaus run <files...> [options]
 | `--replay <dir>` | replay モード: 実ネットワークではなく `<dir>` のカセットから HTTP レスポンスを再生する(記録外リクエストは exit code 3 で失敗する)。`--record` とは併用不可 | — |
 | `--allow-protected` | `$protected: true` の環境ファイルへの実行を許可する(未指定時は exit code 3 で拒否) | — |
 
-`--report` に `junit` 以外の値を渡すと stderr にエラーを出して exit 1。`--json` と `--text` を同時に指定した場合も同様に stderr にエラーを出して exit 1(何も実行しない)。
+`--report` に `junit` 以外の値を渡すと stderr にエラーを出して exit 1。`--json` と `--text`、または `-e`/`--env` と `--env-file` を同時に指定した場合も同様に stderr にエラーを出して exit 1(何も実行しない)。この `-e`/`--env` と `--env-file` の併用エラーは、**コマンドラインで明示的に指定した** `-e`/`--env` に対してのみ発生する。`klaus.config.yaml` の `run.env` による既定値は、明示指定された `--env-file` と衝突せずそちらに道を譲る([CLI オプションの既定値](config.md)参照)。
 
-`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` は `klaus.config.yaml` で既定値を設定できる。詳細は [CLI オプションの既定値](config.md) を参照。
+`--env-file` は、読み込んだファイルの `$protected: true` を名前付き環境と全く同じように尊重する: `--allow-protected` を併せて渡さない限り exit code 3 で拒否される。
+
+`--var` の値は <code v-pre>{{env.X}}</code>(OS 環境変数参照)と異なり、シークレットとして登録されず、出力でもマスクされない。真のシークレットを渡したい場合は OS 環境変数経由で <code v-pre>{{env.X}}</code> として参照し、[実行履歴](history.md)に記載のマスキングの恩恵を受けること。
+
+`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` は `klaus.config.yaml` で既定値を設定できる。`--var` と `--env-file` は設定できない。詳細は [CLI オプションの既定値](config.md) を参照。
 
 ## 出力モード
 

@@ -213,6 +213,46 @@ describe("runCommand", () => {
     }
   });
 
+  it("--env-file で指定した $protected: true のファイルは --allow-protected 無しだと戻り値 3 で拒否され、案内メッセージにファイルパスを含む", async () => {
+    const envFilePath = join(workDir, "protected-envfile.yaml");
+    await writeFile(envFilePath, "$protected: true\nbaseUrl: x\n", "utf-8");
+    const flowPath = join(workDir, "protected-via-envfile.yaml");
+    await writeFile(
+      flowPath,
+      `name: protected flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+
+    const exitCode = await runCommand([flowPath], baseOptions({ envFile: envFilePath }));
+
+    expect(exitCode).toBe(3);
+    const report = readJson();
+    expect(report.status).toBe("error");
+    // 名前付き環境の案内メッセージと異なり、--env-file はファイルパスそのものを表示名として使う
+    expect(stdoutSpy.join("")).toContain("--allow-protected");
+    expect(stdoutSpy.join("")).toContain(envFilePath);
+  });
+
+  it("--env-file で指定した $protected: true のファイルも --allow-protected と併せれば実行される", async () => {
+    const envFilePath = join(workDir, "protected-envfile-allowed.yaml");
+    await writeFile(envFilePath, `$protected: true\nbaseUrl: "${fixture.baseUrl}"\n`, "utf-8");
+    const flowPath = join(workDir, "protected-via-envfile-allowed.yaml");
+    await writeFile(
+      flowPath,
+      'name: protected flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "{{baseUrl}}/ok"\n    assert:\n      status: 200\n',
+      "utf-8",
+    );
+
+    const exitCode = await runCommand(
+      [flowPath],
+      baseOptions({ envFile: envFilePath, allowProtected: true }),
+    );
+
+    expect(exitCode).toBe(0);
+    const report = readJson();
+    expect(report.status).toBe("passed");
+  });
+
   it("--env オプションが RunFlowOptions.envNameOverride として runLoadedFlows に渡り、指定した環境ファイルが使われる", async () => {
     const cwdSpy = process.cwd;
     process.cwd = () => workDir;
@@ -242,6 +282,81 @@ describe("runCommand", () => {
     } finally {
       process.cwd = cwdSpy;
     }
+  });
+
+  it("--env と --env-file の同時指定は戻り値 1 になり stderr にエラーを出す", async () => {
+    const flowPath = join(workDir, "env-envfile-conflict.yaml");
+    await writeFile(flowPath, VALID_FLOW_YAML, "utf-8");
+    const envFilePath = join(workDir, "custom-env.yaml");
+    await writeFile(envFilePath, "baseUrl: https://example.com\n", "utf-8");
+
+    const exitCode = await runCommand(
+      [flowPath],
+      baseOptions({ env: "local", envFile: envFilePath }),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(stdoutSpy.join("")).toBe("");
+    expect(stderrSpy.join("")).toContain("klaus: --env and --env-file cannot be used together");
+  });
+
+  it("--env-file が RunFlowOptions.envFilePath として runLoadedFlows に渡り、指定した任意パスの環境ファイルが使われる", async () => {
+    const envFilePath = join(workDir, "outside-env.yaml");
+    await writeFile(envFilePath, `baseUrl: "${fixture.baseUrl}"\n`, "utf-8");
+    const flowPath = join(workDir, "env-file-flow.yaml");
+    await writeFile(
+      flowPath,
+      'name: env file flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "{{baseUrl}}/ok"\n    assert:\n      status: 200\n',
+      "utf-8",
+    );
+
+    const exitCode = await runCommand([flowPath], baseOptions({ envFile: envFilePath }));
+
+    expect(exitCode).toBe(0);
+    expect(mockedRunLoadedFlows).toHaveBeenCalledWith(
+      [expect.objectContaining({ filePath: flowPath })],
+      expect.objectContaining({ envFilePath }),
+    );
+    const report = readJson();
+    expect(report.status).toBe("passed");
+  });
+
+  it("--var で渡した値がテンプレートの env 名前空間から参照できる(環境未指定でも単独で使える)", async () => {
+    const flowPath = join(workDir, "var-only-flow.yaml");
+    await writeFile(
+      flowPath,
+      'name: var only flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "{{baseUrl}}/ok"\n    assert:\n      status: 200\n',
+      "utf-8",
+    );
+
+    const exitCode = await runCommand(
+      [flowPath],
+      baseOptions({ var: { baseUrl: fixture.baseUrl } }),
+    );
+
+    expect(exitCode).toBe(0);
+    const report = readJson();
+    expect(report.status).toBe("passed");
+  });
+
+  it("--var が --env-file で読み込んだ同名キーを上書きする", async () => {
+    const envFilePath = join(workDir, "overridden-env.yaml");
+    await writeFile(envFilePath, "baseUrl: http://127.0.0.1:1\n", "utf-8");
+    const flowPath = join(workDir, "var-overrides-env-file-flow.yaml");
+    await writeFile(
+      flowPath,
+      'name: var overrides env file flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "{{baseUrl}}/ok"\n    assert:\n      status: 200\n',
+      "utf-8",
+    );
+
+    const exitCode = await runCommand(
+      [flowPath],
+      baseOptions({ envFile: envFilePath, var: { baseUrl: fixture.baseUrl } }),
+    );
+
+    expect(exitCode).toBe(0);
+    const report = readJson();
+    expect(report.status).toBe("passed");
   });
 
   it("アサーション失敗は戻り値 4 になり、JSON の status が failed になる", async () => {
