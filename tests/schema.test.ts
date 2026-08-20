@@ -35,6 +35,21 @@ describe("flowSchema", () => {
     expect(result.steps[0]?.sse).toEqual({ maxEvents: 100, maxDurationMs: 10000 });
   });
 
+  it("retry.intervalMs のデフォルト値(1000)を適用する", () => {
+    const result = flowSchema.parse({
+      name: "retry flow",
+      steps: [
+        {
+          name: "step1",
+          request: { method: "GET", url: "https://example.com" },
+          retry: { count: 3 },
+        },
+      ],
+    });
+
+    expect(result.steps[0]?.retry).toEqual({ count: 3, intervalMs: 1000 });
+  });
+
   it("steps が空配列だと検証エラーになる", () => {
     expect(() =>
       flowSchema.parse({
@@ -286,6 +301,14 @@ describe("strict object schemas / unknown keys", () => {
         request: { method: "GET", url: "https://example.com" },
         sse: {},
         assert: { events: [{ index: 0, extraKey: 1 }] },
+      },
+    ],
+    [
+      "retry 直下",
+      {
+        name: "s",
+        request: { method: "GET", url: "https://example.com" },
+        retry: { count: 1, extraKey: 1 },
       },
     ],
   ])("%s の未知キーは検証エラーになる", (_label, step) => {

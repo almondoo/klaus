@@ -236,6 +236,21 @@ Common semantics for `events` / `messages`:
 - SSE / WS steps, which have no body, always yield ok:false. An HTTP response whose body exists but fails to parse as JSON is validated against the schema as the raw string (e.g. a schema requiring `type: object` fails, while `type: string` may pass)
 - If the schema itself is invalid and ajv fails to compile it, this does not throw; it's reported as an ok:false assertion failure instead
 
+## retry
+
+```yaml
+retry:
+  count: 3          # Required. Number of retries after the first attempt (1-100)
+  intervalMs: 500   # Optional. Fixed wait between attempts in milliseconds. Defaults to 1000
+```
+
+- `count` is the number of *retries* after the first attempt, so the step runs **at most `count + 1` times in total**
+- The step is retried when its outcome is **`failed`** (assertion failure) or **`error`** (thrown exception, such as a connection failure or timeout). A `passed` outcome stops the loop immediately, even before `count` is exhausted
+- The wait between attempts is fixed at `intervalMs` (no backoff, no condition expressions)
+- Applies uniformly to `request`, `sse`, and `ws` steps — the whole step (request/response and assertions) is re-run on each attempt
+- **Only the final attempt is recorded**: one entry in the step results, one history entry, and a single `onStepStart` / `onStepComplete` pair per step. Earlier failed/error attempts are not kept
+- When `retry` is set, the result and history entry carry an `attempts` field with the number of executions actually performed (1 or more). Without `retry`, `attempts` is omitted. `durationMs` remains the final attempt's own duration, as before
+
 ## Flow Behavior on Step Failure
 
 - When a step becomes **failed** (assertion failure) or **error** (runtime error), the **remaining steps in that flow are not run and are recorded as skipped**

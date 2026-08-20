@@ -339,6 +339,29 @@ export const wsSchema = z
 export type WsDef = z.infer<typeof wsSchema>;
 
 /**
+ * ステップ単位のリトライ設定。assert 失敗(failed)・例外(error)の両方をトリガーとし、
+ * passed になった時点でループを止める。バックオフや条件式は持たず、固定間隔のみ。
+ */
+export const retrySchema = z.strictObject({
+  count: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .describe(
+      "Number of retries after the first attempt (Hurl semantics: max count+1 total executions). Integer between 1 and 100.",
+    ),
+  intervalMs: z
+    .number()
+    .int()
+    .min(0)
+    .max(600000)
+    .default(1000)
+    .describe("Fixed wait between attempts in milliseconds. Defaults to 1000."),
+});
+export type RetryDef = z.infer<typeof retrySchema>;
+
+/**
  * ステップ定義。request / ws / use のいずれか一方を必ず指定する(use は request/ws/sse と排他)。
  * use を指定した場合、実際の request/sse は loader.ts のロード時に参照先ファイルから取り込まれる
  * (materialize)ため、スキーマとしては request/ws を要求しない(ロード経路を持たない
@@ -376,6 +399,11 @@ export const stepSchema = z
         "Map of variable name to JSONPath expression, extracted from the step's response body and made available as `{{name}}` in later steps.",
       ),
     assert: assertSchema.optional().describe("Assertions to evaluate against the step's result."),
+    retry: retrySchema
+      .optional()
+      .describe(
+        "Retry the whole step (request/ws/sse) when its outcome is `failed` (assertion failure) or `error` (thrown exception). Only the final attempt is recorded in results/history.",
+      ),
   })
   .superRefine((step, ctx) => {
     if (step.request !== undefined && step.ws !== undefined) {

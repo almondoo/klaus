@@ -1183,3 +1183,158 @@ describe("ws steps", () => {
     }
   });
 });
+
+describe("step.retry", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let cwd: string;
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+  });
+
+  afterEach(async () => {
+    if (cwd) {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("failed が2回続いた後 3 回目で passed になる: attempts=3、後続ステップは通常通り実行される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-retry-"));
+    let hitCount = 0;
+    const server = createServer((req, res) => {
+      if (req.url === "/flaky") {
+        hitCount++;
+        if (hitCount < 3) {
+          res.writeHead(500);
+          res.end();
+          return;
+        }
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "retry flow",
+        steps: [
+          {
+            name: "flaky-step",
+            request: { method: "GET", url: `${baseUrl}/flaky` },
+            assert: { status: 200 },
+            retry: { count: 2, intervalMs: 0 },
+          },
+          {
+            name: "next-step",
+            request: { method: "GET", url: `${baseUrl}/ok` },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "retry-flow.yaml", { cwd, history: false });
+
+      expect(result.status).toBe("passed");
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(result.steps[0]?.attempts).toBe(3);
+      expect(hitCount).toBe(3);
+      expect(result.steps[1]?.status).toBe("passed");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("リトライ回数を使い切ると failed のまま確定し、以降のステップは skipped になる。履歴にも attempts が記録される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-retry-"));
+    let hitCount = 0;
+    const server = createServer((_req, res) => {
+      hitCount++;
+      res.writeHead(500);
+      res.end();
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "retry exhausted flow",
+        steps: [
+          {
+            name: "always-fail",
+            request: { method: "GET", url: `${baseUrl}/always500` },
+            assert: { status: 200 },
+            retry: { count: 2, intervalMs: 0 },
+          },
+          {
+            name: "next-step",
+            request: { method: "GET", url: `${baseUrl}/ok` },
+          },
+        ],
+      });
+
+      const captured: HistoryEntry[] = [];
+      const result = await executeFlow(flow, "retry-exhausted-flow.yaml", {
+        cwd,
+        history: (entry) => {
+          captured.push(entry);
+        },
+      });
+
+      expect(result.steps[0]?.status).toBe("failed");
+      expect(result.steps[0]?.attempts).toBe(3);
+      expect(hitCount).toBe(3);
+      expect(result.steps[1]?.status).toBe("skipped");
+
+      const entry = captured.find((e) => e.step === "always-fail");
+      expect(entry?.attempts).toBe(3);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("error(接続不能)も再試行の対象になる: count=1 で attempts=2", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-retry-"));
+    const closedPort = await reserveClosedPort();
+
+    const flow = flowSchema.parse({
+      name: "retry error flow",
+      steps: [
+        {
+          name: "unreachable",
+          request: { method: "GET", url: `http://127.0.0.1:${closedPort}/` },
+          retry: { count: 1, intervalMs: 0 },
+        },
+      ],
+    });
+
+    const result = await executeFlow(flow, "retry-error-flow.yaml", { cwd, history: false });
+
+    expect(result.steps[0]?.status).toBe("error");
+    expect(result.steps[0]?.attempts).toBe(2);
+  });
+
+  it("retry 未指定の場合 attempts は undefined のまま(既存挙動に影響しない)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-retry-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "no retry flow",
+        steps: [
+          { name: "step1", request: { method: "GET", url: baseUrl }, assert: { status: 200 } },
+        ],
+      });
+
+      const result = await executeFlow(flow, "no-retry-flow.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(result.steps[0]?.attempts).toBeUndefined();
+    } finally {
+      await closeServer(server);
+    }
+  });
+});

@@ -266,6 +266,11 @@ function buildStepResultBase(
 
 type HistorySink = (entry: HistoryEntry) => void | Promise<void>;
 
+/** 指定ミリ秒だけ待つ(step.retry の試行間隔に使う) */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * 1ステップを実行する。テンプレート展開・リクエスト送信・アサーション評価を行う。
  * 履歴書き込み自体はここでは行わず、書き込むべきエントリを historyEntry として返すだけにする
@@ -629,14 +634,41 @@ export async function executeFlow(
         env: toTemplateVariables(environment),
         secrets,
       };
-      const outcome = await executeStep(
-        step,
-        templateContext,
-        runId,
-        flow.name,
-        activeRecording,
-        protectedBlockedError,
+      // step.retry がある場合、failed/error の間だけ再試行する(passed で即打ち切り)。
+      // 中間試行の結果は捨て、最終試行のみを記録する(履歴・onStepStart/onStepComplete も1回ずつ)。
+      const maxAttempts = step.retry ? step.retry.count + 1 : 1;
+      let attempt = 0;
+      let outcome: {
+        result: StepResult;
+        captured: Record<string, unknown>;
+        historyEntry?: HistoryEntry;
+      };
+      do {
+        attempt++;
+        if (attempt > 1 && step.retry) {
+          await sleep(step.retry.intervalMs);
+        }
+        outcome = await executeStep(
+          step,
+          templateContext,
+          runId,
+          flow.name,
+          activeRecording,
+          protectedBlockedError,
+        );
+      } while (
+        step.retry &&
+        attempt < maxAttempts &&
+        (outcome.result.status === "failed" || outcome.result.status === "error")
       );
+
+      if (step.retry) {
+        outcome.result = { ...outcome.result, attempts: attempt };
+        if (outcome.historyEntry) {
+          outcome.historyEntry = { ...outcome.historyEntry, attempts: attempt };
+        }
+      }
+
       result = outcome.result;
       captured = outcome.captured;
       historyEntry = outcome.historyEntry;

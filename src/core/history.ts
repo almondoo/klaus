@@ -32,6 +32,8 @@ export interface HistoryEntry {
   assertions: AssertionResult[];
   /** executeSingleRequest(フローを介さない単発実行)経由で書き込まれた場合 "single"。通常のフロー実行では省略する */
   source?: "single";
+  /** step.retry を設定した場合のみ設定。実際に実行された試行回数(1 以上) */
+  attempts?: number;
 }
 
 /**
