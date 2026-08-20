@@ -343,6 +343,40 @@ describe("cli integration", () => {
     expect(xml).toContain('<testcase name="ok"');
   });
 
+  it("(e2) --report junit,tap + --report-file を2回指定すると両方のレポートファイルが生成される", async () => {
+    const flowPath = join(workDir, "success-for-multi-report.yaml");
+    await writeFile(
+      flowPath,
+      `name: success flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+    const junitPath = join(workDir, "multi.xml");
+    const tapPath = join(workDir, "multi.tap");
+
+    const result = await runCli(
+      [
+        "run",
+        flowPath,
+        "--no-history",
+        "--report",
+        "junit,tap",
+        "--report-file",
+        junitPath,
+        "--report-file",
+        tapPath,
+      ],
+      workDir,
+    );
+
+    expect(result.status).toBe(0);
+    await access(junitPath);
+    await access(tapPath);
+    const xml = await readFile(junitPath, "utf-8");
+    expect(xml.startsWith('<?xml version="1.0" encoding="UTF-8"?>')).toBe(true);
+    const tap = await readFile(tapPath, "utf-8");
+    expect(tap.startsWith("TAP version 13")).toBe(true);
+  });
+
   it("(h) generate → validate: OpenAPI spec から生成したフロー YAML が validate を通る", async () => {
     const specPath = join(workDir, "generate-source.yaml");
     await writeFile(

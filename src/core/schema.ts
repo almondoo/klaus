@@ -509,6 +509,29 @@ export const environmentSchema = z
 export type Environment = z.infer<typeof environmentSchema>;
 
 /**
+ * klaus.config.yaml の run.report / CLI の --report が共有するレポート形式の文法。
+ * カンマ区切りリスト(前後空白は trim して許容)で、各要素はこの配列のいずれかでなければならない。
+ * CLI 側(src/cli/run.ts の resolveReportTargets)もこの一覧・パース関数を再利用し、
+ * サポートするフォーマットが増減したときの更新箇所を一つに保つ。
+ */
+export const REPORT_FORMATS = ["junit", "tap"] as const;
+export type ReportFormat = (typeof REPORT_FORMATS)[number];
+
+function isReportFormat(value: string): value is ReportFormat {
+  return (REPORT_FORMATS as readonly string[]).includes(value);
+}
+
+/**
+ * "junit" や "junit,tap" のようなカンマ区切りレポート形式リストをパースする。
+ * 各要素を trim してから REPORT_FORMATS と照合し、空要素(前後・連続カンマ)または未知の形式が
+ * 1つでもあれば undefined を返す(呼び出し側はこれを「不正な --report/run.report 値」として扱う)。
+ */
+export function parseReportFormatList(value: string): ReportFormat[] | undefined {
+  const formats = value.split(",").map((entry) => entry.trim());
+  return formats.every(isReportFormat) ? formats : undefined;
+}
+
+/**
  * klaus.config.yaml(CLI オプションの既定値ファイル)のスキーマ。
  * `run` / `ui` サブコマンドのオプションのうち、既定値として設定してよいものだけを列挙する。
  * 意図的に含めないオプション:
@@ -522,13 +545,20 @@ export const configSchema = z.strictObject({
     .strictObject({
       env: z.string().optional().describe("Default value for `klaus run --env <name>`."),
       report: z
-        .literal("junit")
+        .string()
+        .refine((value) => parseReportFormatList(value) !== undefined, {
+          message: `must be a comma-separated list of ${REPORT_FORMATS.join(", ")} (e.g. "junit" or "junit,tap")`,
+        })
         .optional()
-        .describe('Default value for `klaus run --report <type>`. Only "junit" is supported.'),
+        .describe(
+          `Default value for \`klaus run --report <list>\`. Comma-separated list of ${REPORT_FORMATS.join(", ")} (e.g. "junit,tap").`,
+        ),
       reportFile: z
         .string()
         .optional()
-        .describe("Default value for `klaus run --report-file <path>`."),
+        .describe(
+          "Default value for `klaus run --report-file <path>`. Only supports a single value; combined with a multi-format `report`, this yields the same --report-file count-mismatch error as the CLI.",
+        ),
       history: z
         .boolean()
         .optional()

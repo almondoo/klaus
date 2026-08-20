@@ -21,8 +21,8 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 | `--var <key=value>` | Sets an ad-hoc template variable (repeatable; the value may itself contain `=`, only the first `=` is treated as the separator). Lands in the same namespace as environment file values (bare <code v-pre>{{name}}</code>), overriding same-named keys loaded from the environment | — |
 | `--json` | Forces JSON output even on a TTY | — |
 | `--text` | Forces text output even when not a TTY (cannot be combined with `--json`) | — |
-| `--report junit` | Generates a JUnit XML report | — |
-| `--report-file <path>` | Output path for the report | `klaus-report.xml` |
+| `--report <list>` | Comma-separated list of report formats to generate: `junit`, `tap` (e.g. `junit,tap`) | — |
+| `--report-file <path>` | Output path for the report format(s) given via `--report` (repeatable; see below) | per-format default (see below) |
 | `--no-history` | Disables writing to the history JSONL | history enabled |
 | `--no-mask` | Disables secret masking in stdout output (JSON/text) | masking enabled |
 | `--record <dir>` | Record mode: sends real HTTP requests and saves masked request/response pairs to a cassette in `<dir>` | — |
@@ -32,7 +32,7 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 | `--tags <list>` | Comma-separated list of tags; only run flows whose `tags:` includes at least one of them (OR semantics; see "Tag-based flow selection" below) | — |
 | `--exclude-tags <list>` | Comma-separated list of tags; drop flows whose `tags:` includes any of them. Takes precedence over `--tags` | — |
 
-Passing a value other than `junit` to `--report` prints an error to stderr and exits with 1. Passing `--json` and `--text` together, or `-e`/`--env` and `--env-file` together, also prints an error to stderr and exits with 1 (nothing is run). This `-e`/`--env` + `--env-file` conflict only fires for an `-e`/`--env` **typed on the command line**; a `run.env` default coming from `klaus.config.yaml` yields to an explicit `--env-file` instead of conflicting with it (see [Default CLI options](config.md)).
+`--report` takes a comma-separated list of formats (entries are trimmed; each must be `junit` or `tap`). Passing an unknown or empty format entry prints an error to stderr and exits with 1. With N formats given to `--report`, `--report-file` must be passed either **exactly N times** (in the same order, pairing the 1st `--report-file` with the 1st format and so on) or **not at all** (in which case each format is written to its own default filename: `klaus-report.xml` for `junit`, `klaus-report.tap` for `tap`). Any other count — e.g. one `--report-file` for two formats — is rejected with an error and exits with 1 without writing any file. This generalizes the single-format behavior: `--report junit` alone still defaults to `klaus-report.xml`, unchanged from before. Passing `--json` and `--text` together, or `-e`/`--env` and `--env-file` together, also prints an error to stderr and exits with 1 (nothing is run). This `-e`/`--env` + `--env-file` conflict only fires for an `-e`/`--env` **typed on the command line**; a `run.env` default coming from `klaus.config.yaml` yields to an explicit `--env-file` instead of conflicting with it (see [Default CLI options](config.md)).
 
 `--env-file` honors a `$protected: true` key in the loaded file exactly like a named environment: the run is refused with exit code 3 unless `--allow-protected` is also passed.
 
@@ -143,6 +143,14 @@ full detail (request/response snapshots, assertions, etc).
 With `--report junit`, an XML file is written to `--report-file` where each flow becomes a `<testsuite>` and each step a `<testcase>`. It can be combined with either the text or JSON stdout output independently. Special characters are XML-escaped.
 
 Secrets sourced from <code v-pre>{{env.X}}</code> are masked using the same rules as history (URL-encoded forms included (encodeURIComponent, form-urlencoded, and the encodeURI form used to approximate WHATWG URL normalization) as well as JSON-escaped forms; see [Execution History](history.md) for details). This masking is also applied by default to the stdout text / JSON output (including `--json`). Pass `--no-mask` to disable masking on the stdout side only — the history JSONL and JUnit file output are always masked and are unaffected by `--no-mask`. Control characters sourced from the response body are converted to visible escapes (`\xNN`), except for the tab/LF/CR that XML 1.0 permits. **This control-character escaping applies only to the JUnit report and text output; it is not applied to the JSON output** (including `--json`).
+
+### TAP Report
+
+With `--report tap`, a [TAP version 13](https://testanything.org/) file is written to `--report-file`: a `1..N` plan line (N = total step count across all flows) followed by one `ok`/`not ok` line per step, in execution order, named `<flowName> > <stepName>`. A `skipped` step is reported as `ok` with a `# SKIP <reason>` directive (TAP has no separate "skip" line type). A `failed`/`error` step is reported as `not ok`, followed by one `# ...` diagnostic comment per failed assertion (or the runtime error message for `error` steps). Newlines and `#` in flow/step names or diagnostic messages are escaped so they cannot break the line-oriented TAP format.
+
+Masking follows the same rules as the JUnit report (secrets from <code v-pre>{{env.X}}</code>, masked before control-character sanitization, unaffected by `--no-mask`).
+
+Pass a comma-separated list to `--report` (e.g. `--report junit,tap`) to generate both formats in one run — see the `--report`/`--report-file` pairing rule above.
 
 ## Exit code
 

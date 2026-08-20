@@ -21,8 +21,8 @@ klaus run <files...> [options]
 | `--var <key=value>` | その場限りのテンプレート変数を設定する(繰り返し指定可。値自体に `=` を含められる。最初の `=` のみを区切りとして扱う)。環境ファイルの値と同じ名前空間(裸の <code v-pre>{{name}}</code>)に入り、環境から読み込んだ同名キーを上書きする | — |
 | `--json` | TTY でも JSON 出力を強制 | — |
 | `--text` | 非 TTY でも text 出力を強制(`--json` とは併用不可) | — |
-| `--report junit` | JUnit XML レポートを生成 | — |
-| `--report-file <path>` | レポートの出力先 | `klaus-report.xml` |
+| `--report <list>` | 生成するレポート形式のカンマ区切りリスト: `junit`、`tap`(例: `junit,tap`) | — |
+| `--report-file <path>` | `--report` で指定したレポート形式の出力先(繰り返し指定可。詳細は後述) | フォーマットごとの既定値(後述) |
 | `--no-history` | 履歴 JSONL への書き込みを無効化 | 履歴有効 |
 | `--no-mask` | stdout(JSON/text 出力とも)へのシークレットマスキングを無効化 | マスク有効 |
 | `--record <dir>` | record モード: 実際に HTTP リクエストを送信し、マスク済みの request/response ペアを `<dir>` のカセットに保存する | — |
@@ -32,7 +32,7 @@ klaus run <files...> [options]
 | `--tags <list>` | カンマ区切りのタグ一覧。フローの `tags:` にいずれか1つでも含まれるものだけを実行する(OR 条件。詳細は後述の「タグによるフロー選択」を参照) | — |
 | `--exclude-tags <list>` | カンマ区切りのタグ一覧。フローの `tags:` にいずれか1つでも含まれるものを除外する。`--tags` より優先される | — |
 
-`--report` に `junit` 以外の値を渡すと stderr にエラーを出して exit 1。`--json` と `--text`、または `-e`/`--env` と `--env-file` を同時に指定した場合も同様に stderr にエラーを出して exit 1(何も実行しない)。この `-e`/`--env` と `--env-file` の併用エラーは、**コマンドラインで明示的に指定した** `-e`/`--env` に対してのみ発生する。`klaus.config.yaml` の `run.env` による既定値は、明示指定された `--env-file` と衝突せずそちらに道を譲る([CLI オプションの既定値](config.md)参照)。
+`--report` はカンマ区切りのフォーマット一覧を受け取る(各要素は trim され、`junit` か `tap` のいずれかでなければならない)。未知のフォーマットや空要素を1つでも渡すと stderr にエラーを出して exit 1。`--report` に N 個のフォーマットを渡した場合、`--report-file` は**同じ順序でちょうど N 回**指定する(1個目の `--report-file` が1個目のフォーマットとペアになる)か、**一度も指定しない**(この場合フォーマットごとの既定ファイル名 — `junit` は `klaus-report.xml`、`tap` は `klaus-report.tap` — に書き出される)かのいずれかにする。それ以外の回数(例: 2フォーマットに対して `--report-file` を1回だけ)はエラーとして拒否され、exit 1 でどのファイルも書き出さない。これは単一フォーマットの従来挙動をそのまま一般化したものであり、`--report junit` 単体は変わらず `klaus-report.xml` が既定値になる。`--json` と `--text`、または `-e`/`--env` と `--env-file` を同時に指定した場合も同様に stderr にエラーを出して exit 1(何も実行しない)。この `-e`/`--env` と `--env-file` の併用エラーは、**コマンドラインで明示的に指定した** `-e`/`--env` に対してのみ発生する。`klaus.config.yaml` の `run.env` による既定値は、明示指定された `--env-file` と衝突せずそちらに道を譲る([CLI オプションの既定値](config.md)参照)。
 
 `--env-file` は、読み込んだファイルの `$protected: true` を名前付き環境と全く同じように尊重する: `--allow-protected` を併せて渡さない限り exit code 3 で拒否される。
 
@@ -143,6 +143,14 @@ request/response スナップショットや assertions などの詳細を持つ
 `--report junit` で flow = `<testsuite>`、step = `<testcase>` の XML を `--report-file` に書き出す。stdout の text / JSON 出力とは独立して併用できる。特殊文字は XML エスケープされる。
 
 <code v-pre>{{env.X}}</code> 由来のシークレットは履歴 JSONL と同じ規則でマスクされる(URL エンコード形(encodeURIComponent 形・form-urlencoded 形・WHATWG URL 正規化に近い encodeURI 形)・JSON エスケープ形も対象。詳細は [実行履歴](history.md) を参照)。このマスクは stdout の text / JSON 出力(`--json` を含む)にも既定で適用される。`--no-mask` を付けると stdout 側のマスクだけを無効化できる — 履歴 JSONL・JUnit ファイル出力は常にマスクされ、`--no-mask` の影響を受けない。レスポンス本文由来の制御文字は XML 1.0 が許容するタブ・LF・CR 以外を可視エスケープ(`\xNN`)に変換したうえで書き出される。**この制御文字の可視エスケープは JUnit レポートと text 出力にのみ適用され、JSON 出力(`--json` を含む)には適用されない。**
+
+### TAP レポート
+
+`--report tap` で [TAP version 13](https://testanything.org/) 形式のファイルを `--report-file` に書き出す: 先頭の `1..N` プラン行(N = 全フロー通しての総ステップ数)に続けて、実行順に1ステップ1行の `ok`/`not ok` 行(`<flowName> > <stepName>` という名前)が並ぶ。`skipped` ステップは `# SKIP <理由>` ディレクティブ付きの `ok` として表現される(TAP には専用の skip 行が無いため)。`failed`/`error` ステップは `not ok` になり、失敗したアサーションごとに1行の `# ...` 診断コメント(`error` ステップは実行時エラーメッセージ)が続く。flow/step 名や診断メッセージに含まれる改行と `#` は、行指向の TAP フォーマットを壊さないようエスケープされる。
+
+マスキングは JUnit レポートと同じ規則に従う(<code v-pre>{{env.X}}</code> 由来のシークレットを制御文字のサニタイズより先にマスクし、`--no-mask` の影響を受けない)。
+
+`--report` にカンマ区切りリストを渡す(例: `--report junit,tap`)と、1回の実行で両方のフォーマットを生成できる。ペアリングの規則は前述の `--report`/`--report-file` の説明を参照。
 
 ## exit code
 

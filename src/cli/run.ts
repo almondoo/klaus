@@ -9,6 +9,9 @@ import {
   maskDeep,
   maskString,
   ParseError,
+  parseReportFormatList,
+  REPORT_FORMATS,
+  type ReportFormat,
   type RunFlowOptions,
   type RunResult,
   runLoadedFlows,
@@ -16,7 +19,72 @@ import {
 import { determineExitCode } from "./exit-code.js";
 import { formatJson } from "./reporters/json.js";
 import { formatJUnit } from "./reporters/junit.js";
+import { formatTap } from "./reporters/tap.js";
 import { createTextReporter, resolveUseColor } from "./reporters/text.js";
+
+/** --report のフォーマットごとの既定ファイル名(--report-file を1回も指定しなかった場合に使う) */
+const DEFAULT_REPORT_FILENAMES: Record<ReportFormat, string> = {
+  junit: "klaus-report.xml",
+  tap: "klaus-report.tap",
+};
+
+/** 1 フォーマット分の (フォーマット, 出力先パス) の組 */
+interface ReportTarget {
+  format: ReportFormat;
+  filePath: string;
+}
+
+type ResolveReportTargetsResult =
+  | { ok: true; targets: ReportTarget[] }
+  | { ok: false; message: string };
+
+/**
+ * --report / --report-file(klaus.config.yaml の run.report / run.reportFile 適用後の値)から、
+ * 実際に書き出す (フォーマット, 出力パス) の組を解決する。
+ * - --report 未指定なら何も書き出さない(targets: [])。--report-file の値は無視する
+ *   (従来どおり: レポート形式を指定しない限り --report-file は使われない)。
+ * - --report のフォーマット一覧(カンマ区切り)のいずれかが不明なら ok: false。
+ * - --report-file は文字列(単一値。klaus.config.yaml の run.reportFile 由来、または commander の
+ *   デフォルト値の名残)か配列(commander の --report-file 複数回指定)のいずれかで渡ってくる。
+ *   0個(配列なら空配列)= 各フォーマットの既定ファイル名(DEFAULT_REPORT_FILENAMES)を使う。
+ *   フォーマット数と同数 = --report のフォーマット順とペアにする。
+ *   それ以外の個数は ok: false にする(指定漏れ・過不足に気付かず一部のレポートが意図せず
+ *   既定ファイル名で上書きされる事故を避けるため)。
+ */
+function resolveReportTargets(
+  report: string | undefined,
+  reportFile: string | string[],
+): ResolveReportTargetsResult {
+  if (report === undefined) {
+    return { ok: true, targets: [] };
+  }
+
+  const formats = parseReportFormatList(report);
+  if (formats === undefined) {
+    return {
+      ok: false,
+      message: `klaus: unknown report type in "${report}" (supported: ${REPORT_FORMATS.join(", ")})`,
+    };
+  }
+
+  const files = Array.isArray(reportFile) ? reportFile : [reportFile];
+  if (files.length !== 0 && files.length !== formats.length) {
+    return {
+      ok: false,
+      message:
+        `klaus: --report-file must be given exactly ${formats.length} time(s) to match --report "${report}" ` +
+        `(got ${files.length}); omit --report-file entirely to use the default filenames`,
+    };
+  }
+
+  // files.length === 0 の場合は常に既定ファイル名(files[index] は undefined)、
+  // files.length === formats.length の場合は常に files[index] が定義される(上のチェックで保証済み)
+  const targets = formats.map((format, index) => ({
+    format,
+    filePath: files[index] ?? DEFAULT_REPORT_FILENAMES[format],
+  }));
+  return { ok: true, targets };
+}
 
 /** run コマンドのオプション(commander から渡される値を正規化した形) */
 export interface RunCommandOptions {
@@ -32,8 +100,14 @@ export interface RunCommandOptions {
   json?: boolean;
   /** commander の --text。--json と同時指定はできない(非 TTY でも text 出力を強制する) */
   text?: boolean;
+  /** カンマ区切りのレポート形式リスト(例: "junit" または "junit,tap")。有効な値は core の REPORT_FORMATS を参照 */
   report?: string;
-  reportFile: string;
+  /**
+   * --report-file の値。単一値(klaus.config.yaml の run.reportFile、または呼び出し側が直接
+   * runCommand を呼ぶ場合)は string、commander の --report-file 複数回指定は string[] で渡ってくる。
+   * 実際の (フォーマット, パス) への解決は resolveReportTargets が行う。
+   */
+  reportFile: string | string[];
   /** commander の --no-history により、指定が無ければ true(有効)になる */
   history: boolean;
   /**
@@ -100,14 +174,15 @@ function filterFlowsByTags(
 
 /**
  * run コマンド本体。
- * 0. --record と --replay、--json と --text の同時指定を検査(いずれも stderr + exit 1、何も実行しない)
+ * 0. --record と --replay、--json と --text、--report/--report-file の組み合わせを検査
+ *    (いずれも stderr + exit 1、何も実行しない)
  * 1. 全ファイルを loadFlow でパース検証(--data 指定時は loadDataFile も並行して読み込む。
  *    いずれか1件でも ParseError なら exit 2、何も実行しない)
  * 2. --tags / --exclude-tags でフローを絞り込む(filterFlowsByTags。--data によるイテレーション展開より前、
  *    runLoadedFlows に渡す前に行う。絞り込んだ結果が0件なら stderr + exit 1、何も実行しない)
  * 3. runLoadedFlows で実行(1.で読み込み・2.で絞り込み済みの Flow・データ行をそのまま渡し、二重パースを避ける。
  *    environments/*.yaml の ParseError もここで捕捉し exit 2 に丸める)
- * 4. 出力(text/JSON + 任意で JUnit ファイル)
+ * 4. 出力(text/JSON + 任意で 0.で解決したレポートファイル1つ以上)
  * 5. RunResult から exit code を決定して返す
  *
  * ParseError 以外の例外はそのまま呼び出し元へ投げる(呼び出し元で exit 1 に変換する契約)。
@@ -128,6 +203,14 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   // -e/--env と --env-file も同時指定不可(--record/--replay と同じ流儀で片方のみ有効にする契約)
   if (options.env !== undefined && options.envFile !== undefined) {
     process.stderr.write("klaus: --env and --env-file cannot be used together\n");
+    return 1;
+  }
+
+  // --report/--report-file の整合性検査(フォーマット不明・個数不一致)。
+  // フロー読み込み・実行より前に検査することで、無駄な読み込み・実行を避ける。
+  const reportResolution = resolveReportTargets(options.report, options.reportFile);
+  if (!reportResolution.ok) {
+    process.stderr.write(`${reportResolution.message}\n`);
     return 1;
   }
 
@@ -201,8 +284,8 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   }
 
   // 3. 実行(テキストモードは onStepStart/onStepComplete で逐次出力する)
-  // stdout(text/JSON いずれも)と JUnit ファイル出力の両方で使う secrets({{env.X}} 等で解決した値)。
-  // --no-mask 指定時は options.mask が false になり、stdout 側のマスキングのみ無効化する(JUnit は従来どおり)。
+  // stdout(text/JSON いずれも)とレポートファイル出力(JUnit/TAP)の両方で使う secrets({{env.X}} 等で解決した値)。
+  // --no-mask 指定時は options.mask が false になり、stdout 側のマスキングのみ無効化する(レポートファイルは従来どおり)。
   const collectedSecrets: string[] = [];
   /**
    * runner の onSecrets はステップ単位(そのステップの onStepComplete より前)で発火するため、
@@ -279,14 +362,17 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     textReporter?.printSummary(runResult);
   }
 
-  if (options.report === "junit") {
-    // stdout(text/JSON)とは別経路で、JUnit ファイルにのみ secrets をマスクする
-    await writeFile(
-      options.reportFile,
-      formatJUnit(runResult, { secrets: collectedSecrets }),
-      "utf-8",
-    );
-  }
+  // stdout(text/JSON)とは別経路で、レポートファイルにのみ secrets をマスクする。
+  // 複数フォーマット指定時は独立した書き込みのため並行して書き出す。
+  await Promise.all(
+    reportResolution.targets.map((target) => {
+      const formatted =
+        target.format === "junit"
+          ? formatJUnit(runResult, { secrets: collectedSecrets })
+          : formatTap(runResult, { secrets: collectedSecrets });
+      return writeFile(target.filePath, formatted, "utf-8");
+    }),
+  );
 
   // 5. exit code
   return determineExitCode(runResult);

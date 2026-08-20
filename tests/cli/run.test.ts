@@ -422,6 +422,88 @@ describe("runCommand", () => {
     }
   });
 
+  it("--report junit,tap を指定すると --report-file を2回指定した順にペアで両方のファイルが書き出される", async () => {
+    const flowPath = join(workDir, "success-for-multi-report.yaml");
+    await writeFile(
+      flowPath,
+      `name: success flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+    const junitPath = join(workDir, "multi-report.xml");
+    const tapPath = join(workDir, "multi-report.tap");
+
+    const exitCode = await runCommand(
+      [flowPath],
+      baseOptions({ report: "junit,tap", reportFile: [junitPath, tapPath] }),
+    );
+
+    expect(exitCode).toBe(0);
+    const xml = await readFile(junitPath, "utf-8");
+    expect(xml).toContain("<testsuite");
+    expect(xml).toContain('<testcase name="ok"');
+    const tap = await readFile(tapPath, "utf-8");
+    expect(tap).toContain("TAP version 13");
+    expect(tap).toContain("ok 1 - success flow > ok");
+  });
+
+  it("--report にフォーマット数と異なる回数の --report-file を渡すと exit 1 で何も書き出さない", async () => {
+    const flowPath = join(workDir, "success-for-report-count-mismatch.yaml");
+    await writeFile(
+      flowPath,
+      `name: success flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+    const onlyPath = join(workDir, "count-mismatch.xml");
+
+    const exitCode = await runCommand(
+      [flowPath],
+      // 2 フォーマットに対して --report-file は1個(baseOptions のデフォルトが単一 string で来るケースを兼ねる)
+      baseOptions({ report: "junit,tap", reportFile: onlyPath }),
+    );
+
+    expect(exitCode).toBe(1);
+    expect(stderrSpy.join("")).toContain("--report-file must be given exactly 2 time(s)");
+    await expect(access(onlyPath)).rejects.toThrow();
+  });
+
+  it("--report に未知のフォーマットを渡すと exit 1", async () => {
+    const flowPath = join(workDir, "success-for-unknown-report.yaml");
+    await writeFile(flowPath, "name: any\nsteps: []\n", "utf-8");
+
+    const exitCode = await runCommand([flowPath], baseOptions({ report: "junit,bogus" }));
+
+    expect(exitCode).toBe(1);
+    expect(stderrSpy.join("")).toContain('unknown report type in "junit,bogus"');
+  });
+
+  it("--report を指定し --report-file を省略すると、フォーマットごとの既定ファイル名(klaus-report.xml / klaus-report.tap)に書き出す", async () => {
+    // DEFAULT_REPORT_FILENAMES は相対パスのため、既定値どおりの挙動を確認するにはカレントディレクトリを
+    // 一時的に workDir に切り替える(commander 経由で実際に klaus run を叩いたときの cwd 相対解決を再現する)
+    const originalCwd = process.cwd();
+    process.chdir(workDir);
+    try {
+      const flowPath = join(workDir, "success-for-default-report-file.yaml");
+      await writeFile(
+        flowPath,
+        `name: success flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+      const defaultJunitPath = join(workDir, "klaus-report.xml");
+      const defaultTapPath = join(workDir, "klaus-report.tap");
+
+      const exitCode = await runCommand(
+        [flowPath],
+        baseOptions({ report: "junit,tap", reportFile: [] }),
+      );
+
+      expect(exitCode).toBe(0);
+      await access(defaultJunitPath);
+      await access(defaultTapPath);
+    } finally {
+      process.chdir(originalCwd);
+    }
+  });
+
   it("JSON 出力: {{env.X}} で解決したシークレットが平文で現れず *** にマスクされる", async () => {
     const SECRET_KEY = "KLAUS_TEST_JSON_SECRET";
     const SECRET_VALUE = "json-output-secret-value-789";

@@ -37,7 +37,7 @@ ui:
 | キー | 対応する CLI オプション | 型 |
 |---|---|---|
 | `run.env` | `klaus run --env <name>` | string |
-| `run.report` | `klaus run --report <type>` | `"junit"` |
+| `run.report` | `klaus run --report <list>` | `"junit"` / `"tap"` のカンマ区切りリスト(例: `"junit,tap"`) |
 | `run.reportFile` | `klaus run --report-file <path>` | string |
 | `run.history` | `klaus run --no-history`(`false` で無効化に相当) | boolean |
 | `run.mask` | `klaus run --no-mask`(`false` で無効化に相当) | boolean |
@@ -46,6 +46,8 @@ ui:
 | `ui.open` | `klaus ui --no-open`(`false` で無効化に相当) | boolean |
 
 いずれのキーも省略可能。未知のキーを含む場合はスキーマ検証エラーになる([実行結果](#エラー時の扱い)を参照)。
+
+`run.reportFile` は単一値のみ対応する(CLI の繰り返し指定可能な `--report-file` とは異なる)。`run.report` に複数フォーマット(例: `junit,tap`)を指定した状態で `run.reportFile` も設定した場合、それは「N フォーマットに対して `--report-file` を1個指定した」ことになり、CLI で `--report-file` の指定回数が足りないときと同じ個数不一致エラーになる([CLI リファレンス](cli.md#klaus-run)参照)。複数フォーマットの `run.report` に対してフォーマットごとの出力先を指定したい場合は、コマンドラインで `--report-file` を渡すこと(前述の優先順位のとおり CLI の値が `klaus.config.yaml` より常に優先される)。
 
 ## 意図的に設定不可なキー
 

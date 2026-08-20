@@ -37,7 +37,7 @@ ui:
 | Key | Corresponding CLI option | Type |
 |---|---|---|
 | `run.env` | `klaus run --env <name>` | string |
-| `run.report` | `klaus run --report <type>` | `"junit"` |
+| `run.report` | `klaus run --report <list>` | comma-separated list of `"junit"` / `"tap"` (e.g. `"junit,tap"`) |
 | `run.reportFile` | `klaus run --report-file <path>` | string |
 | `run.history` | `klaus run --no-history` (equivalent to disabling with `false`) | boolean |
 | `run.mask` | `klaus run --no-mask` (equivalent to disabling with `false`) | boolean |
@@ -46,6 +46,8 @@ ui:
 | `ui.open` | `klaus ui --no-open` (equivalent to disabling with `false`) | boolean |
 
 All keys are optional. Unknown keys cause a schema validation error (see [Error handling](#error-handling) below).
+
+`run.reportFile` only supports a single value (unlike the CLI's repeatable `--report-file`). If `run.report` lists more than one format (e.g. `junit,tap`) and `run.reportFile` is also set, that counts as one `--report-file` for N formats — the same count-mismatch error as passing too few `--report-file` flags on the CLI (see [CLI Reference](cli.md#klaus-run)). To set per-format paths for a multi-format `run.report`, pass `--report-file` on the command line instead (CLI values always take precedence over `klaus.config.yaml`, per the priority rule above).
 
 ## Intentionally unconfigurable keys
 

@@ -149,11 +149,15 @@ program
   )
   .option("--json", "force JSON output (prints JSON even when running on a TTY)")
   .option("--text", "force text output (prints text even when stdout is not a TTY)")
-  .option("--report <type>", "output an additional report format (only junit is supported for now)")
+  .option(
+    "--report <list>",
+    'output one or more additional report formats: a comma-separated list from "junit", "tap" (e.g. "junit,tap")',
+  )
   .option(
     "--report-file <path>",
-    "output path for the report format given via --report",
-    "klaus-report.xml",
+    "output path for the report format(s) given via --report (repeatable). With N formats, pass this exactly N times, in the same order, to pair each path with its format; omit it entirely to use the per-format default filenames (klaus-report.xml for junit, klaus-report.tap for tap)",
+    (value: string, previous: string[]) => [...previous, value],
+    [] as string[],
   )
   .option("--no-history", "disable writing to the execution history (.klaus/history/*.jsonl)")
   .option("--no-mask", "disable secret masking in stdout output (JSON/text)")
@@ -210,14 +214,8 @@ ${exitCodesHelpLine}
         configResult.config,
       );
 
-      if (mergedOptions.report !== undefined && mergedOptions.report !== "junit") {
-        process.stderr.write(
-          `klaus: unknown report type "${mergedOptions.report}" (supported: junit)\n`,
-        );
-        process.exitCode = 1;
-        return;
-      }
-
+      // --report/--report-file(フォーマット不明・個数不一致)の検査は runCommand 側(resolveReportTargets)
+      // が行う(--record/--replay 等の他の組み合わせ検査と同じ流儀で runCommand に集約している)。
       process.exitCode = await runCommand(files, mergedOptions);
     });
   });

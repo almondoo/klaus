@@ -74,8 +74,21 @@ describe("loadCliConfig", () => {
     await expect(loadCliConfig(root)).rejects.toThrow(/klaus\.config\.yaml/);
   });
 
-  it("run.report が junit 以外の場合はスキーマ違反として拒否する", async () => {
+  it("run.report が junit/tap のいずれでもない場合はスキーマ違反として拒否する", async () => {
     await writeFile(join(root, "klaus.config.yaml"), "run:\n  report: xml\n", "utf-8");
+
+    await expect(loadCliConfig(root)).rejects.toThrow(ParseError);
+  });
+
+  it("run.report はカンマ区切りの junit,tap を受理する", async () => {
+    await writeFile(join(root, "klaus.config.yaml"), "run:\n  report: junit,tap\n", "utf-8");
+
+    const config = await loadCliConfig(root);
+    expect(config?.run?.report).toBe("junit,tap");
+  });
+
+  it("run.report は未知のフォーマット(html)を含むカンマ区切りリストを拒否する", async () => {
+    await writeFile(join(root, "klaus.config.yaml"), "run:\n  report: junit,html\n", "utf-8");
 
     await expect(loadCliConfig(root)).rejects.toThrow(ParseError);
   });
