@@ -35,8 +35,9 @@ baseUrl: https://example.com
  * AI コーディングエージェントが docs サイトやソースコードを読まずに klaus を使えるよう、
  * コマンド体系・YAML スキーマ要点・exit code 表を圧縮して1ファイルにまとめたもの。
  * コマンド一覧は将来の追加(validate / history 等)に備え、後から行を足しやすい箇条書きにしてある。
+ * tests/cli/agent-docs.test.ts のドリフト検知テストから参照するため export している。
  */
-const AGENTS_MD = `# AGENTS guide for klaus
+export const AGENTS_MD = `# AGENTS guide for klaus
 
 klaus is an API testing CLI that defines request flows in YAML and runs execution, assertions, and history tracking.
 
@@ -45,23 +46,25 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
 - \`klaus run <files...>\`: run flow definition YAML files
   - \`--env <name>\`: overrides the flow's env with the values in environments/<name>.yaml
   - \`--json\`: force JSON output even when running on a TTY
-  - \`--report junit\` / \`--report-file <path>\`: also write a JUnit XML report
+  - \`--report <list>\` / \`--report-file <path>\`: also write additional report formats, \`junit\` and/or \`tap\` (comma-separated)
   - \`--no-history\`: disable writing to the execution history (.klaus/history/*.jsonl)
   - \`--allow-protected\`: required to run against an environment marked \`$protected: true\` (otherwise refused with exit code 3)
+  - \`--record <dir>\` / \`--replay <dir>\`: record real HTTP request/response pairs to a cassette in \`<dir>\`, or replay them offline instead of hitting the network (mutually exclusive; \`--record\` cannot combine with \`--jobs\` > 1)
 - \`klaus validate [files...]\`: schema-validate flow YAML without executing (with no arguments, discovers and validates all flows; errors carry a fix-example hint)
 - \`klaus schema\`: print the flow YAML's JSON Schema to stdout (useful for editor completion and improving flow generation accuracy)
 - \`klaus history\`: list execution history (\`--flow <name>\` / \`--failed\` / \`--last <n>\` / \`--fields <csv>\`; the default output is a summary without bodies)
 - \`klaus history show <runId> [--step <name>]\`: fetch the full (masked) history entries as JSON
+- \`klaus generate <spec>\`: generate flow YAML skeletons from an OpenAPI spec (\`--out-dir <dir>\`, default \`api\`; \`--json\`)
 - \`klaus init\`: generate a minimal flows/environments/AGENTS.md starting point in the current directory (existing files are never overwritten)
 - \`klaus ui\`: launch the localhost Web UI (runner + viewer)
-- This is the full command list as of now; future commands will be appended below
+- This covers the main workflow; run \`klaus --help\` for the full command/flag surface
 
 Non-TTY output (pipes, CI, agent execution, etc.) is automatically JSON. Result data goes to stdout; diagnostic messages such as parse errors go to stderr. The \`run\` JSON output is failure-focused (passed steps are summarized only) and bodies are truncated to 500 characters. Fetch the full text via each step's \`historyRef\` (\`{date, runId, step}\`) using \`klaus history show <runId> --step <name>\`.
 
 ## YAML schema essentials
 
 - flow: \`name\` (required) / \`env\` (optional, overridable with --env) / \`steps\` (one or more, name must be unique within the flow)
-- step: alongside \`name\`, exactly one of \`request\` or \`ws\` is required (mutually exclusive). \`capture\` / \`assert\` / \`sse\` are optional
+- step: alongside \`name\`, exactly one of \`request\`, \`ws\`, or \`use\` is required (mutually exclusive). \`capture\` / \`assert\` / \`sse\` / \`if\` / \`retry\` / \`continueOnError\` are optional
 - request: \`method\` (omittable only when \`graphql\` is set, defaults to POST) / \`url\` / \`headers\` / \`query\` (key-value, merged into the URL's query string; \`query\` wins on key collision) / \`body\` (mutually exclusive with \`graphql\`) / \`timeoutMs\` (defaults to 30000ms)
 - capture: extract variables from the response body via JSONPath (e.g. \`{ token: "$.data.token" }\`)
 - \`{{var}}\` resolution order: (1) the step's capture variables, then (2) values from environments. \`{{env.X}}\` references OS environment variable X (a runtime error if undefined)
@@ -92,7 +95,7 @@ Decision rule: all files are parse-validated before execution; if even one fails
 
 ## History
 
-Execution results are automatically appended to \`.klaus/history/<YYYY-MM-DD>.jsonl\` (disable with \`--no-history\`). Values referenced via \`{{env.X}}\` etc. are treated as secrets and recorded in history masked as "***".
+Execution results are automatically appended to \`.klaus/history/<YYYY-MM-DD>.jsonl\` (disable with \`--no-history\`). Only values referenced via \`{{env.X}}\` are treated as secrets and masked as "***" in history; captured values and \`--env-file\` values are recorded unmasked (see SECURITY.md).
 
 ## Directory convention
 
@@ -102,6 +105,7 @@ klaus doesn't care where flow YAML files live, but by convention: \`api/\` holds
 
 \`\`\`yaml
 # api/example.yaml
+# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
 name: example flow
 steps:
   - name: get-example
@@ -115,6 +119,12 @@ steps:
 Place \`baseUrl: https://example.com\` in environments/local.yaml, and the url above can be written as \`"{{baseUrl}}"\`.
 `;
 
+/**
+ * .klaus/ 配下(history/cassette 等の実行時生成物)を丸ごと無視する cargo 方式の自己完結 .gitignore。
+ * 利用者自身の .gitignore に触れずとも、生成物が誤ってコミットされないようにする。
+ */
+const KLAUS_DIR_GITIGNORE = `*\n`;
+
 interface ScaffoldFile {
   /** cwd からの相対パス(表示・書き込み双方に使う) */
   relativePath: string;
@@ -127,6 +137,7 @@ const SCAFFOLD_FILES: ScaffoldFile[] = [
   { relativePath: EXAMPLE_FLOW_RELATIVE_PATH, content: EXAMPLE_FLOW_YAML },
   { relativePath: join("environments", "local.yaml"), content: LOCAL_ENVIRONMENT_YAML },
   { relativePath: "AGENTS.md", content: AGENTS_MD },
+  { relativePath: join(".klaus", ".gitignore"), content: KLAUS_DIR_GITIGNORE },
 ];
 
 /**

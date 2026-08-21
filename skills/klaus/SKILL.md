@@ -19,8 +19,10 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
   - `--data <path>`: data-driven run — a JSON/YAML file of rows; runs every given flow once per row, row values land in the template env namespace, and each result gets a 1-based `iteration` number
   - `--tags <list>` / `--exclude-tags <list>`: comma-separated flow-level tag filters (OR semantics for `--tags`; `--exclude-tags` wins on overlap)
   - `--jobs <n>`: run up to `n` execution units (flow, or flow x data-row when `--data` is set) in parallel, 1-32, default 1; steps within one flow stay sequential; cannot combine with `--record`
+  - `--record <dir>`: record real HTTP request/response pairs (masked) to a cassette in `<dir>` while still hitting the network
+  - `--replay <dir>`: replay HTTP responses from the cassette in `<dir>` instead of the network, for deterministic offline runs; unrecorded requests fail with exit code 3; mutually exclusive with `--record`
 - `klaus validate [files...]`: schema-validate flow YAML without executing (with no arguments, discovers and validates all flows; errors carry a fix-example hint)
-- `klaus schema`: print the flow YAML's JSON Schema to stdout (useful for editor completion and improving flow generation accuracy)
+- `klaus schema`: print the flow YAML's JSON Schema to stdout (useful for editor completion and improving flow generation accuracy); a project-level `klaus.config.yaml` can set per-project defaults for `run`/`ui` options (schema via `klaus schema --target config`)
 - `klaus history`: list execution history (`--flow <name>` / `--failed` / `--last <n>` / `--fields <csv>`; the default output is a summary without bodies)
 - `klaus history show <runId> [--step <name>]`: fetch the full (masked) history entries as JSON
 - `klaus generate <spec>`: generate flow YAML skeletons from an OpenAPI 3.x spec
@@ -92,7 +94,8 @@ Place `baseUrl: https://example.com` in `environments/local.yaml`, then run with
 
 - `klaus ui` starts a server and then waits forever; do not launch it unless the task specifically calls for the web UI, and if launched, run it in the background with an explicit timeout.
 - OpenAI Codex CLI disables sandbox network access by default, which makes `klaus run`'s HTTP requests fail. Set `network_access = true` under `[sandbox_workspace_write]` in `~/.codex/config.toml` to allow them.
-- Values referenced via `{{env.X}}` etc. are treated as secrets and recorded in history masked as "***"; never print raw secret values yourself.
+- Mark production-like environments with `$protected: true` in the environment YAML; `klaus run` then refuses to execute against them (exit code 3) unless `--allow-protected` is explicitly passed.
+- Only values referenced via `{{env.X}}` are treated as secrets and masked as "***" in history; captured values and `--env-file` values are recorded unmasked (see SECURITY.md) — never print raw secret values yourself regardless.
 
 ## Division of labor with Claude Code hooks
 

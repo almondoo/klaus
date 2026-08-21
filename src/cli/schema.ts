@@ -20,9 +20,9 @@ const CONSTRAINT_ANNOTATIONS: ReadonlyArray<{ path: readonly string[]; note: str
     note: "Step `name` values must be unique within a flow.",
   },
   {
-    // stepSchema: request / ws のいずれか一方を必ず指定する
+    // stepSchema: request / ws / use のいずれか一つを必ず指定する(sse は request に付随する修飾子)
     path: ["properties", "steps", "items"],
-    note: "Exactly one of `request` or `ws` must be set on a step.",
+    note: "Exactly one of `request`, `ws`, or `use` must be set. `sse` is a modifier that attaches to a `request` step.",
   },
   {
     // requestSchema: body / graphql は排他。graphql 指定時のみ method 省略可
