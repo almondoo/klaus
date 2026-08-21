@@ -5,6 +5,11 @@ allowBuilds:
   '@biomejs/biome': true
   esbuild: true
 
+# npm アカウント乗っ取り型のサプライチェーン攻撃は公開から数日以内に発覚することが多いため、
+# 公開後 7 日(10080 分)未満のバージョンは解決対象にしない。急ぎで取り込む必要がある場合は
+# 下の minimumReleaseAgeExclude に `<pkg>@<version>` を追加して個別に除外する。
+minimumReleaseAge: 10080
+
 minimumReleaseAgeExclude:
   - lucide-react@1.30.0
   - ws@8.21.3
