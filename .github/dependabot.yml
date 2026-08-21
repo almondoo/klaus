@@ -38,3 +38,8 @@ updates:
       interval: "weekly"
     cooldown:
       default-days: 7
+    # action ごとに PR が分かれるのを防ぎ、全 action の更新を 1 PR にまとめる
+    groups:
+      actions:
+        patterns:
+          - "*"

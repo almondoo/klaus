@@ -1,5 +1,9 @@
 # npm publish 相当検証用の compose 定義。
-# - demo-api: 検証用ダミー API(VERIFICATION.md 2-1 相当)。
+# - mock-api: 検証用ダミー API(examples/mock-server.mjs)。examples/ 一式(単発 HTTP・GraphQL・
+#   SSE・WebSocket・OpenAPI generate)と、認証フローのスモーク(run.sh)の両方をこのサービス
+#   1本でまかなう。HOST=0.0.0.0 を渡して起動し、他コンテナから `mock-api:3000` で到達できる
+#   ようにする(examples/mock-server.mjs 自体は examples/README.md の用途を優先し、
+#   HOST/PORT を環境変数で上書きできる最小限の変更のみを加えている。既定値は変更前と同一)。
 # - klaus: .pack/klaus.tgz(pack 済み tarball)を npm install -g したクリーンな Node 22 の
 #   常駐コンテナ。検証(run.sh)も手動操作(make exec)も、このコンテナへの
 #   docker compose exec で klaus コマンドを実行する。
@@ -7,17 +11,34 @@
 # klaus サービスのビルドコンテキストは ./.pack(git 管理外)を指す。
 # このディレクトリは run.sh がその都度、tarball と Dockerfile のコピーだけを置いて作る
 # 最小コンテキストであり、リポジトリの node_modules は含まれない。
+#
+# フロー資産(flows/ 等)は verify 配下に複製せず、examples/ の rw マウント1本に一本化している
+# (かつては verify/docker/flows・environments に auth-flow.yaml 等のミニフィクスチャを複製して
+# いたが、examples/ 側の更新に追随できず drift する。klaus generate の出力(examples/generated/)
+# を書き込むため rw マウントにしている)。コンテナ専用にしたいのは klaus.config.yaml(run.env)
+# だけなので、examples/ を丸ごとマウントした上で klaus.config.yaml だけをさらに深いパスで
+# 個別マウントしてオーバーレイする(Docker のバインドマウントはターゲットパスが深いものほど
+# 優先されるため、ディレクトリ丸ごとマウントの中の1ファイルだけをこちらに差し替えられる)。
+# examples/klaus.config.yaml(run.env: local)はホスト実行前提のため、そのままコンテナ内
+# cwd /work/examples で使うと baseUrl が 127.0.0.1(klaus コンテナ自身)を指してしまう。
+# ./klaus.config.yaml で run.env: docker を既定にしておくことで、CHECKLIST.md の表のコマンドを
+# `-e docker` なしでそのまま実行できるようにしている。
 services:
-  demo-api:
+  mock-api:
     build:
-      context: .
+      context: ../../examples
       dockerfile_inline: |
         FROM node:22.19-slim
         WORKDIR /app
-        COPY demo-server.mjs .
+        COPY mock-server.mjs .
+        RUN npm install "ws@^8.21.3"
         EXPOSE 3000
         USER node
-        CMD ["node", "demo-server.mjs"]
+        CMD ["node", "mock-server.mjs"]
+    environment:
+      # examples/mock-server.mjs の HOST 環境変数上書きを使い、compose ネットワーク越しに
+      # `mock-api:3000` として他コンテナ(klaus)から到達できるようにする。
+      HOST: "0.0.0.0"
     healthcheck:
       # slim イメージに curl / wget が無いため node 組み込みの http でヘルスチェックする
       test:
@@ -25,7 +46,7 @@ services:
           "CMD",
           "node",
           "-e",
-          "require('http').get({host:'127.0.0.1',port:3000,path:'/login'},r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))",
+          "require('http').get({host:'127.0.0.1',port:3000,path:'/users'},r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))",
         ]
       interval: 1s
       timeout: 1s
@@ -38,7 +59,7 @@ services:
       context: ./.pack
       dockerfile: Dockerfile
     depends_on:
-      demo-api:
+      mock-api:
         condition: service_healthy
     networks:
       - verify
@@ -55,8 +76,13 @@ services:
     init: true
     working_dir: /work
     volumes:
-      - ./flows:/work/flows:ro
-      - ./environments:/work/environments:ro
+      # examples/ 一式(単発 HTTP・GraphQL・SSE・WebSocket・OpenAPI generate・flows/environments)を
+      # コンテナ内から実行するためのマウント。klaus generate の出力(examples/generated/)を
+      # 書き込むため rw。認証フローのスモーク(run.sh)もこのマウント経由の
+      # examples/flows/auth-flow.yaml を使う(verify 配下への複製はしない)。
+      - ../../examples:/work/examples
+      # 上記 rw マウントより深いパスなのでこちらが優先される(config オーバーレイ、上のコメント参照)。
+      - ./klaus.config.yaml:/work/examples/klaus.config.yaml:ro
 
 networks:
   verify: {}

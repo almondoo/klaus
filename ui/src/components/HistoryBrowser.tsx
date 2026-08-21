@@ -118,13 +118,17 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
             </TableHeader>
             <TableBody>
               {groups.map((group, i) => {
-                const runExpanded = expandedRun === group.runId;
+                // --data 実行では同一 runId の下に複数 iteration の行が並ぶため、runId 単体では
+                // グループを一意に特定できない。runId + iteration を React key / 開閉トグルのキーとする
+                // (iteration が無い通常実行では従来どおり runId のみと同じ挙動になる)
+                const groupKey = `${group.runId}:${group.iteration ?? 0}`;
+                const runExpanded = expandedRun === groupKey;
                 return (
-                  <Fragment key={group.runId}>
+                  <Fragment key={groupKey}>
                     <TableRow
                       className={cn("h-9 cursor-pointer hover:bg-muted", i % 2 === 1 && "bg-muted")}
                       {...rowToggleProps(runExpanded, () =>
-                        setExpandedRun(runExpanded ? null : group.runId),
+                        setExpandedRun(runExpanded ? null : groupKey),
                       )}
                     >
                       <TableCell>
@@ -144,7 +148,7 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
 
                     {runExpanded &&
                       group.steps.map((step) => {
-                        const stepKey = `${group.runId}:${step.step}`;
+                        const stepKey = `${groupKey}:${step.step}`;
                         const stepExpanded = expandedStep === stepKey;
                         const stepStatus = resolveStepStatus(step);
                         // skipped では request/response が省略されるため、詳細表示用に存在するものだけ集める

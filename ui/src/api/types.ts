@@ -89,6 +89,11 @@ export interface HistoryEntry {
   step: string;
   startedAt: string;
   durationMs: number;
+  /**
+   * --data 実行時のみ設定される 1 始まりのイテレーション番号。--data 未指定の通常実行では省略する。
+   * src/core/history.ts の HistoryEntry と同一契約(このファイル冒頭のコメント参照)。
+   */
+  iteration?: number;
   /** 旧エントリには無い。省略時は従来通り assertions から導出する(groupHistoryByRun 参照) */
   status?: "passed" | "failed" | "skipped";
   /** skipped では省略 */

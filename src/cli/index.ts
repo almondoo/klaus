@@ -5,7 +5,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Command } from "commander";
+import { Command, InvalidArgumentError } from "commander";
 import { ParseError } from "../core/index.js";
 import { applyConfigToRunOptions, applyConfigToUiOptions, loadCliConfig } from "./config.js";
 import { type GenerateCommandOptions, generateCommand } from "./generate.js";
@@ -86,6 +86,20 @@ async function loadConfigOrReport(
   }
 }
 
+/**
+ * --tags / --exclude-tags のカンマ区切りリストをパースする共通ヘルパー。
+ * 各要素を trim し、trim 後に空文字列になった要素(空エントリ・連続カンマ・前後カンマ)が
+ * 1つでもあれば InvalidArgumentError で拒否する(--var の区切り検証と同じ、commander の
+ * _callParseArg が InvalidArgumentError のみ特別扱いする挙動に合わせる)。
+ */
+function parseTagList(value: string): string[] {
+  const tags = value.split(",").map((tag) => tag.trim());
+  if (tags.some((tag) => tag.length === 0)) {
+    throw new InvalidArgumentError(`invalid tag list (empty tag after trimming): ${value}`);
+  }
+  return tags;
+}
+
 const program = new Command();
 
 program
@@ -110,15 +124,40 @@ program
   .argument("<files...>", "flow definition YAML files to run")
   .option(
     "-e, --env <name>",
-    "environment name (references environments/<name>.yaml and overrides the flow definition's env)",
+    "environment name (references environments/<name>.yaml and overrides the flow definition's env; cannot be combined with --env-file)",
+  )
+  .option(
+    "--env-file <path>",
+    "load environment variables from an arbitrary YAML file path (relative to cwd or absolute) instead of a named environment; overrides the flow definition's env; cannot be combined with -e/--env",
+  )
+  .option(
+    "--var <key=value>",
+    "set an ad-hoc template variable (repeatable; the value may itself contain '='). Overrides same-named keys loaded from the environment. NOT masked as a secret in output — use OS env + {{env.X}} for real secrets",
+    (value: string, previous: Record<string, string>) => {
+      const separatorIndex = value.indexOf("=");
+      if (separatorIndex <= 0) {
+        // separatorIndex === -1(区切りの "=" が無い)、0(キーが空)のいずれも不正値として拒否する。
+        // commander の _callParseArg は InvalidArgumentError のみ特別扱いする(--port と同じ理由)
+        throw new InvalidArgumentError(`invalid --var value (expected key=value): ${value}`);
+      }
+      // 値側に "=" を含められるよう、最初の "=" だけで分割する
+      const key = value.slice(0, separatorIndex);
+      const varValue = value.slice(separatorIndex + 1);
+      return { ...previous, [key]: varValue };
+    },
+    {} as Record<string, string>,
   )
   .option("--json", "force JSON output (prints JSON even when running on a TTY)")
   .option("--text", "force text output (prints text even when stdout is not a TTY)")
-  .option("--report <type>", "output an additional report format (only junit is supported for now)")
+  .option(
+    "--report <list>",
+    'output one or more additional report formats: a comma-separated list from "junit", "tap" (e.g. "junit,tap")',
+  )
   .option(
     "--report-file <path>",
-    "output path for the report format given via --report",
-    "klaus-report.xml",
+    "output path for the report format(s) given via --report (repeatable). With N formats, pass this exactly N times, in the same order, to pair each path with its format; omit it entirely to use the per-format default filenames (klaus-report.xml for junit, klaus-report.tap for tap)",
+    (value: string, previous: string[]) => [...previous, value],
+    [] as string[],
   )
   .option("--no-history", "disable writing to the execution history (.klaus/history/*.jsonl)")
   .option("--no-mask", "disable secret masking in stdout output (JSON/text)")
@@ -133,6 +172,32 @@ program
   .option(
     "--allow-protected",
     "allow running against an environment marked $protected: true (refused with exit code 3 otherwise)",
+  )
+  .option(
+    "--data <path>",
+    "run data-driven: for each row in this JSON/YAML data file, run all given flow files once (iteration-major order). Row values land in the template env namespace, overriding same-named --var/environment values",
+  )
+  .option(
+    "--tags <list>",
+    "only run flows carrying at least one of these comma-separated tags (OR semantics). Untagged flows are excluded when this is given",
+    parseTagList,
+  )
+  .option(
+    "--exclude-tags <list>",
+    "exclude flows carrying any of these comma-separated tags. Takes precedence over --tags when a flow matches both",
+    parseTagList,
+  )
+  .option(
+    "--jobs <n>",
+    "run this many execution units (a flow file, or a flow-file x data-row pair when --data is given) in parallel (1-32). Steps within a single flow always stay sequential. Cannot be combined with --record",
+    (value) => {
+      const parsed = Number.parseInt(value, 10);
+      // 理由は --port/--last と同じ(InvalidArgumentError のみ commander が整形して扱う)
+      if (Number.isNaN(parsed) || parsed < 1 || parsed > 32) {
+        throw new InvalidArgumentError(`invalid --jobs value (expected an integer 1-32): ${value}`);
+      }
+      return parsed;
+    },
   )
   .addHelpText(
     "after",
@@ -157,18 +222,13 @@ ${exitCodesHelpLine}
           reportFile: command.getOptionValueSource("reportFile"),
           history: command.getOptionValueSource("history"),
           mask: command.getOptionValueSource("mask"),
+          jobs: command.getOptionValueSource("jobs"),
         },
         configResult.config,
       );
 
-      if (mergedOptions.report !== undefined && mergedOptions.report !== "junit") {
-        process.stderr.write(
-          `klaus: unknown report type "${mergedOptions.report}" (supported: junit)\n`,
-        );
-        process.exitCode = 1;
-        return;
-      }
-
+      // --report/--report-file(フォーマット不明・個数不一致)の検査は runCommand 側(resolveReportTargets)
+      // が行う(--record/--replay 等の他の組み合わせ検査と同じ流儀で runCommand に集約している)。
       process.exitCode = await runCommand(files, mergedOptions);
     });
   });
@@ -182,7 +242,9 @@ program
     (value) => {
       const parsed = Number.parseInt(value, 10);
       if (Number.isNaN(parsed)) {
-        throw new Error(`invalid --port value: ${value}`);
+        // commander の _callParseArg は InvalidArgumentError のみ特別扱いする(それ以外は
+        // 素通しで re-throw され未捕捉スタックトレースになる)ため、plain Error ではなくこれを使う
+        throw new InvalidArgumentError(`invalid --port value: ${value}`);
       }
       return parsed;
     },
@@ -293,7 +355,8 @@ const historyCommand = program
     (value) => {
       const parsed = Number.parseInt(value, 10);
       if (Number.isNaN(parsed) || parsed <= 0) {
-        throw new Error(`invalid --last value: ${value}`);
+        // 理由は --port と同じ(InvalidArgumentError のみ commander が整形して扱う)
+        throw new InvalidArgumentError(`invalid --last value: ${value}`);
       }
       return parsed;
     },

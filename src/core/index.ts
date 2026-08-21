@@ -25,6 +25,8 @@ export {
   findCassetteEntry,
   loadCassetteIndex,
 } from "./cassette.js";
+export type { DataRow } from "./data.js";
+export { loadDataFile } from "./data.js";
 export { collectYamlFiles, discoverFlowCandidates, isFlowCandidate } from "./discovery.js";
 export {
   assertTrustedAncestorSource,
@@ -62,14 +64,24 @@ export {
   validateFlowFile,
   validateFlowYaml,
 } from "./loader.js";
+export { isPathWithinDir, isRealPathWithinDir } from "./path-guard.js";
 export type {
   ExecuteSingleRequestOptions,
   ExecuteSingleRequestResult,
+  LoadedFlowEntry,
   RunFlowOptions,
   StepCompleteContext,
   StepStartContext,
 } from "./runner.js";
-export { captureValues, executeFlow, executeSingleRequest, runFlow, runFlows } from "./runner.js";
+export {
+  captureValues,
+  executeFlow,
+  executeSingleRequest,
+  resolveRequestMethod,
+  runFlow,
+  runFlows,
+  runLoadedFlows,
+} from "./runner.js";
 export type {
   AssertDef,
   BodyAssertion,
@@ -84,6 +96,7 @@ export type {
   HeaderAssertion,
   MessageAssertion,
   MessageCountAssertion,
+  ReportFormat,
   RequestDef,
   SseOptions,
   Step,
@@ -104,6 +117,8 @@ export {
   headerAssertionSchema,
   messageAssertionSchema,
   messageCountAssertionSchema,
+  parseReportFormatList,
+  REPORT_FORMATS,
   requestSchema,
   sseOptionsSchema,
   stepSchema,

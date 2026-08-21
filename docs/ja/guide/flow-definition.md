@@ -7,6 +7,7 @@ klaus のリクエスト定義は素の YAML。**1ファイル = 1フロー(複�
 ```yaml
 name: 認証フロー        # 必須: フロー名
 env: local             # 任意: environments/local.yaml を参照
+tags: [smoke, auth]    # 任意: フロー単位のタグ。`klaus run --tags` / `--exclude-tags` で使う
 steps:                 # 必須: 1件以上。name はフロー内で一意
   - name: login
     request: { ... }   # request / ws / use のいずれか一方が必須(排他)
@@ -15,10 +16,22 @@ steps:                 # 必須: 1件以上。name はフロー内で一意
     assert: { ... }    # 任意: アサーション
 ```
 
-- 環境ファイルは cwd から上方探索(`.git` を含む祖先ディレクトリ、またはファイルシステムルートで打ち切り)で `environments/<name>.yaml` を解決する。詳細は [Getting Started](getting-started.md) を参照。`klaus run --env <name>` でフローの `env:` を上書きできる
+- 環境ファイルは cwd から上方探索(`.git` を含む祖先ディレクトリ、またはファイルシステムルートで打ち切り)で `environments/<name>.yaml` を解決する。詳細は [Getting Started](getting-started.md) を参照。`klaus run --env <name>` でフローの `env:` を上書きできる。`klaus run --env-file <path>` は代わりに任意パスの環境ファイルを(上方探索なしで)直接読み込み、`klaus run --var <key=value>` はその上から個別の変数を追加・上書きする([CLI リファレンス](cli.md#klaus-run)参照)
 - 環境ファイルは `キー: 文字列値` のフラットなマップ。値にはテンプレート(<code v-pre>{{env.X}}</code> 等)を使える
 - 予約キー `$protected: true` を環境ファイルに書くと、その環境への `klaus run` はデフォルトで拒否される(exit 3)。`--allow-protected` を明示した場合のみ実行できる。本番相当の環境を誤って実行しないためのガードレールで、`$protected` はテンプレート変数(<code v-pre>{{...}}</code>)としては参照できない。`klaus ui` / server API 経由の実行はこのフラグを渡さないため、保護環境は常に拒否される
 - `$protected` はファイル直接編集でのみ設定・解除する。`klaus ui` の環境エディタには表示されず、UI からの保存でも既存の `$protected` の値は変更されずそのまま保持される
+
+## tags
+
+```yaml
+name: 認証フロー
+tags: [smoke, auth]   # 任意: 空文字列を含まない文字列配列。一意性の制約は無い
+steps: [ ... ]
+```
+
+- フロー単位のみ — ステップ単位のタグは無い
+- `klaus run --tags <list>` / `--exclude-tags <list>` によるフロー選択専用([CLI リファレンス](cli.md#タグによるフロー選択-tags-exclude-tags)参照)。タグ自体は実行に他の影響を与えない
+- `klaus ui` や server API には公開されない
 
 ## request(HTTP ステップ)
 
@@ -165,11 +178,14 @@ steps:
 
 ```yaml
 capture:
-  token: "$.token"     # 変数名: JSONPath
+  token: "$.token"            # 変数名: JSONPath
+  userId: "$.data.user.id"    # ネストしたフィールド
+  firstId: "$.items[0].id"    # 配列インデックス
 ```
 
 - JSON レスポンスに JSONPath を適用し、結果を後続ステップのテンプレート変数にする(ログイン → トークン → Authorization ヘッダーが代表ケース)
 - **マッチしない・レスポンスが JSON でない場合は RuntimeError** になりステップは error(exit 3)。`Bearer undefined` のようなサイレント連鎖は起きない。値が `null` のキャプチャは成功扱い
+- **キャプチャした値はマスクされない**。シークレットマスクの対象は <code v-pre>{{env.X}}</code> で解決した値のみのため、ここでキャプチャしたトークンは履歴 JSONL・JUnit レポート・record カセットにそのまま書き込まれる。マスクの境界は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) を参照
 - SSE / WS ステップでは無視される
 
 ## assert(アサーション)
@@ -233,9 +249,75 @@ assert:
 - body が存在しない SSE / WS ステップでは ok:false になる。body が存在するが JSON としてパースできない HTTP レスポンスは、生の文字列のままスキーマ検証にかけられる(例: `type: object` を要求するスキーマなら失敗し、`type: string` なら通り得る)
 - スキーマ自体が不正で ajv がコンパイルできない場合も、例外にはならず ok:false のアサーション失敗として報告される
 
+### `regex` のパターンはテンプレート展開される
+
+他のアサーション値と同様、`regex` マッチャー(`assert.headers[].regex` / `assert.body[].regex` / `assert.bodyText.regex` / `assert.events[].regex` / `assert.messages[].regex`)に渡すパターンもマッチング前にテンプレート展開される。そのためパターン中の <code v-pre>{{...}}</code> はリテラルに限らず、キャプチャや `--var` から解決され得る。キャプチャは検証対象 API のレスポンスボディから埋まるため、キャプチャした値を `regex` に流すフローでは、実質的にそのパターンを API 側が選べることになる。破滅的バックトラッキングを起こすパターン(例: `^(a+)+$`)だと、入力文字数が1つ増えるごとにマッチング時間が指数的に伸び、数十文字程度でも1分を優に超えて固まる。アサーション評価には(HTTP リクエストのみをカバーする `request.timeoutMs` と異なり)タイムアウトが一切ない。`klaus ui` ではこれが実行だけでなく共有サーバープロセス自体をブロックする。
+
+これは可用性のみへの影響であり(実行が固まるだけで、データの露出や改ざんは起きない)、そもそもフローの実行・編集権限(`klaus ui` ではセッショントークン)が前提になる。またキャプチャや `--var` の値をフローが意図的に `regex` に流し込んだ場合にのみ発生し、フローファイルに直書きしたリテラルパターンは影響を受けない。`contains` / `equals` はパターンを評価しないため、値の由来に関わらずこの影響を受けない。関連する regex タイムアウトのスコープ注記は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) を参照。
+
+## if
+
+```yaml
+steps:
+  - name: login
+    request: { method: POST, url: "{{env.baseUrl}}/login" }
+    assert: { status: 200 }
+  - name: cleanup
+    request: { method: DELETE, url: "{{env.baseUrl}}/session" }
+    if: steps.login.status == "passed"   # login が passed のときだけ実行する
+  - name: use-token
+    request: { method: GET, url: "{{env.baseUrl}}/me", headers: { Authorization: "Bearer {{token}}" } }
+    if: captures.token != ""
+```
+
+- `if` はステップを実行するかどうかのゲートになる。汎用の式言語では**なく**、意図的に小さく留めた文法(`src/core/condition.ts` が評価する)を持つ:
+  - `ref op literal`(`ref` は `steps.<name>.status` または `captures.<name>`、`op` は `==` / `!=`、`literal` はダブルクォート文字列・シングルクォート文字列・空白を含まないベアトークンのいずれか)
+  - `stepName` / `captureName` に `.` や空白は含められない
+  - クォート文字列はエスケープシーケンスに対応しない。値に反対側のクォート文字を含めたい場合は逆のクォート種別で囲む(例: `"` を含めたいならシングルクォートで囲む)
+  - `'` または `"` で始まるリテラルは、同じクォート文字で終端していなければならない。未終端のクォート(例: `captures.token == "abc`)はベアトークンとして黙って解釈**されず**、不正な式として拒否される(RuntimeError)
+  - 比較は常に文字列として行う。`captures.<name>` 側の値は、テンプレート展開(例: <code v-pre>{{token}}</code>)と同じ方法で文字列化する(オブジェクト・配列は JSON 文字列化、それ以外は `String()`)。`steps.<name>.status` は元々文字列
+- **`if` の中では <code v-pre>{{...}}</code> テンプレート展開は行われない。**それまでのキャプチャは <code v-pre>{{name}}</code> ではなく `captures.<name>` で直接参照する
+- `steps.<name>.status` は同じフロー内で**それより前**にあり、かつ実行が完了しているステップのみ参照できる(`continueOnError` で継続したステップも、その実際の `failed` / `error` ステータスが後続の条件式から見える。これが `if` と `continueOnError` を組み合わせる狙いそのもの — 例: setup が passed のときだけ後始末を実行する)
+- 条件式が **false** の場合、ステップは**実行せず** `skipped` になる(リクエストは送られず `retry` も適用されない)。`error` には `"skipped because condition not met: <expression>"` が入る。これはフローの残りステップをスキップしない — 後続ステップは通常どおり実行される(「前のステップの失敗」による skip とは別理由。[ステップ失敗時のフロー挙動](#ステップ失敗時のフロー挙動) を参照)
+- 条件式が**例外を投げた**場合(文法エラー、または未知のステップ/capture 名の参照)、そのステップは元のメッセージ(利用可能なステップ/capture 名一覧を含むことがある)とともに `error` になり、後述の通常のエラーセマンティクスに従う(`continueOnError` が無ければ残りステップは skipped になる)
+- それより前の未処理の失敗による `skipRest`(後述)が優先する: フローが既に残りステップをスキップ中の場合、このステップの `if` はそもそも評価されない
+
+## retry
+
+```yaml
+retry:
+  count: 3          # 必須。初回実行後のリトライ回数(1〜100)
+  intervalMs: 500   # 任意。試行間の固定待機時間(ミリ秒)。既定値は 1000
+```
+
+- `count` は初回実行「後」のリトライ回数なので、ステップは合計で**最大 `count + 1` 回**実行される
+- ステップの結果が **`failed`**(アサーション失敗)または **`error`**(接続エラー・タイムアウト等の例外)になった場合にリトライする。`passed` になった時点で `count` を使い切っていなくても即座にループを止める
+- 試行間の待機は `intervalMs` による固定値(バックオフや条件式は無い)
+- `request` / `sse` / `ws` すべてのステップ種別に一律で適用される(ステップ全体、つまりリクエスト/レスポンスとアサーションをまとめて再実行する)
+- **記録されるのは最終試行のみ**: ステップ結果・履歴エントリともに1件、`onStepStart` / `onStepComplete` もステップごとに1回ずつ呼ばれる。途中の failed / error な試行は保持されない
+- `retry` を設定すると、結果と履歴エントリに実際に実行された試行回数(1 以上)を表す `attempts` フィールドが付く。`retry` 未設定時は `attempts` は省略される。`durationMs` は従来どおり最終試行自体の所要時間のまま変わらない
+
+## continueOnError
+
+```yaml
+steps:
+  - name: optional-check
+    request: { method: GET, url: "{{env.baseUrl}}/optional" }
+    assert: { status: 200 }
+    continueOnError: true   # 任意。既定値は false
+  - name: next-step
+    request: { method: GET, url: "{{env.baseUrl}}/next" }
+```
+
+- ステップに `continueOnError: true` を設定すると、そのステップの最終結果が **`failed`** または **`error`** になっても以降のステップはスキップされず、次のステップから実行が継続される
+- 「最終結果」とは、`retry` を併用している場合は **retry を使い切った後**を指す。retry は通常どおり先に実行され、リトライがすべて尽きて初めて `continueOnError` が効果を持つ
+- ステップ自体の状態は `failed` / `error` のまま変わらず、フロー(および run)全体の集約ステータスと exit code もこれまでどおり失敗として扱われる(詳細は [CLI リファレンス](cli.md#exit-code))
+- `continueOnError` が影響するのは**そのステップ自身の失敗のみ**。`continueOnError` を指定していない**後続の**ステップが失敗した場合は、下記のとおりそれ以降のステップはスキップされる
+
 ## ステップ失敗時のフロー挙動
 
-- ステップが **failed**(アサーション失敗)または **error**(runtime エラー)になると、そのフローの**残りステップは実行されず skipped** として記録される
+- ステップが **failed**(アサーション失敗)または **error**(runtime エラー)になると、そのフローの**残りステップは実行されず skipped**(`error: "skipped because a previous step failed"`)として記録される。ただし失敗したステップに `continueOnError: true` が設定されている場合は残りステップが実行される([continueOnError](#continueonerror) を参照)
+- [`if`](#if) の条件式が false になったステップも `skipped` として記録されるが、理由は別(`error: "skipped because condition not met: <expression>"`)で、上記の「残りステップをスキップする」挙動は**発生しない** — いずれの場合もフローは次のステップから実行を続ける
 - 複数フローファイルを渡した場合、あるフローが失敗しても**他のフローは実行される**
 - 最終 exit code は [CLI リファレンス](cli.md#exit-code) の優先ルールに従う
 

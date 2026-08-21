@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>klaus 類似ツール調査</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #59636e;
+    --border: #d1d9e0;
+    --accent: #0969da;
+    --surface: #f6f8fa;
+    --high: #1a7f37;
+    --mid: #9a6700;
+    --low: #59636e;
+    --warn-bg: #fff8c5;
+    --warn-border: #d4a72c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117;
+      --fg: #e6edf3;
+      --muted: #9198a1;
+      --border: #3d444d;
+      --accent: #4493f8;
+      --surface: #161b22;
+      --high: #3fb950;
+      --mid: #d29922;
+      --low: #9198a1;
+      --warn-bg: #2a2410;
+      --warn-border: #9e6a03;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+    line-height: 1.75;
+  }
+  main { max-width: 860px; margin: 0 auto; padding: 2.5rem 1.25rem 5rem; }
+  h1 { font-size: 1.7rem; line-height: 1.4; margin: 0 0 0.5rem; }
+  h2 { font-size: 1.3rem; margin: 2.5rem 0 0.75rem; padding-bottom: 0.3rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; margin: 2rem 0 0.5rem; }
+  p { margin: 0.5rem 0 1rem; }
+  a { color: var(--accent); }
+  code {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 0.88em;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.1em 0.35em;
+  }
+  .meta { color: var(--muted); font-size: 0.9rem; margin-bottom: 1.5rem; }
+  .summary {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin: 1.5rem 0 0;
+  }
+  .summary h2 { margin: 0 0 0.5rem; border: none; padding: 0; font-size: 1.05rem; }
+  .summary ol { margin: 0.25rem 0 0; padding-left: 1.4rem; }
+  .table-wrap { overflow-x: auto; margin: 1rem 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+  th, td { border: 1px solid var(--border); padding: 0.45rem 0.7rem; text-align: left; vertical-align: top; }
+  th { background: var(--surface); white-space: nowrap; }
+  .prio { font-weight: 600; white-space: nowrap; }
+  .prio.high { color: var(--high); }
+  .prio.mid { color: var(--mid); }
+  .prio.low { color: var(--low); }
+  .feature dl { margin: 0.25rem 0 0; }
+  .feature dt { font-weight: 600; margin-top: 0.6rem; }
+  .feature dd { margin: 0.1rem 0 0 0; }
+  .objection {
+    background: var(--warn-bg);
+    border-left: 4px solid var(--warn-border);
+    border-radius: 0 6px 6px 0;
+    padding: 0.6rem 0.9rem;
+    margin: 0.6rem 0 0;
+  }
+  .tag {
+    display: inline-block;
+    font-size: 0.78rem;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 0.05rem 0.6rem;
+    margin-left: 0.5rem;
+    vertical-align: 2px;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<main>
+
+<h1>klaus 類似ツール調査 — 追加すべき機能の検討</h1>
+<p class="meta">調査日: 2026-08-20 / 手法: 5 観点の Web 調査 + 候補ごとの 3 票敵対的検証 / 要約版: <a href="./similar-tools-research.md">similar-tools-research.md</a></p>
+
+<div class="summary">
+<h2>要約</h2>
+<p>競合 15 ツールとの比較から候補機能 14 件を抽出・検証した。まず着手すべきは次の 3 件で、いずれも実装コスト S、既存の runner・変数解決・ステータスモデルにほぼそのまま乗る。</p>
+<ol>
+  <li><strong>ステップの retry / poll-until-pass</strong> — 非同期 API の検証を可能にする。競合ほぼ全てが保有し、欠落が最も目立つ</li>
+  <li><strong><code>--var</code> / <code>--env-file</code> によるアドホック変数注入</strong> — CI からのシークレット注入がワンライナーで完結する</li>
+  <li><strong><code>continueOnError</code></strong> — 一括スモークで全体の pass/fail サマリーを取れるようにする</li>
+</ol>
+<p>完全棄却された候補は 0 件だが、gRPC ステップ・スクリプティングフック・レポート形式追加の 3 件には反対票が付き、見送りまたは位置づけの修正を推奨する。</p>
+</div>
+
+<h2 id="method">調査手法</h2>
+<p>次の手順で候補を収集・検証した。検証で 2 票以上棄却された候補は推奨から除外する設計としたが、該当は 0 件だった。部分的な反対票は各候補の欄に併記する。</p>
+<ol>
+  <li>klaus の現状機能をリポジトリ(README / docs / src)から棚卸しし、「不足」判定の基準線とする</li>
+  <li>5 観点(YAML シナリオランナー / CLI ファースト HTTP ツール / GUI クライアント / スキーマ駆動テスト / CI・レポーティング)で並列 Web 調査</li>
+  <li>候補を横断的に重複統合し 14 件に絞り、各候補の公式ドキュメントを取得して深掘り</li>
+  <li>候補ごとに 3 票の敵対的検証: (1) klaus に既存機能・同等物がないか repo を精査、(2) 出典の記述が正確か再取得して照合、(3) klaus のローカルファースト設計・スコープに適合するか</li>
+</ol>
+
+<h2 id="tools">比較対象ツール一覧</h2>
+<p>調査で参照した 15 ツール。klaus と同じ「ローカルで定義したリクエスト列を実行・検証する」領域を中心に、周辺領域(負荷テスト・スキーマ駆動)も含めた。</p>
+<div class="table-wrap">
+<table>
+  <thead><tr><th>ツール</th><th>位置づけ</th><th>URL</th></tr></thead>
+  <tbody>
+    <tr><td>Hurl</td><td>プレーンテキストで HTTP リクエスト連鎖を定義・実行するローカル CLI</td><td><a href="https://hurl.dev/docs/manual.html">hurl.dev</a></td></tr>
+    <tr><td>runn</td><td>YAML runbook で HTTP/gRPC/DB/CDP を混在実行できる Go 製シナリオランナー</td><td><a href="https://github.com/k1LoW/runn">github.com/k1LoW/runn</a></td></tr>
+    <tr><td>scenarigo</td><td>YAML シナリオで HTTP/gRPC を検証する Go 製 API テストツール</td><td><a href="https://github.com/scenarigo/scenarigo">github.com/scenarigo/scenarigo</a></td></tr>
+    <tr><td>venom</td><td>多様な executor(HTTP/DB fixtures ほか)を持つ宣言的テストランナー</td><td><a href="https://github.com/ovh/venom">github.com/ovh/venom</a></td></tr>
+    <tr><td>Step CI</td><td>ワークフロー YAML で API テストを行う CI 志向ツール</td><td><a href="https://docs.stepci.com/">docs.stepci.com</a></td></tr>
+    <tr><td>Karate</td><td>Gherkin ベースの API テスト + モックサーバー統合フレームワーク</td><td><a href="https://docs.karatelabs.io/">docs.karatelabs.io</a></td></tr>
+    <tr><td>Postman / Newman</td><td>GUI クライアント + コレクション実行 CLI(データ駆動・マルチレポーター)</td><td><a href="https://learning.postman.com/docs/collections/running-collections/working-with-data-files/">learning.postman.com</a></td></tr>
+    <tr><td>Bruno CLI</td><td>git 管理前提のローカルファースト API クライアント + CLI ランナー</td><td><a href="https://bruno-docs.vercel.app/bru-cli/runCollection">bruno-docs.vercel.app</a></td></tr>
+    <tr><td>Insomnia</td><td>コレクションランナーを持つ API クライアント</td><td><a href="https://docs.insomnia.rest/insomnia/collection-runner">docs.insomnia.rest</a></td></tr>
+    <tr><td>Hoppscotch</td><td>OSS の API クライアント + CLI</td><td><a href="https://docs.hoppscotch.io/documentation/clients/cli/overview">docs.hoppscotch.io</a></td></tr>
+    <tr><td>Tavern</td><td>pytest ベースの YAML API テスト</td><td><a href="https://github.com/taverntesting/tavern">github.com/taverntesting/tavern</a></td></tr>
+    <tr><td>httpYac</td><td>.http ファイル実行 CLI(OAuth2 フロー内蔵)</td><td><a href="https://httpyac.github.io/guide/">httpyac.github.io</a></td></tr>
+    <tr><td>Artillery</td><td>シナリオ YAML による負荷テストツール</td><td><a href="https://www.artillery.io/docs/reference/engines/http">artillery.io</a></td></tr>
+    <tr><td>Schemathesis</td><td>OpenAPI スキーマ駆動のプロパティベース・ファズテスト</td><td><a href="https://schemathesis.io/">schemathesis.io</a></td></tr>
+    <tr><td>Dredd</td><td>OpenAPI/Blueprint に対するレスポンス適合性チェック</td><td><a href="https://dredd.org/en/latest/how-it-works.html">dredd.org</a></td></tr>
+  </tbody>
+</table>
+</div>
+
+<h2 id="high">優先度高の推奨機能</h2>
+<p>実装コストが小さく、実運用上の最頻出ギャップを直接埋める 3 件。3 票検証で反対票なし。</p>
+
+<div class="feature">
+<h3 id="retry">1. ステップの retry / poll-until-pass<span class="tag">コスト S</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>ステップ失敗時に一定間隔で再試行し、成功するか試行回数を使い切るまで繰り返す。Hurl は <code>--retry &lt;NUM&gt;</code>(-1 で無制限)と <code>--retry-interval &lt;MS&gt;</code>(既定 1000ms)の 2 ノブのみで、グローバル(CLI/環境変数)にもステップ単位(<code>[Options]</code> セクション)にも設定できる。リトライ対象は HTTP エラー・assert・capture を含む「そのエントリの全失敗」。バックオフや独自条件式は持たず判定は既存 assert をそのまま使い、予算を使い切って初めて非 0 exit になる。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://hurl.dev/docs/manual.html">Hurl</a>、<a href="https://docs.stepci.com/guides/retry-timeout.html">Step CI</a>、runn・venom・Karate も同等機能あり。</dd>
+  <dt>klaus に加える価値</dt>
+  <dd>非同期処理後の結果反映を待つ eventually-consistent なエンドポイントの検証は実 API テストで最頻出のニーズであり、現状の klaus では表現不能。主要競合ほぼ全てが持ち、欠落が最も目立つ。</dd>
+  <dt>実装イメージ</dt>
+  <dd>step schema に <code>retry: {count, intervalMs}</code> を追加し、runner.ts の既存「リクエスト + assert 実行」をループで包んで固定 sleep を挟む。条件式言語は不要で、既存の exit code 体系(3/4)は最終試行の結果をそのまま使える。</dd>
+</dl>
+</div>
+
+<div class="feature">
+<h3 id="var">2. アドホック変数注入(<code>--var</code>)と任意パスの環境ファイル(<code>--env-file</code>)<span class="tag">コスト S</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>Bruno CLI は <code>--env-var NAME=VALUE</code>(複数指定可)でコマンドラインから個別変数を注入・上書きでき、<code>--env-file &lt;path&gt;</code> で collection 外の任意パスの環境定義ファイルを読み込める。ベース環境ファイル → CLI 上書きという 2 層の優先順位が明確。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://bruno-docs.vercel.app/bru-cli/runCollection">Bruno CLI</a>、<a href="https://github.com/ovh/venom">venom</a>。</dd>
+  <dt>klaus に加える価値</dt>
+  <dd>現状は <code>environments/&lt;name&gt;.yaml</code> の規約配置が必須で、CI からのシークレット注入や一時的な値の差し替えにファイル作成・編集が要る。<code>--var</code> があれば CI ワンライナーで完結し、<code>$protected</code> 環境設計とも整合的に「実行時だけの値」を扱える。</dd>
+  <dt>実装イメージ</dt>
+  <dd>repeatable な KV フラグのパースと、既存の変数解決順(captures → env file)への 1 層追加(CLI 上書きを env file の上に置く)。<code>--env-file</code> は既存の環境ファイルローダーのパス解決の汎用化で足りる。マスキング対象に含めるかの設計判断は必要。</dd>
+</dl>
+</div>
+
+<div class="feature">
+<h3 id="continue">3. <code>continueOnError</code>(ステップ失敗後も続行)<span class="tag">コスト S</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>scenarigo はステップに boolean <code>continueOnError</code> を持ち、true ならそのステップの失敗後も後続ステップを実行する。結果は記録され、後続ステップから <code>{{steps.&lt;id&gt;.result == "failed"}}</code> で参照可能。シナリオ中断が伝播しなくなるだけで、新しい出力形式や CLI フラグは不要。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://github.com/scenarigo/scenarigo">scenarigo</a>。</dd>
+  <dt>klaus に加える価値</dt>
+  <dd>klaus は初回失敗で残りを skip する固定挙動のため、「独立した複数エンドポイントを一括検証して全体の pass/fail サマリーが欲しい」フローが書けない。CI でのスモーク一括実行と相性が良い。</dd>
+  <dt>実装イメージ</dt>
+  <dd>step schema に boolean を 1 つ追加し、runner.ts の skipRest 分岐をフラグ時に抑止する。既存の passed/failed/skipped ステータスモデルはそのまま使え、exit code も従来通り失敗があれば 4。</dd>
+</dl>
+</div>
+
+<h2 id="mid">優先度中の推奨機能</h2>
+<p>フロー表現力・CI 統合を段階的に広げる 5 件。優先度高の 3 件の後に検討する。</p>
+
+<div class="feature">
+<h3 id="if">4. 条件付きステップ実行(<code>if:</code> 式)<span class="tag">コスト M</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>runn は runbook レベル / ステップレベルに <code>if:</code> フィールド(expr-lang 式)を置け、<code>vars.*</code>・<code>env.*</code>・<code>steps[n].*</code> 等を参照して false なら失敗ではなく skip(出力上も区別)する。後続ステップは通常実行される。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://github.com/k1LoW/runn">runn</a>。</dd>
+  <dt>klaus に加える価値</dt>
+  <dd>「setup が成功しなかったら cleanup を skip する」等の分岐が現状表現不能。<code>continueOnError</code> と組み合わせて初めて「失敗を許容して条件分岐する」フローが完成する。</dd>
+  <dt>実装イメージ</dt>
+  <dd>主コストは式評価器の導入、または <code>steps.&lt;name&gt;.status == "passed"</code> 程度の限定的な比較構文の自作。skipped 状態は既存モデルにあるため結果の配線は小さい。式言語をどこまで持つかで S にも L にも振れる — 最小構文から始めるのが klaus の宣言的設計に合う。</dd>
+</dl>
+</div>
+
+<div class="feature">
+<h3 id="data">5. CSV/JSON データファイルによるデータ駆動実行<span class="tag">コスト M</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>Newman は <code>newman run collection.json -d data.csv</code> で外部データファイルを渡すと、行/オブジェクトごとにコレクション全体を 1 回ずつ実行する。CSV は 1 行目が変数名になり通常のテンプレート <code>{{variableName}}</code> で参照。イテレーションごとの pass/fail が CLI/JSON/JUnit レポートに分かれて出る。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://learning.postman.com/docs/collections/running-collections/working-with-data-files/">Postman/Newman</a>。Insomnia・Bruno CLI・Hoppscotch・Karate も同等機能あり。</dd>
+  <dt>klaus に加える価値</dt>
+  <dd>環境ファイルは 1 実行 1 値セット固定のため、同一フローを多数の入力行(ユーザー ID、境界値ペイロード)で回すにはフローファイルを手で複製するしかない。競合のほぼ全てが持つ機能。</dd>
+  <dt>実装イメージ</dt>
+  <dd>CSV パーサー / JSON 配列ローダー、行ごとの実行 + レポートサイクル展開、既存の変数解決への「イテレーションデータ」層の追加。JSON レポートと history のイテレーション表現の設計判断が必要。</dd>
+</dl>
+</div>
+
+<div class="feature">
+<h3 id="tags">6. タグによる選択実行<span class="tag">コスト S</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>Bruno CLI(v2.8.0+)は <code>--tags=tag1,tag2</code>(いずれかを持つリクエストのみ実行)と <code>--exclude-tags=...</code>(除外)を組み合わせられる。タグは定義側 meta ブロックの配列で、ランナーは実行前にリストをフィルタするだけ。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://bruno-docs.vercel.app/bru-cli/runCollection">Bruno CLI</a>。</dd>
+  <dt>klaus に加える価値</dt>
+  <dd>「smoke だけ」「write 系だけ」を回すのにフローファイルをサブセットごとに複製する必要がなくなる。CI の段階実行と相性が良い。</dd>
+  <dt>実装イメージ</dt>
+  <dd>step またはフローの schema に <code>tags: string[]</code> を追加し、run 前のフィルタを 1 段挟む。実行・出力ロジックは無変更。フロー単位かステップ単位かの粒度決定が主な設計判断。なお「除外が包含より優先」の明文記載は出典で未確認(検証時の留保)。</dd>
+</dl>
+</div>
+
+<div class="feature">
+<h3 id="parallel">7. フローファイル横断の並列実行<span class="tag">コスト M</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>Hurl は <code>--test</code> モードでファイルを既定で並列実行し、<code>--jobs N</code> でワーカー数を制御する。ファイル内のリクエストは常に逐次で並列はファイル粒度のみ — 状態・順序のセマンティクスを単純に保つ設計。レポートは入力順に整列して出力される。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://hurl.dev/docs/running-tests.html">Hurl</a>、venom・Karate。Artillery はシナリオ内 <code>parallel:</code> ブロックの別モデル。</dd>
+  <dt>klaus に加える価値</dt>
+  <dd>大規模 CI スイートで全ファイルの逐次レイテンシを支払わずに済む。フロー内は逐次のままなので capture/変数の既存セマンティクスを壊さない。</dd>
+  <dt>実装イメージ</dt>
+  <dd>ファイルリストへのワーカープールと、結果の集約・入力順への再整列。klaus はテキスト出力が逐次ストリーミング前提で、history JSONL への追記も並行書き込みになるため、出力の直列化と履歴書き込みの排他が付随コスト。フロー内並列は実行エンジン改修になるため対象外とし、ファイル粒度に限定するのが妥当。</dd>
+</dl>
+</div>
+
+<div class="feature">
+<h3 id="reporters">8. レポーター拡張(TAP/HTML 追加・複数同時出力)<span class="tag">コスト M</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>Newman は <code>-r cli,json,junit</code> のように複数レポーターを 1 実行で併用し、<code>--reporter-&lt;name&gt;-export &lt;path&gt;</code> で個別に出力先を指定できる。Hurl も <code>--report-html</code> / <code>--report-json</code> / <code>--report-junit</code> / <code>--report-tap</code> を 1 実行で併用可能。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://learning.postman.com/docs/collections/using-newman-cli/newman-built-in-reporters">Newman</a>、<a href="https://hurl.dev/docs/running-tests.html">Hurl</a>、Bruno CLI(HTML)、Artillery(HTML)。</dd>
+  <dt>klaus に加える価値</dt>
+  <dd>人間向け HTML + CI 向け JUnit + ツール向け JSON を 1 実行で出せれば CI 統合の幅が広がる。</dd>
+  <dt>実装イメージ</dt>
+  <dd>既存の junit.ts / text.ts を「同一 run 結果を購読するレポーターレジストリ」に一般化し、<code>--report junit,tap,...</code> + 形式別出力パスフラグを追加する。TAP は小さく、HTML はテンプレート分のコスト増。</dd>
+</dl>
+<div class="objection"><strong>検証時の反対意見</strong>: 1 票が「klaus には既に text + JUnit の複数レポーターが存在し、『追加形式がない』という前提は不正確」と棄却。ゼロからの新機能ではなく既存レポーター基盤の拡張として位置づけ直すのが正確な評価。</div>
+</div>
+
+<h2 id="low">優先度低の推奨機能</h2>
+<p>いずれもコスト L で、依存の重さや設計フィットの留保が付く。宣言的機能の拡充後に残るニーズを見てから判断する。</p>
+
+<div class="feature">
+<h3 id="mock">9. モックサーバー(canned レスポンス配信)<span class="tag">コスト L</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>Karate はモックを Gherkin <code>.feature</code> で書き、<code>pathMatches()</code> / <code>methodIs()</code> / <code>bodyPath()</code> 等のマッチャ式で上から順にルーティングして <code>response</code> / <code>responseStatus</code> / <code>responseDelay</code> でレスポンスを返す。<code>Background</code> の変数が起動中永続するため簡易的なステートフル CRUD 模擬も可能。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://docs.karatelabs.io/extensions/test-doubles">Karate</a>、<a href="https://learning.postman.com/docs/postman-cli/postman-cli-mock/">Postman CLI</a>(より浅い実装)。</dd>
+  <dt>klaus に加える価値と留保</dt>
+  <dd>record/replay は実トラフィックの再生しかできず、未実装 API に対する先行フロー開発ができない。手書きモックはそれを埋めるが、HTTP サーバー常駐 + マッチャ DSL の設計・実装が必要で既存 cassette 機構とは別物。検証でも「実 API 検証という klaus のニッチの外側」とフィット面の留保が付いた。まず replay 側の強化(cassette の手書き許容など)で代替できないか検討する余地がある。</dd>
+</dl>
+</div>
+
+<div class="feature">
+<h3 id="oauth">10. OAuth2 トークンフローヘルパー<span class="tag">コスト L</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>httpYac は <code>Authorization: oauth2 client_credentials</code> のようなヘッダー記法で OAuth2/OIDC を内蔵サポートし、5 フロー(authorization_code + PKCE / implicit / password / client_credentials / device_code)の設定、トークンのキャッシュ・自動更新、RFC 8693 token exchange まで面倒を見る。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://httpyac.github.io/guide/">httpYac</a>。</dd>
+  <dt>klaus に加える価値と留保</dt>
+  <dd>現状 OAuth2 保護 API のテストはトークン交換を手動ステップで書く必要があるが、client_credentials フローは「トークン取得ステップ + capture」で今日でも表現できるため緊急度は低い。フル実装は 5 グラント・トークンキャッシュ・ブラウザリダイレクト受信が必要で L。client_credentials 限定の最小版なら M だが既存機能との差が小さい。</dd>
+</dl>
+</div>
+
+<div class="feature">
+<h3 id="openapi">11. OpenAPI スキーマ駆動のファズ/適合性テスト<span class="tag">コスト L</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>Schemathesis は OpenAPI 2.0/3.x スキーマから制約認識のプロパティベース入力生成(境界値・型違反)を行い、実 API に発射してスキーマ適合を検証、失敗時は最小再現 + curl コマンド + JUnit XML を出す。Dredd は生成なしの適合性チェックのみ。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://schemathesis.io/">Schemathesis</a>、<a href="https://dredd.org/en/latest/how-it-works.html">Dredd</a>。</dd>
+  <dt>klaus に加える価値と留保</dt>
+  <dd><code>klaus generate</code> の OpenAPI 統合の自然な延長ではあるが、「明示的フローを YAML で定義して実行する」パラダイムに対し生成的ファズは別パラダイムで、事実上の別プロダクト規模。検証でも「スコープ違反ではないが設計フィットが弱い」と明記された。やるなら Dredd 型の適合性チェックのみ(generate 済みフローの <code>assert.bodySchema</code> を spec から自動導出する等)が現実的な縮小版。</dd>
+</dl>
+</div>
+
+<div class="feature">
+<h3 id="db">12. DB ステップランナー(setup/検証用 SQL)<span class="tag">コスト L</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>runn は <code>dsn:</code> で DB ランナーを宣言し、ステップ本文の生 SQL を HTTP ステップと同一シナリオ内で実行する。SELECT は <code>rows</code>、更新系は <code>rows_affected</code> / <code>last_insert_id</code> として結果ストアに入り、後続の assert で参照できる。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://github.com/k1LoW/runn">runn</a>、venom(fixture ロード専用の狭い実装)。</dd>
+  <dt>klaus に加える価値と留保</dt>
+  <dd>API 呼び出し後の DB 副作用検証・事前データ投入をフローファイル内で完結できる。ただし Node には Go の database/sql 相当の統一抽象がなくドライバごとの個別対応になり、依存軽量を保っている現在の klaus には重い。optional peer dependency 化などの依存設計が必須。</dd>
+</dl>
+</div>
+
+<div class="feature">
+<h3 id="grpc">13. ネイティブ gRPC ステップ<span class="tag">コスト L</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>scenarigo は <code>protocol: grpc</code> + <code>target</code> / <code>service</code> / <code>method</code> / <code>message</code> で 4 種の RPC 形状(unary / server-streaming / client-streaming / bidi)を全対応し、proto は <code>.proto</code> ファイル指定または server reflection で取得、HTTP と共通の assert DSL で検証する。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://github.com/scenarigo/scenarigo">scenarigo</a>、runn。</dd>
+  <dt>klaus に加える価値と留保</dt>
+  <dd>REST と gRPC が混在するマイクロサービス環境で同一フローファイルに収められる。proto ロード層・全ストリーム型対応クライアント・assert/テンプレートの proto 対応が必要で依存も重い。</dd>
+</dl>
+<div class="objection"><strong>検証時の反対意見</strong>: 1 票が「docs/dev/requirements.md が gRPC を『任意(当面実装しない)』と明記しており、欠落は意図的なスコープ決定であって競合比較で新たに露呈したギャップではない」と棄却。採用するなら既存のスコープ決定を明示的に覆す判断が先。</div>
+</div>
+
+<div class="feature">
+<h3 id="scripting">14. スクリプティングフック(pre-request / post-response)<span class="tag">コスト L</span></h3>
+<dl>
+  <dt>どんな機能か</dt>
+  <dd>Bruno はリクエスト/コレクション単位で JavaScript の Pre-Request / Post-Response フックを持ち、<code>req</code>(リクエスト改変)/ <code>res</code>(レスポンス参照)/ <code>bru</code>(変数 get/set、<code>sendRequest</code>、フロー制御)の 3 オブジェクトと chai 風 <code>expect()</code> を提供する。</dd>
+  <dt>どのツールが持つか</dt>
+  <dd><a href="https://docs.usebruno.com/testing/script/javascript-reference">Bruno</a>、<a href="https://learning.postman.com/docs/tests-and-scripts/write-scripts/pre-request-scripts/">Postman</a>、Insomnia、Hoppscotch、Tavern、scenarigo。</dd>
+  <dt>klaus に加える価値と留保</dt>
+  <dd>JSONPath/regex に収まらない変換・検証の escape hatch。フル実装は JS サンドボックス・2 フックのライフサイクル・多層変数ストア・req/res ラッパーが必要で L(pre-request 単一フック + vars のみの最小版なら M)。</dd>
+</dl>
+<div class="objection"><strong>検証時の反対意見</strong>: 1 票が「klaus は JS ランタイム非依存の宣言的 YAML + セキュリティ重視の姿勢であり、JS 実行サンドボックスの追加はローカルファースト・軽依存・純宣言という設計への不適合かつ攻撃面の実質的拡大」と棄却。採用する場合も宣言的機能(retry / if / continueOnError)で埋まらない残余ニーズを見極めてからにすべき。</div>
+</div>
+
+<h2 id="rejected">見送り・保留の整理</h2>
+<p>3 票敵対的検証で完全棄却(2 票以上)された候補は 0 件。ただし部分的な反対票により、実質的な見送り・位置づけ修正を推奨するのは次の 3 件。</p>
+<ul>
+  <li><strong>ネイティブ gRPC ステップ</strong>(候補 13): 要求定義で「当面実装しない」と明記済みの意図的スコープ外。競合比較を理由に自動採用すべきでなく、要求定義の見直しが先</li>
+  <li><strong>スクリプティングフック</strong>(候補 14): JS サンドボックス導入は klaus の宣言的・軽依存・セキュリティ重視の設計と衝突し攻撃面を広げる。宣言的機能の拡充で大半のユースケースが埋まる見込み</li>
+  <li><strong>レポート形式追加</strong>(候補 8): 「レポーターが JUnit のみ」という前提が不正確。新機能ではなく既存レポーター基盤の拡張として優先度中で扱う</li>
+</ul>
+
+<h2 id="conclusion">総括</h2>
+<p>klaus がまず着手すべきは <strong>retry/poll-until-pass、<code>--var</code> / <code>--env-file</code> によるアドホック変数注入、<code>continueOnError</code> の 3 点</strong>である。いずれも実装コスト S で既存の runner・変数解決・ステータスモデルにほぼそのまま乗り、「非同期 API の検証ができない」「CI からシークレットを注入できない」「一括スモークで全体サマリーが取れない」という実運用上の最頻出ギャップを直接埋める。</p>
+<p>その後、<code>if:</code> 条件・データ駆動実行・タグ選択実行という中コスト群でフロー表現力を段階的に広げるのが、宣言的・ローカルファーストという klaus の設計を崩さずに競合との機能差を最短で詰める順路である。</p>
+
+</main>
+</body>
+</html>

@@ -339,6 +339,29 @@ export const wsSchema = z
 export type WsDef = z.infer<typeof wsSchema>;
 
 /**
+ * ステップ単位のリトライ設定。assert 失敗(failed)・例外(error)の両方をトリガーとし、
+ * passed になった時点でループを止める。バックオフや条件式は持たず、固定間隔のみ。
+ */
+export const retrySchema = z.strictObject({
+  count: z
+    .number()
+    .int()
+    .min(1)
+    .max(100)
+    .describe(
+      "Number of retries after the first attempt (Hurl semantics: max count+1 total executions). Integer between 1 and 100.",
+    ),
+  intervalMs: z
+    .number()
+    .int()
+    .min(0)
+    .max(600000)
+    .default(1000)
+    .describe("Fixed wait between attempts in milliseconds. Defaults to 1000."),
+});
+export type RetryDef = z.infer<typeof retrySchema>;
+
+/**
  * ステップ定義。request / ws / use のいずれか一方を必ず指定する(use は request/ws/sse と排他)。
  * use を指定した場合、実際の request/sse は loader.ts のロード時に参照先ファイルから取り込まれる
  * (materialize)ため、スキーマとしては request/ws を要求しない(ロード経路を持たない
@@ -347,6 +370,18 @@ export type WsDef = z.infer<typeof wsSchema>;
 export const stepSchema = z
   .strictObject({
     name: z.string().min(1).describe("Step name. Must be non-empty and unique within the flow."),
+    if: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "Condition expression gating this step's execution. Grammar: " +
+          '"steps.<name>.status" or "captures.<name>" followed by "==" or "!=" and a literal ' +
+          "(quoted string or bare token). No {{...}} template rendering is applied inside this " +
+          "expression. When the condition evaluates to false, the step becomes `skipped` without " +
+          "executing (no retry, no request). A malformed expression or unknown step/capture name " +
+          "makes the step `error`. See src/core/condition.ts for the exact grammar.",
+      ),
     request: requestSchema
       .optional()
       .describe("HTTP request definition. Exactly one of `request`, `ws`, or `use` must be set."),
@@ -376,6 +411,17 @@ export const stepSchema = z
         "Map of variable name to JSONPath expression, extracted from the step's response body and made available as `{{name}}` in later steps.",
       ),
     assert: assertSchema.optional().describe("Assertions to evaluate against the step's result."),
+    retry: retrySchema
+      .optional()
+      .describe(
+        "Retry the whole step (request/ws/sse) when its outcome is `failed` (assertion failure) or `error` (thrown exception). Only the final attempt is recorded in results/history.",
+      ),
+    continueOnError: z
+      .boolean()
+      .optional()
+      .describe(
+        "If true, subsequent steps still run when this step's final status (after retry, if any) is `failed` or `error`. The step itself keeps its failed/error status and still fails the flow/run.",
+      ),
   })
   .superRefine((step, ctx) => {
     if (step.request !== undefined && step.ws !== undefined) {
@@ -415,6 +461,13 @@ export const flowSchema = z
       .array(stepSchema)
       .min(1)
       .describe("Ordered list of steps to execute. Must contain at least one step."),
+    tags: z
+      .array(z.string().min(1))
+      .optional()
+      .describe(
+        "Flow-level tags for selecting which flows to run via `klaus run --tags` / `--exclude-tags`. " +
+          "No uniqueness constraint. Step-level tags are not supported.",
+      ),
   })
   .superRefine((flow, ctx) => {
     // ステップ名はフロー内で一意でなければならない
@@ -456,6 +509,29 @@ export const environmentSchema = z
 export type Environment = z.infer<typeof environmentSchema>;
 
 /**
+ * klaus.config.yaml の run.report / CLI の --report が共有するレポート形式の文法。
+ * カンマ区切りリスト(前後空白は trim して許容)で、各要素はこの配列のいずれかでなければならない。
+ * CLI 側(src/cli/run.ts の resolveReportTargets)もこの一覧・パース関数を再利用し、
+ * サポートするフォーマットが増減したときの更新箇所を一つに保つ。
+ */
+export const REPORT_FORMATS = ["junit", "tap"] as const;
+export type ReportFormat = (typeof REPORT_FORMATS)[number];
+
+function isReportFormat(value: string): value is ReportFormat {
+  return (REPORT_FORMATS as readonly string[]).includes(value);
+}
+
+/**
+ * "junit" や "junit,tap" のようなカンマ区切りレポート形式リストをパースする。
+ * 各要素を trim してから REPORT_FORMATS と照合し、空要素(前後・連続カンマ)または未知の形式が
+ * 1つでもあれば undefined を返す(呼び出し側はこれを「不正な --report/run.report 値」として扱う)。
+ */
+export function parseReportFormatList(value: string): ReportFormat[] | undefined {
+  const formats = value.split(",").map((entry) => entry.trim());
+  return formats.every(isReportFormat) ? formats : undefined;
+}
+
+/**
  * klaus.config.yaml(CLI オプションの既定値ファイル)のスキーマ。
  * `run` / `ui` サブコマンドのオプションのうち、既定値として設定してよいものだけを列挙する。
  * 意図的に含めないオプション:
@@ -469,13 +545,20 @@ export const configSchema = z.strictObject({
     .strictObject({
       env: z.string().optional().describe("Default value for `klaus run --env <name>`."),
       report: z
-        .literal("junit")
+        .string()
+        .refine((value) => parseReportFormatList(value) !== undefined, {
+          message: `must be a comma-separated list of ${REPORT_FORMATS.join(", ")} (e.g. "junit" or "junit,tap")`,
+        })
         .optional()
-        .describe('Default value for `klaus run --report <type>`. Only "junit" is supported.'),
+        .describe(
+          `Default value for \`klaus run --report <list>\`. Comma-separated list of ${REPORT_FORMATS.join(", ")} (e.g. "junit,tap").`,
+        ),
       reportFile: z
         .string()
         .optional()
-        .describe("Default value for `klaus run --report-file <path>`."),
+        .describe(
+          "Default value for `klaus run --report-file <path>`. Only supports a single value; combined with a multi-format `report`, this yields the same --report-file count-mismatch error as the CLI.",
+        ),
       history: z
         .boolean()
         .optional()
@@ -488,6 +571,13 @@ export const configSchema = z.strictObject({
         .describe(
           "Default for whether secret masking is applied to stdout. Equivalent to omitting --no-mask (true) or passing it (false).",
         ),
+      jobs: z
+        .number()
+        .int()
+        .min(1)
+        .max(32)
+        .optional()
+        .describe("Default value for `klaus run --jobs <n>` (1-32)."),
     })
     .optional()
     .describe("Default values for `klaus run` options."),

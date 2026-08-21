@@ -1,6 +1,7 @@
 import type { FlowResult, RunResult, StepResult } from "../../core/index.js";
 import { expandSecretVariants, maskString } from "../../core/index.js";
 import { sanitizeForXml } from "./sanitize.js";
+import { summarizeSteps } from "./text.js";
 
 /** formatJUnit のオプション。secrets を渡すと JUnit ファイル出力にのみシークレットマスクを適用する */
 export interface FormatJUnitOptions {
@@ -63,12 +64,15 @@ function testcaseXml(
 /** 1 フロー分の <testsuite> を組み立てる(flow = testsuite, step = testcase) */
 function testsuiteXml(flow: FlowResult, secretVariants: readonly string[]): string {
   const tests = flow.steps.length;
-  const failures = flow.steps.filter((step) => step.status === "failed").length;
-  const errors = flow.steps.filter((step) => step.status === "error").length;
-  const skipped = flow.steps.filter((step) => step.status === "skipped").length;
+  // json.ts の buildSummary と同じ集計ロジックを共有する(text.ts の summarizeSteps)
+  const { failed: failures, error: errors, skipped } = summarizeSteps(flow.steps);
   const time = (flow.durationMs / 1000).toFixed(3);
+  // --data 実行時のみ testsuite 名に " (iteration N)" を付ける(testcase の classname は
+  // flow.name のまま据え置く。同一フローのイテレーションを testsuite 名で区別できるようにする)
+  const suiteName =
+    flow.iteration !== undefined ? `${flow.name} (iteration ${flow.iteration})` : flow.name;
   const attrs = [
-    `name="${escapeXmlAttr(flow.name, secretVariants)}"`,
+    `name="${escapeXmlAttr(suiteName, secretVariants)}"`,
     `tests="${tests}"`,
     `failures="${failures}"`,
     `errors="${errors}"`,

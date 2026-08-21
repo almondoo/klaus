@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
+name: GraphQL API 単体チェック
+# request.graphql は request.body と排他。graphql 指定時は method を省略でき、実行時に POST が
+# 既定値になる。query / variables の文字列値は body と同じくテンプレート展開の対象。
+env: local          # examples/environments/local.yaml を参照(--env で上書き可)
+steps:
+  - name: get-user
+    request:
+      url: "{{baseUrl}}/graphql"
+      graphql:
+        query: |
+          query GetUser($email: String!) {
+            user(email: $email) { email name }
+          }
+        variables:
+          email: "{{testEmail}}"
+    assert:
+      status: 200
+      body:
+        - path: "$.data.user.email"
+          equals: "{{testEmail}}"      # アサーションの期待値にも埋め込める
+        - path: "$.data.user.name"
+          exists: true

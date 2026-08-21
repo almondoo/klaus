@@ -74,8 +74,21 @@ describe("loadCliConfig", () => {
     await expect(loadCliConfig(root)).rejects.toThrow(/klaus\.config\.yaml/);
   });
 
-  it("run.report が junit 以外の場合はスキーマ違反として拒否する", async () => {
+  it("run.report が junit/tap のいずれでもない場合はスキーマ違反として拒否する", async () => {
     await writeFile(join(root, "klaus.config.yaml"), "run:\n  report: xml\n", "utf-8");
+
+    await expect(loadCliConfig(root)).rejects.toThrow(ParseError);
+  });
+
+  it("run.report はカンマ区切りの junit,tap を受理する", async () => {
+    await writeFile(join(root, "klaus.config.yaml"), "run:\n  report: junit,tap\n", "utf-8");
+
+    const config = await loadCliConfig(root);
+    expect(config?.run?.report).toBe("junit,tap");
+  });
+
+  it("run.report は未知のフォーマット(html)を含むカンマ区切りリストを拒否する", async () => {
+    await writeFile(join(root, "klaus.config.yaml"), "run:\n  report: junit,html\n", "utf-8");
 
     await expect(loadCliConfig(root)).rejects.toThrow(ParseError);
   });
@@ -134,6 +147,7 @@ describe("applyConfigToRunOptions", () => {
         reportFile: "default",
         history: "default",
         mask: "default",
+        jobs: "default",
       },
       {
         run: {
@@ -142,6 +156,7 @@ describe("applyConfigToRunOptions", () => {
           reportFile: "custom.xml",
           history: false,
           mask: false,
+          jobs: 4,
         },
       },
     );
@@ -151,6 +166,7 @@ describe("applyConfigToRunOptions", () => {
       reportFile: "custom.xml",
       env: "local",
       report: "junit",
+      jobs: 4,
     });
   });
 
@@ -158,6 +174,23 @@ describe("applyConfigToRunOptions", () => {
     const options = baseOptions({ env: "cli-env" });
     const merged = applyConfigToRunOptions(options, { env: "cli" }, { run: { env: "config-env" } });
     expect(merged.env).toBe("cli-env");
+  });
+
+  it("CLI で明示指定された --jobs は config の run.jobs より優先される", () => {
+    const options = baseOptions({ jobs: 2 });
+    const merged = applyConfigToRunOptions(options, { jobs: "cli" }, { run: { jobs: 8 } });
+    expect(merged.jobs).toBe(2);
+  });
+
+  it("--env-file が明示指定されている場合、config の run.env は注入しない(--env-file との誤った競合防止)", () => {
+    // CLI で -e/--env を一度も打っていない(source: default)のに、config の run.env が
+    // options.env に注入されてしまうと、run.ts の -e/--env・--env-file 同時指定チェックに
+    // 誤って抵触する(このリグレッションの再現条件)。envFile が設定されている間は
+    // run.env の注入自体をスキップすることで、config 由来の既定値が明示指定の --env-file に道を譲る。
+    const options = baseOptions({ envFile: "/tmp/custom-env.yaml" });
+    const merged = applyConfigToRunOptions(options, { env: "default" }, { run: { env: "local" } });
+    expect(merged.env).toBeUndefined();
+    expect(merged.envFile).toBe("/tmp/custom-env.yaml");
   });
 
   it("--no-history / --no-mask の負論理も source 判定で自然に扱える", () => {

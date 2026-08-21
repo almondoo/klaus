@@ -8,7 +8,8 @@ import type { AssertionResult, RequestSnapshot, ResponseSnapshot, SseEvent } fro
  * 将来フィールドを変える場合は v を上げて後方互換を判断できるようにする。
  * v は 1 のまま(追加のみの後方互換な変更): status を新設し、
  * request/response は skipped ステップのため省略可能にし、SSE イベントを events に追加し、
- * さらにフロー実行を介さない単発実行(POST /api/request)を示す source を追加した。
+ * さらにフロー実行を介さない単発実行(POST /api/request)を示す source と、--data 実行時の
+ * iteration を追加した。
  */
 export interface HistoryEntry {
   v: 1;
@@ -17,6 +18,8 @@ export interface HistoryEntry {
   step: string;
   startedAt: string;
   durationMs: number;
+  /** --data 実行時のみ設定される 1 始まりのイテレーション番号。--data 未指定の通常実行では省略する */
+  iteration?: number;
   /**
    * 新規に書き込むエントリでは常に設定する。
    * 既存の(このフィールド追加前に書かれた)行には無いため、読み出し側は
@@ -32,6 +35,8 @@ export interface HistoryEntry {
   assertions: AssertionResult[];
   /** executeSingleRequest(フローを介さない単発実行)経由で書き込まれた場合 "single"。通常のフロー実行では省略する */
   source?: "single";
+  /** step.retry を設定した場合のみ設定。実際に実行された試行回数(1 以上) */
+  attempts?: number;
 }
 
 /**

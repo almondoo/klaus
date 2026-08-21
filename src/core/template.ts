@@ -29,8 +29,12 @@ const templateFunctions: Record<string, () => string> = {
   newTimestamp: () => String(Date.now()),
 };
 
-/** 値を文字列に変換する(オブジェクト・配列は JSON 文字列化) */
-function stringifyValue(value: unknown): string {
+/**
+ * 値を文字列に変換する(オブジェクト・配列は JSON 文字列化)。
+ * condition.ts の evaluateCondition も capture 側の値の文字列化にこの関数を再利用する
+ * (テンプレート展開後の見た目と条件式の比較結果を一致させるため。挙動は変更していない)。
+ */
+export function stringifyValue(value: unknown): string {
   if (typeof value === "string") return value;
   if (value === null || value === undefined) return String(value);
   if (typeof value === "object") return JSON.stringify(value);

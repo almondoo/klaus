@@ -100,6 +100,80 @@ describe("groupHistoryByRun", () => {
     expect(groups[0]?.status).toBe("passed");
   });
 
+  it("splits a --data run's rows into one group per iteration, labeled with the CLI's iteration suffix", () => {
+    const entries: HistoryEntry[] = [
+      entry({
+        runId: "run-data-1",
+        iteration: 1,
+        step: "a",
+        startedAt: "2026-08-07T00:00:00.000Z",
+        durationMs: 10,
+      }),
+      entry({
+        runId: "run-data-1",
+        iteration: 1,
+        step: "b",
+        startedAt: "2026-08-07T00:00:01.000Z",
+        durationMs: 5,
+      }),
+      entry({
+        runId: "run-data-1",
+        iteration: 2,
+        step: "a",
+        startedAt: "2026-08-07T00:00:02.000Z",
+        durationMs: 20,
+      }),
+      entry({
+        runId: "run-data-1",
+        iteration: 2,
+        step: "b",
+        startedAt: "2026-08-07T00:00:03.000Z",
+        durationMs: 8,
+      }),
+    ];
+
+    const groups = groupHistoryByRun(entries);
+
+    // 同一 runId でも iteration ごとに別の行になる(全行を1行にマージしない)
+    expect(groups).toHaveLength(2);
+    // startedAt 降順なので iteration 2 が先
+    expect(groups.map((g) => g.iteration)).toEqual([2, 1]);
+    expect(groups[0]?.flow).toBe("認証フロー (iteration 2)");
+    expect(groups[1]?.flow).toBe("認証フロー (iteration 1)");
+    // durationMs は同一 iteration 内のステップのみ合算される(他の iteration と混ざらない)
+    expect(groups[0]?.durationMs).toBe(28);
+    expect(groups[1]?.durationMs).toBe(15);
+    expect(groups[0]?.steps.map((s) => s.step)).toEqual(["a", "b"]);
+    expect(groups[1]?.steps.map((s) => s.step)).toEqual(["a", "b"]);
+  });
+
+  it("keeps runs without iteration as a single row, unaffected by iteration-aware grouping of a --data run in the same list", () => {
+    const entries: HistoryEntry[] = [
+      entry({
+        runId: "run-data-1",
+        iteration: 1,
+        step: "a",
+        startedAt: "2026-08-07T00:00:00.000Z",
+      }),
+      entry({
+        runId: "run-data-1",
+        iteration: 2,
+        step: "a",
+        startedAt: "2026-08-07T00:00:01.000Z",
+      }),
+      entry({ runId: "run-plain", step: "a", startedAt: "2026-08-06T00:00:00.000Z" }),
+      entry({ runId: "run-plain", step: "b", startedAt: "2026-08-06T00:00:01.000Z" }),
+    ];
+
+    const groups = groupHistoryByRun(entries);
+    const plain = groups.find((g) => g.runId === "run-plain");
+
+    expect(groups).toHaveLength(3);
+    expect(plain?.iteration).toBeUndefined();
+    expect(plain?.flow).toBe("認証フロー");
+    expect(plain?.steps).toHaveLength(2);
+  });
+
   it("labels a group as skipped when every step in it is skipped", () => {
     const entries: HistoryEntry[] = [
       entry({

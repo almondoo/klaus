@@ -74,6 +74,22 @@ describe("formatFlowHeader", () => {
       "認証フロー (api/auth-flow.yaml)",
     );
   });
+
+  it("フロー名・ファイルに制御文字が含まれても可視エスケープに変換する", () => {
+    const header = formatFlowHeader("flow\x1b[32mPASS fake\x1b[0m\n", "file\r\x07.yaml");
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: 生の制御バイトが残っていないことを検証する意図的な正規表現
+    expect(header).not.toMatch(/[\x00-\x1f\x7f]/);
+    expect(header).toContain("\\x1B[32m");
+    expect(header).toContain("\\n");
+    expect(header).toContain("\\r");
+    expect(header).toContain("\\x07");
+  });
+
+  it("--data 実行時(iteration 指定あり)は末尾に (iteration N) を付ける", () => {
+    expect(formatFlowHeader("data flow", "data.yaml", 2)).toBe(
+      "data flow (data.yaml) (iteration 2)",
+    );
+  });
 });
 
 describe("formatStepLine", () => {
@@ -217,6 +233,39 @@ describe("formatStepLine: 制御文字のサニタイズ", () => {
     expect(line).toContain("\\x1B[31m");
     expect(line).toContain("\\n");
   });
+
+  it("PASS: result.name(flow YAML の name)に制御文字が含まれても可視エスケープに変換する", () => {
+    const line = formatStepLine(
+      buildStep({
+        name: "login\x1b[32mPASS fake\x1b[0m\n",
+        status: "passed",
+      }),
+      false,
+    );
+    expect(line.split("\n")).toHaveLength(1);
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: 生の制御バイトが残っていないことを検証する意図的な正規表現
+    expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
+    expect(line).toContain("\\x1B[32m");
+    expect(line).toContain("\\n");
+  });
+
+  it("SKIP: result.name と reason(result.error)に制御文字が含まれても可視エスケープに変換する", () => {
+    const line = formatStepLine(
+      buildStep({
+        name: "get-me\x1b[33mSKIP fake",
+        status: "skipped",
+        error: "skipped\nbecause\r\x07 previous step failed",
+      }),
+      false,
+    );
+    expect(line.split("\n")).toHaveLength(1);
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: 生の制御バイトが残っていないことを検証する意図的な正規表現
+    expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
+    expect(line).toContain("\\x1B[33m");
+    expect(line).toContain("\\n");
+    expect(line).toContain("\\r");
+    expect(line).toContain("\\x07");
+  });
 });
 
 describe("formatSummary", () => {
@@ -294,5 +343,30 @@ describe("createTextReporter", () => {
       (text) => text.includes("(a.yaml)") || text.includes("(b.yaml)"),
     ).length;
     expect(headerCount).toBe(2);
+  });
+
+  it("--data 実行時、同じフロー名でも iteration が変われば再度ヘッダーを出力する", () => {
+    const written: string[] = [];
+    const reporter = createTextReporter(false, (text) => written.push(text));
+
+    reporter.onStepStart({ flow: "data flow", file: "data.yaml", step: "s1", iteration: 1 });
+    reporter.onStepComplete({
+      flow: "data flow",
+      file: "data.yaml",
+      result: buildStep({ name: "s1", status: "passed" }),
+      iteration: 1,
+    });
+    reporter.onStepStart({ flow: "data flow", file: "data.yaml", step: "s1", iteration: 2 });
+    reporter.onStepComplete({
+      flow: "data flow",
+      file: "data.yaml",
+      result: buildStep({ name: "s1", status: "passed" }),
+      iteration: 2,
+    });
+
+    const headers = written.filter((text) => text.includes("(data.yaml)"));
+    expect(headers).toHaveLength(2);
+    expect(headers[0]).toContain("(iteration 1)");
+    expect(headers[1]).toContain("(iteration 2)");
   });
 });

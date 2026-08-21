@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { historyListCommand, historyShowCommand } from "../../src/cli/history.js";
+import { sanitizeForTerminal } from "../../src/cli/reporters/sanitize.js";
 
 const projectRoot = join(__dirname, "..", "..");
 const tmpRoot = join(projectRoot, "tmp");
@@ -187,6 +188,81 @@ describe("historyListCommand / historyShowCommand", () => {
       expect(getMeRow).toContain("5");
       // assertions(配列)は compact JSON 文字列化される
       expect(getMeRow).toContain(JSON.stringify(ENTRY_GET_ME.assertions));
+    });
+  });
+
+  describe("historyListCommand: 制御文字のサニタイズ", () => {
+    /** flow/step に ANSI エスケープと改行を仕込んだ悪性エントリ */
+    const ENTRY_MALICIOUS = {
+      v: 1,
+      runId: "run-3",
+      flow: "evil\x1b[32mPASS fake\x1b[0m",
+      step: "step\nPASS injected\r\x07",
+      startedAt: "2026-08-08T11:00:00.000Z",
+      durationMs: 3,
+      status: "passed",
+      request: { method: "GET", url: "http://localhost/evil", headers: {} },
+      response: { status: 200, headers: {}, body: null },
+      assertions: [],
+    };
+    let maliciousWorkDir: string;
+
+    beforeEach(async () => {
+      const historyDir = join(workDir, ".klaus", "history");
+      await writeFile(
+        join(historyDir, "2026-08-08-malicious.jsonl"),
+        `${JSON.stringify(ENTRY_MALICIOUS)}\n`,
+        "utf-8",
+      );
+      maliciousWorkDir = workDir;
+    });
+
+    it("テキスト表では flow/step の制御文字が可視エスケープに変換され、列幅も崩れない", async () => {
+      const originalIsTTY = process.stdout.isTTY;
+      process.stdout.isTTY = true;
+      try {
+        await historyListCommand(
+          { last: 20, fields: "flow,step", flow: ENTRY_MALICIOUS.flow },
+          maliciousWorkDir,
+        );
+      } finally {
+        process.stdout.isTTY = originalIsTTY;
+      }
+
+      const output = stdoutSpy.join("");
+      // 表は行区切りに本物の改行(\n = 0x0A)を使うため、制御バイト不在の検証は
+      // 行に分割してから各行の「中身」に対して行う(改行そのものは判定対象に含めない)
+      const lines = output.trimEnd().split("\n");
+      expect(lines).toHaveLength(2);
+      for (const line of lines) {
+        // biome-ignore lint/suspicious/noControlCharactersInRegex: 生の制御バイトが残っていないことを検証する意図的な正規表現
+        expect(line).not.toMatch(/[\x00-\x1f\x7f]/);
+      }
+      expect(output).toContain("\\x1B[32m");
+      expect(output).toContain("\\n");
+      expect(output).toContain("\\r");
+      expect(output).toContain("\\x07");
+
+      // 列幅はサニタイズ後のセル文字列から計算されているため、ヘッダーとデータ行の
+      // 対応する列は同じ長さに揃う(サニタイズ前の長さで幅計算するとここがずれる)
+      const flowCell = sanitizeForTerminal(ENTRY_MALICIOUS.flow);
+      const stepCell = sanitizeForTerminal(ENTRY_MALICIOUS.step);
+      const flowWidth = Math.max("flow".length, flowCell.length);
+      const stepWidth = Math.max("step".length, stepCell.length);
+      expect(lines[0]).toBe(`${"flow".padEnd(flowWidth)}  ${"step".padEnd(stepWidth)}`);
+      expect(lines[1]).toBe(
+        `${flowCell.padEnd(flowWidth)}  ${stepCell.padEnd(stepWidth)}`.trimEnd(),
+      );
+    });
+
+    it("JSON モードでは flow/step がサニタイズされず生の値のまま出力される", async () => {
+      await historyListCommand(
+        { last: 20, fields: "flow,step", flow: ENTRY_MALICIOUS.flow, json: true },
+        maliciousWorkDir,
+      );
+
+      const output = JSON.parse(stdoutSpy.join("").trim()) as Array<Record<string, unknown>>;
+      expect(output).toEqual([{ flow: ENTRY_MALICIOUS.flow, step: ENTRY_MALICIOUS.step }]);
     });
   });
 

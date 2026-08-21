@@ -6,7 +6,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { WebSocketServer } from "ws";
 import type { HistoryEntry } from "../src/core/history.js";
 import { historyFilePath } from "../src/core/history.js";
-import { executeFlow, runFlows } from "../src/core/runner.js";
+import type { LoadedFlowEntry, StepCompleteContext, StepStartContext } from "../src/core/runner.js";
+import { executeFlow, runFlows, runLoadedFlows } from "../src/core/runner.js";
 import { flowSchema } from "../src/core/schema.js";
 import { closeServer, listenEphemeral, reserveClosedPort } from "./support/net.js";
 
@@ -400,6 +401,46 @@ describe("executeFlow", () => {
     expect(result.steps[0]?.status).toBe("error");
     expect(result.steps[0]?.error).toContain("broken");
     expect(result.steps[0]?.error).toContain("failed to evaluate JSONPath");
+  });
+
+  it("capture はネストしたフィールド・配列インデックスの JSONPath を指定でき、後続ステップのテンプレートで使える", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ data: { user: { id: "u-1" } }, items: [{ id: "i-1" }] }));
+    });
+    const { port } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "nested capture flow",
+        steps: [
+          {
+            name: "fetch",
+            request: { method: "GET", url: `http://127.0.0.1:${port}/resource` },
+            capture: { userId: "$.data.user.id", firstId: "$.items[0].id" },
+            assert: { status: 200 },
+          },
+          {
+            name: "use-captured",
+            request: {
+              method: "GET",
+              url: `http://127.0.0.1:${port}/users/{{userId}}/items/{{firstId}}`,
+            },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "nested-capture-flow.yaml", { cwd, history: false });
+
+      expect(result.status).toBe("passed");
+      expect(result.steps[1]?.status).toBe("passed");
+      expect(result.steps[1]?.request?.url).toBe(`http://127.0.0.1:${port}/users/u-1/items/i-1`);
+    } finally {
+      await closeServer(server);
+    }
   });
 
   it("request も ws も持たないステップは(schema の superRefine を bypass した場合でも)明確な RuntimeError で error になる", async () => {
@@ -1023,6 +1064,252 @@ describe("runFlows", () => {
   });
 });
 
+describe("runLoadedFlows", () => {
+  let ctx: Awaited<ReturnType<typeof startAuthServer>>;
+  const tmpRoot = join(process.cwd(), "tmp");
+  let cwd: string;
+
+  beforeAll(async () => {
+    ctx = await startAuthServer();
+    await mkdir(tmpRoot, { recursive: true });
+  });
+
+  afterAll(async () => {
+    await closeServer(ctx.server);
+  });
+
+  afterEach(async () => {
+    if (cwd) {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * assert 未指定のステップは、リクエストが接続レベルで成功しさえすれば(ステータスは問わず)
+   * passed になる(evaluateAssertions が空配列を返し every() が true になるため)。
+   * このファイルの他の describe と同様、テンプレート解決自体の検証は目的ではないため、
+   * ここでは行の値を直接テンプレートに使わず単に options.dataRows の要素数だけを利用する。
+   */
+  function buildTrivialFlow(name: string) {
+    return flowSchema.parse({
+      name,
+      steps: [{ name: "step", request: { method: "GET", url: `${ctx.baseUrl}/nonexistent` } }],
+    });
+  }
+
+  it("dataRows 指定時、行(外側) × フロー(内側)のイテレーション優先順で実行し、flows[].iteration が 1,1,2,2 になる", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+    const entries: LoadedFlowEntry[] = [
+      { filePath: "flow-a.yaml", flow: buildTrivialFlow("flow a") },
+      { filePath: "flow-b.yaml", flow: buildTrivialFlow("flow b") },
+    ];
+
+    const result = await runLoadedFlows(entries, {
+      cwd,
+      history: false,
+      dataRows: [{ row: 1 }, { row: 2 }],
+    });
+
+    // flowA(it1), flowB(it1), flowA(it2), flowB(it2) の順(行が外側・フローが内側)
+    expect(result.flows.map((f) => f.name)).toEqual(["flow a", "flow b", "flow a", "flow b"]);
+    expect(result.flows.map((f) => f.iteration)).toEqual([1, 1, 2, 2]);
+    expect(result.status).toBe("passed");
+  });
+
+  it("dataRows 指定時、options.iteration が runId 共有のまま onStepStart/onStepComplete/履歴コールバックへ伝播する", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+    const entries: LoadedFlowEntry[] = [
+      { filePath: "flow-a.yaml", flow: buildTrivialFlow("flow a") },
+    ];
+
+    const startContexts: StepStartContext[] = [];
+    const completeContexts: StepCompleteContext[] = [];
+    const historyEntries: HistoryEntry[] = [];
+
+    const result = await runLoadedFlows(entries, {
+      cwd,
+      dataRows: [{ row: 1 }, { row: 2 }],
+      onStepStart: (context) => {
+        startContexts.push(context);
+      },
+      onStepComplete: (context) => {
+        completeContexts.push(context);
+      },
+      history: (entry) => {
+        historyEntries.push(entry);
+      },
+    });
+
+    expect(startContexts.map((c) => c.iteration)).toEqual([1, 2]);
+    expect(completeContexts.map((c) => c.iteration)).toEqual([1, 2]);
+    expect(historyEntries.map((e) => e.iteration)).toEqual([1, 2]);
+
+    // runId は runLoadedFlows が1回だけ生成し、全イテレーション・全フローの executeFlow 呼び出しで共有される
+    expect(new Set(historyEntries.map((e) => e.runId)).size).toBe(1);
+    expect(historyEntries[0]?.runId).toBe(result.runId);
+  });
+
+  describe("options.jobs(--jobs による並列実行)", () => {
+    /**
+     * requiredConcurrent 件のリクエストが同時に in-flight になるまで、全リクエストの応答を保留するゲートサーバー。
+     * sleep に頼らず「実際に requiredConcurrent 件が重なった」ことを決定的に証明するための仕掛け
+     * (in-flight 件数が閾値に達した瞬間にゲートを開き、以降に届いたリクエストも含め全て応答を返す)。
+     */
+    async function startConcurrencyGateServer(requiredConcurrent: number) {
+      let inFlight = 0;
+      let maxObserved = 0;
+      let releaseGate: (() => void) | undefined;
+      const gate = new Promise<void>((resolve) => {
+        releaseGate = resolve;
+      });
+      const server = createServer((_req, res) => {
+        inFlight++;
+        maxObserved = Math.max(maxObserved, inFlight);
+        if (inFlight >= requiredConcurrent) releaseGate?.();
+        gate.then(() => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+        });
+      });
+      const { baseUrl } = await listenEphemeral(server);
+      return { server, baseUrl, getMaxObserved: () => maxObserved };
+    }
+
+    it("jobs: 3 で3フローを並列実行すると、少なくとも2ユニットが同時に in-flight になる(ゲートサーバーで検証)", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+      const gate = await startConcurrencyGateServer(2);
+
+      try {
+        const entries: LoadedFlowEntry[] = [
+          {
+            filePath: "gate-a.yaml",
+            flow: flowSchema.parse({
+              name: "gate a",
+              steps: [{ name: "step", request: { method: "GET", url: `${gate.baseUrl}/gate` } }],
+            }),
+          },
+          {
+            filePath: "gate-b.yaml",
+            flow: flowSchema.parse({
+              name: "gate b",
+              steps: [{ name: "step", request: { method: "GET", url: `${gate.baseUrl}/gate` } }],
+            }),
+          },
+          {
+            filePath: "gate-c.yaml",
+            flow: flowSchema.parse({
+              name: "gate c",
+              steps: [{ name: "step", request: { method: "GET", url: `${gate.baseUrl}/gate` } }],
+            }),
+          },
+        ];
+
+        const result = await runLoadedFlows(entries, { cwd, history: false, jobs: 3 });
+
+        expect(result.status).toBe("passed");
+        expect(result.flows).toHaveLength(3);
+        expect(gate.getMaxObserved()).toBeGreaterThanOrEqual(2);
+      } finally {
+        await closeServer(gate.server);
+      }
+    });
+
+    it("jobs>1 でも RunResult.flows は完了順ではなく常に入力順を保つ(先頭フローを最も遅くする)", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+
+      // /order-slow は /order-fast が2回呼ばれるまで応答を保留する(先頭ユニットが最後に完了することを保証する)
+      let fastCount = 0;
+      let releaseSlow: (() => void) | undefined;
+      const slowGate = new Promise<void>((resolve) => {
+        releaseSlow = resolve;
+      });
+      const completionOrder: string[] = [];
+      const server = createServer((req, res) => {
+        if (req.url === "/order-fast") {
+          fastCount++;
+          completionOrder.push("fast");
+          if (fastCount >= 2) releaseSlow?.();
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ ok: true }));
+          return;
+        }
+        if (req.url === "/order-slow") {
+          slowGate.then(() => {
+            completionOrder.push("slow");
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true }));
+          });
+          return;
+        }
+        res.writeHead(404);
+        res.end();
+      });
+      const { baseUrl } = await listenEphemeral(server);
+
+      try {
+        const entries: LoadedFlowEntry[] = [
+          {
+            filePath: "order-slow.yaml",
+            flow: flowSchema.parse({
+              name: "flow slow",
+              steps: [{ name: "step", request: { method: "GET", url: `${baseUrl}/order-slow` } }],
+            }),
+          },
+          {
+            filePath: "order-fast-1.yaml",
+            flow: flowSchema.parse({
+              name: "flow fast 1",
+              steps: [{ name: "step", request: { method: "GET", url: `${baseUrl}/order-fast` } }],
+            }),
+          },
+          {
+            filePath: "order-fast-2.yaml",
+            flow: flowSchema.parse({
+              name: "flow fast 2",
+              steps: [{ name: "step", request: { method: "GET", url: `${baseUrl}/order-fast` } }],
+            }),
+          },
+        ];
+
+        const result = await runLoadedFlows(entries, { cwd, history: false, jobs: 3 });
+
+        // サーバー側で観測した完了順は fast, fast, slow(先頭ユニットが最後に完了した)
+        expect(completionOrder).toEqual(["fast", "fast", "slow"]);
+        // にも関わらず RunResult.flows は入力順(slow, fast1, fast2)のまま
+        expect(result.flows.map((f) => f.name)).toEqual([
+          "flow slow",
+          "flow fast 1",
+          "flow fast 2",
+        ]);
+        expect(result.status).toBe("passed");
+      } finally {
+        await closeServer(server);
+      }
+    });
+
+    it("--data 指定 + jobs>1 でも行(外側) × フロー(内側)のイテレーション優先順を保つ", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+      const entries: LoadedFlowEntry[] = [
+        { filePath: "flow-a.yaml", flow: buildTrivialFlow("flow a") },
+        { filePath: "flow-b.yaml", flow: buildTrivialFlow("flow b") },
+      ];
+
+      const result = await runLoadedFlows(entries, {
+        cwd,
+        history: false,
+        dataRows: [{ row: 1 }, { row: 2 }],
+        jobs: 2,
+      });
+
+      expect(result.flows.map((f) => f.name)).toEqual(["flow a", "flow b", "flow a", "flow b"]);
+      expect(result.flows.map((f) => f.iteration)).toEqual([1, 1, 2, 2]);
+      expect(result.status).toBe("passed");
+      // runId は jobs>1 でも1回だけ生成され、全ユニットで共有される
+      expect(result.runId).toBeTruthy();
+    });
+  });
+});
+
 describe("ws steps", () => {
   const tmpRoot = join(process.cwd(), "tmp");
   let cwd: string;
@@ -1140,6 +1427,596 @@ describe("ws steps", () => {
       expect(failingResult.steps[0]?.status).toBe("failed");
     } finally {
       await closeServer(wss);
+    }
+  });
+});
+
+describe("step.retry", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let cwd: string;
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+  });
+
+  afterEach(async () => {
+    if (cwd) {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("failed が2回続いた後 3 回目で passed になる: attempts=3、後続ステップは通常通り実行される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-retry-"));
+    let hitCount = 0;
+    const server = createServer((req, res) => {
+      if (req.url === "/flaky") {
+        hitCount++;
+        if (hitCount < 3) {
+          res.writeHead(500);
+          res.end();
+          return;
+        }
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "retry flow",
+        steps: [
+          {
+            name: "flaky-step",
+            request: { method: "GET", url: `${baseUrl}/flaky` },
+            assert: { status: 200 },
+            retry: { count: 2, intervalMs: 0 },
+          },
+          {
+            name: "next-step",
+            request: { method: "GET", url: `${baseUrl}/ok` },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "retry-flow.yaml", { cwd, history: false });
+
+      expect(result.status).toBe("passed");
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(result.steps[0]?.attempts).toBe(3);
+      expect(hitCount).toBe(3);
+      expect(result.steps[1]?.status).toBe("passed");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("リトライ回数を使い切ると failed のまま確定し、以降のステップは skipped になる。履歴にも attempts が記録される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-retry-"));
+    let hitCount = 0;
+    const server = createServer((_req, res) => {
+      hitCount++;
+      res.writeHead(500);
+      res.end();
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "retry exhausted flow",
+        steps: [
+          {
+            name: "always-fail",
+            request: { method: "GET", url: `${baseUrl}/always500` },
+            assert: { status: 200 },
+            retry: { count: 2, intervalMs: 0 },
+          },
+          {
+            name: "next-step",
+            request: { method: "GET", url: `${baseUrl}/ok` },
+          },
+        ],
+      });
+
+      const captured: HistoryEntry[] = [];
+      const result = await executeFlow(flow, "retry-exhausted-flow.yaml", {
+        cwd,
+        history: (entry) => {
+          captured.push(entry);
+        },
+      });
+
+      expect(result.steps[0]?.status).toBe("failed");
+      expect(result.steps[0]?.attempts).toBe(3);
+      expect(hitCount).toBe(3);
+      expect(result.steps[1]?.status).toBe("skipped");
+
+      const entry = captured.find((e) => e.step === "always-fail");
+      expect(entry?.attempts).toBe(3);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("error(接続不能)も再試行の対象になる: count=1 で attempts=2", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-retry-"));
+    const closedPort = await reserveClosedPort();
+
+    const flow = flowSchema.parse({
+      name: "retry error flow",
+      steps: [
+        {
+          name: "unreachable",
+          request: { method: "GET", url: `http://127.0.0.1:${closedPort}/` },
+          retry: { count: 1, intervalMs: 0 },
+        },
+      ],
+    });
+
+    const result = await executeFlow(flow, "retry-error-flow.yaml", { cwd, history: false });
+
+    expect(result.steps[0]?.status).toBe("error");
+    expect(result.steps[0]?.attempts).toBe(2);
+  });
+
+  it("retry 未指定の場合 attempts は undefined のまま(既存挙動に影響しない)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-retry-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "no retry flow",
+        steps: [
+          { name: "step1", request: { method: "GET", url: baseUrl }, assert: { status: 200 } },
+        ],
+      });
+
+      const result = await executeFlow(flow, "no-retry-flow.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(result.steps[0]?.attempts).toBeUndefined();
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+describe("step.continueOnError", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let cwd: string;
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+  });
+
+  afterEach(async () => {
+    if (cwd) {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("continueOnError:true のステップが failed でも後続ステップは通常通り実行される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-continue-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "continue on error flow",
+        steps: [
+          {
+            name: "step1",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 999 },
+            continueOnError: true,
+          },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "continue-on-error-flow.yaml", {
+        cwd,
+        history: false,
+      });
+
+      expect(result.status).toBe("failed");
+      expect(result.steps[0]?.status).toBe("failed");
+      expect(result.steps[1]?.status).toBe("passed");
+      expect(result.steps[1]?.error).toBeUndefined();
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("continueOnError:true のステップが error(接続不能)でも後続ステップは通常通り実行される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-continue-"));
+    const closedPort = await reserveClosedPort();
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "continue on error (error outcome) flow",
+        steps: [
+          {
+            name: "unreachable",
+            request: { method: "GET", url: `http://127.0.0.1:${closedPort}/` },
+            continueOnError: true,
+          },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "continue-on-error-error-flow.yaml", {
+        cwd,
+        history: false,
+      });
+
+      expect(result.status).toBe("error");
+      expect(result.steps[0]?.status).toBe("error");
+      expect(result.steps[1]?.status).toBe("passed");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("retry と併用した場合、retry を使い切ってから continueOnError が働く(attempts=2、後続ステップは実行される)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-continue-"));
+    let hitCount = 0;
+    const server = createServer((req, res) => {
+      if (req.url === "/always500") {
+        hitCount++;
+        res.writeHead(500);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "continue on error with retry flow",
+        steps: [
+          {
+            name: "always-fail",
+            request: { method: "GET", url: `${baseUrl}/always500` },
+            assert: { status: 200 },
+            retry: { count: 1, intervalMs: 0 },
+            continueOnError: true,
+          },
+          {
+            name: "next-step",
+            request: { method: "GET", url: `${baseUrl}/ok` },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "continue-on-error-with-retry-flow.yaml", {
+        cwd,
+        history: false,
+      });
+
+      expect(result.steps[0]?.status).toBe("failed");
+      expect(result.steps[0]?.attempts).toBe(2);
+      expect(hitCount).toBe(2);
+      expect(result.steps[1]?.status).toBe("passed");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("後続ステップが continueOnError なしで failed の場合、そのさらに後は skipped になる(混在フロー)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-continue-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "mixed continue on error flow",
+        steps: [
+          {
+            name: "step1",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 999 },
+            continueOnError: true,
+          },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 999 },
+          },
+          {
+            name: "step3",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "mixed-continue-on-error-flow.yaml", {
+        cwd,
+        history: false,
+      });
+
+      expect(result.steps[0]?.status).toBe("failed");
+      expect(result.steps[1]?.status).toBe("failed");
+      expect(result.steps[2]?.status).toBe("skipped");
+    } finally {
+      await closeServer(server);
+    }
+  });
+});
+
+describe("step.if", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let cwd: string;
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+  });
+
+  afterEach(async () => {
+    if (cwd) {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("条件が true の場合、ステップは通常通り実行される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-if-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "if true flow",
+        steps: [
+          { name: "step1", request: { method: "GET", url: baseUrl }, assert: { status: 200 } },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            if: "steps.step1.status == 'passed'",
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "if-true-flow.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(result.steps[1]?.status).toBe("passed");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("条件が false の場合、リクエストを送らず skipped になる(exact message)。後続ステップは通常通り実行され、履歴にも記録される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-if-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "if false flow",
+        steps: [
+          { name: "step1", request: { method: "GET", url: baseUrl }, assert: { status: 200 } },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            if: "steps.step1.status == 'failed'",
+            assert: { status: 200 },
+          },
+          { name: "step3", request: { method: "GET", url: baseUrl }, assert: { status: 200 } },
+        ],
+      });
+
+      const captured: HistoryEntry[] = [];
+      const result = await executeFlow(flow, "if-false-flow.yaml", {
+        cwd,
+        history: (entry) => {
+          captured.push(entry);
+        },
+      });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(result.steps[1]?.status).toBe("skipped");
+      expect(result.steps[1]?.error).toBe(
+        "skipped because condition not met: steps.step1.status == 'failed'",
+      );
+      expect(result.steps[1]?.attempts).toBeUndefined();
+      expect(result.steps[2]?.status).toBe("passed");
+
+      const entry = captured.find((e) => e.step === "step2");
+      expect(entry?.status).toBe("skipped");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("captures.<name> を条件式に使える(== の一致・!= の不一致をどちらも判定できる)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-if-"));
+    const server = createServer((req, res) => {
+      if (req.url === "/status") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ state: "active" }));
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "if capture flow",
+        steps: [
+          {
+            name: "check-status",
+            request: { method: "GET", url: `${baseUrl}/status` },
+            capture: { state: "$.state" },
+          },
+          {
+            name: "when-active",
+            request: { method: "GET", url: baseUrl },
+            if: "captures.state == 'active'",
+          },
+          {
+            name: "when-not-inactive",
+            request: { method: "GET", url: baseUrl },
+            if: "captures.state != 'inactive'",
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "if-capture-flow.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(result.steps[1]?.status).toBe("passed");
+      expect(result.steps[2]?.status).toBe("passed");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("continueOnError で failed のまま継続した前段ステップの実ステータスを条件式が参照できる", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-if-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "if continueOnError flow",
+        steps: [
+          {
+            name: "step1",
+            request: { method: "GET", url: baseUrl },
+            assert: { status: 999 },
+            continueOnError: true,
+          },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            if: "steps.step1.status == 'failed'",
+          },
+          {
+            name: "step3",
+            request: { method: "GET", url: baseUrl },
+            if: "steps.step1.status == 'passed'",
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "if-continue-on-error-flow.yaml", {
+        cwd,
+        history: false,
+      });
+
+      expect(result.steps[0]?.status).toBe("failed");
+      expect(result.steps[1]?.status).toBe("passed");
+      expect(result.steps[2]?.status).toBe("skipped");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("未知のステップ名を参照する条件式は error になり(利用可能なステップ名一覧つき)、後続ステップは skipped になる", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-if-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "if unknown step flow",
+        steps: [
+          { name: "step1", request: { method: "GET", url: baseUrl }, assert: { status: 200 } },
+          {
+            name: "step2",
+            request: { method: "GET", url: baseUrl },
+            if: "steps.nonexistent.status == 'passed'",
+          },
+          { name: "step3", request: { method: "GET", url: baseUrl } },
+        ],
+      });
+
+      // 条件式エラーのステップは履歴に書かれない(executeStep の catch と同じ挙動)ことも検証する
+      const captured: HistoryEntry[] = [];
+      const result = await executeFlow(flow, "if-unknown-step-flow.yaml", {
+        cwd,
+        history: (entry) => {
+          captured.push(entry);
+        },
+      });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(result.steps[1]?.status).toBe("error");
+      expect(result.steps[1]?.error).toMatch(
+        /unknown step "nonexistent" in condition \(available steps: step1\)/,
+      );
+      expect(result.steps[2]?.status).toBe("skipped");
+      expect(captured.find((entry) => entry.step === "step2")).toBeUndefined();
+      expect(captured.find((entry) => entry.step === "step1")?.status).toBe("passed");
+    } finally {
+      await closeServer(server);
+    }
+  });
+
+  it("文法に合わない条件式は error になる", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-if-"));
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const { baseUrl } = await listenEphemeral(server);
+
+    try {
+      const flow = flowSchema.parse({
+        name: "if malformed flow",
+        steps: [
+          { name: "step1", request: { method: "GET", url: baseUrl }, if: "not a valid condition" },
+        ],
+      });
+
+      const result = await executeFlow(flow, "if-malformed-flow.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.status).toBe("error");
+    } finally {
+      await closeServer(server);
     }
   });
 });

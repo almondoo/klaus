@@ -1,0 +1,6 @@
+# make verify のコンテナ内(klaus コンテナ)から examples/ を実行する用の環境ファイル。
+# mock-api サービス(examples/mock-server.mjs)は HOST=0.0.0.0 で起動しているため、
+# compose ネットワーク越しに `mock-api:3000` としてそのまま到達できる。
+baseUrl: http://mock-api:3000
+wsUrl: ws://mock-api:3000
+testEmail: test@example.com

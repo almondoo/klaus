@@ -11,9 +11,11 @@ Documentation site: https://almondoo.github.io/klaus/
 
 - **1 file = 1 flow**: Sequential execution of multiple steps, with variable capture from responses and chaining to subsequent steps
 - **Built-in assertions**: Define status / header / body (JSONPath) / duration checks in the definition file
+- **Protocol coverage**: SSE / GraphQL / WebSocket flows use the same assertion matchers as plain HTTP requests, applied to protocol-specific fields (`events` / `messages`)
+- **Web UI**: `klaus ui` launches a localhost runner + history viewer alongside the CLI
+- **record/replay & OpenAPI generation**: `--record`/`--replay` for cassette-based testing, `klaus generate` to scaffold flows from an OpenAPI spec
 - **Agent-friendly output**: Failures can be identified from exit code alone. JSON output is the default in non-TTY environments
 - **Local-first**: Execution history is appended to `.klaus/history/*.jsonl`. No cloud sync or account mechanism
-- **SSE verification**: Receives `text/event-stream` with time / event-count limits and asserts on the events
 
 ## Installation
 
@@ -71,39 +73,21 @@ klaus run api/auth-flow.yaml
 # PASS get-me (200, 12ms)
 ```
 
+The full syntax for templates, assertions, and SSE / GraphQL / WebSocket flows is in the [Flow Definition Reference](https://almondoo.github.io/klaus/guide/flow-definition).
+
 ## CLI
 
-```
-klaus run <files...> [options]
-
-  --env <name>          Overrides the flow's env setting
-  --json                Forces JSON output even on a TTY
-  --text                Forces text output even when stdout is not a TTY
-  --report junit        Generates a JUnit XML report
-  --report-file <path>  Report output path (default: klaus-report.xml)
-  --no-history          Disables writing to the history JSONL
-  --no-mask             Disables secret masking in stdout output (JSON/text)
-  --record <dir>        record mode: send real requests while saving request/response pairs (masked) to a cassette in <dir>
-  --replay <dir>        replay mode: serve responses from the cassette in <dir> instead of the network (unrecorded requests fail with exit code 3; cannot be combined with --record)
-  --allow-protected     allow running against an environment marked $protected: true (refused with exit code 3 otherwise)
-
-klaus ui [options]      # Starts the localhost web UI (runner + history viewer)
-
-  -p, --port <n>      Specifies the port (default: 4884)
-  -H, --host <host>   Specifies the bind host (default: 127.0.0.1; use 0.0.0.0 to allow external connections, e.g. from docker-compose)
-  --no-open           Suppresses automatically opening the browser
-
-klaus validate [files...]   # Validates flow YAML against the schema only (does not run it; recursively searches the current directory if no argument is given)
-klaus schema                # Outputs the JSON Schema for flow YAML / run --json output / klaus.config.yaml
-klaus generate <spec>       # Generates flow YAML scaffolding per operation from an OpenAPI spec
-klaus init                  # Generates a minimal flows/environments setup in the current directory
-klaus history               # Lists the execution history (.klaus/history/*.jsonl)
-klaus history show <runId>  # Outputs the history entry for the given runId as JSON, in its stored form
-```
+| Command | Description |
+|---|---|
+| `klaus run <files...>` | Runs flow YAML files |
+| `klaus ui` | Launches the localhost web UI (runner + history viewer) |
+| `klaus validate [files...]` | Schema-validates flow YAML without running it |
+| `klaus schema` | Prints the JSON Schema for flow YAML / `run --json` output / `klaus.config.yaml` |
+| `klaus generate <spec>` | Generates flow YAML scaffolding per operation from an OpenAPI spec |
+| `klaus init` | Generates a minimal flows/environments setup in the current directory |
+| `klaus history [show <runId>]` | Lists execution history, or prints one entry as JSON |
 
 See the [CLI reference](https://almondoo.github.io/klaus/guide/cli) for the full option list of each subcommand.
-
-`klaus ui` starts a server bound to 127.0.0.1 by default, and opens a URL with a startup token in the browser (protected by token authentication, Host validation, and CSRF protection; not accessible from outside by default; use `-H, --host` to change this).
 
 - Human-readable text is used when stdout is a TTY; JSON is selected automatically for non-TTY (piped / agent execution)
 - Text output is a one-line summary on success only. Details (expected / actual) are shown only on failure. Full details remain in the history JSONL
@@ -118,85 +102,18 @@ See the [CLI reference](https://almondoo.github.io/klaus/guide/cli) for the full
 | 3 | Runtime error (connection failure, timeout, etc.) |
 | 4 | Assertion failure |
 
-## Templates
+## Documentation
 
-- `{{var}}` — Reference to a captured variable or environment file value (captures take precedence)
-- `{{env.X}}` — Reference to an OS environment variable. Use this instead of hardcoding secrets in definition files
-- `{{newUuid}}` / `{{newDate}}` / `{{newTimestamp}}` — Template functions (UUID / ISO 8601 / epoch ms)
-
-## Assertions
-
-- `status: 200`
-- `headers: [{ name, equals | contains | regex | exists }]`
-- `body: [{ path, exists | equals | contains | regex }]` — JSONPath-based
-- `bodyText: { equals | contains | regex }` — Raw text
-- `duration: { maxMs }`
-- For SSE: `eventCount: { min | max | equals }` / `events: [{ index?, path?, ...matchers }]`
-- For WebSocket: `messageCount: { min | max | equals }` / `messages: [{ index?, path?, ...matchers }]` (same semantics as events)
-
-## SSE Verification
-
-For a request with `Accept: text/event-stream` (or an explicit `sse:` block), reception is cut off once the `maxEvents` / `maxDurationMs` limit is reached, and assertions run against the received event sequence.
-
-```yaml
-  - name: stream
-    request:
-      method: GET
-      url: "{{baseUrl}}/events"
-      headers:
-        Accept: text/event-stream
-    sse:
-      maxEvents: 5
-      maxDurationMs: 3000
-    assert:
-      eventCount: { min: 1 }
-      events:
-        - path: "$.type"
-          equals: "message"
-```
-
-## GraphQL
-
-When `request.graphql` is specified, if method is unspecified it defaults to POST, sending `{ query, variables }` with `Content-Type: application/json` (mutually exclusive with `body`). Assertions and captures work with regular JSONPath as-is.
-
-```yaml
-  - name: get-user
-    request:
-      url: "{{baseUrl}}/graphql"
-      graphql:
-        query: 'query { user(id: "{{userId}}") { id name } }'
-    assert:
-      status: 200
-      body:
-        - path: "$.data.user.id"
-          exists: true
-```
-
-## WebSocket
-
-Specify `ws:` instead of `request` on a step. Each message in `send` is sent sequentially, reception is cut off at the `maxMessages` / `maxDurationMs` limit and completes normally, and assertions run against the received message sequence.
-
-```yaml
-  - name: ws-echo
-    ws:
-      url: "{{wsBaseUrl}}/socket"
-      send:
-        - "ping"
-        - { type: subscribe, channel: orders }
-      maxMessages: 50        # default 100
-      maxDurationMs: 5000    # default 10000
-    assert:
-      messageCount: { min: 1 }
-      messages:
-        - index: 0
-          equals: "pong"
-        - path: "$.type"
-          contains: "order"
-```
-
-## Execution History
-
-All requests / responses / durations are appended one step per line to `.klaus/history/<date>.jsonl` (the schema is versioned via the `v` field). Whether to manage this under git is up to the project (`.gitignore` is recommended when handling responses that contain secrets).
+- [Getting Started](https://almondoo.github.io/klaus/guide/getting-started) — Installation through your first flow run
+- [Flow Definition Reference](https://almondoo.github.io/klaus/guide/flow-definition) — Full YAML schema: steps, templates, captures, assertions, SSE/GraphQL/WebSocket syntax
+- [CLI Reference](https://almondoo.github.io/klaus/guide/cli) — Full option list for every subcommand
+- [Configuration (klaus.config.yaml)](https://almondoo.github.io/klaus/guide/config) — Default values for frequently used CLI options
+- [Generating Flows from OpenAPI](https://almondoo.github.io/klaus/guide/generate) — `klaus generate` usage and what it scaffolds per operation
+- [record / replay mode](https://almondoo.github.io/klaus/guide/record-replay) — Cassette-based testing for network-isolated or destructive-API scenarios
+- [Web UI](https://almondoo.github.io/klaus/guide/ui) — The `klaus ui` runner + history viewer, and its token / CSRF / Host-validation security model
+- [Execution History](https://almondoo.github.io/klaus/guide/history) — The `.klaus/history/*.jsonl` schema and file conventions
+- [Troubleshooting](https://almondoo.github.io/klaus/guide/troubleshooting) — Error messages klaus actually prints, with cause and fix
+- [Agent Skill (Claude Code / Codex)](https://almondoo.github.io/klaus/guide/agent-skill) — Install locations and what the bundled SKILL.md teaches agents
 
 ## Agent Skill (Claude Code / Codex)
 

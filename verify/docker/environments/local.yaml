@@ -1,3 +1,0 @@
-# compose のサービス名 demo-api で名前解決する(コンテナ間通信)
-baseUrl: http://demo-api:3000
-testEmail: test@example.com

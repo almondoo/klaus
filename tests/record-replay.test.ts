@@ -192,6 +192,32 @@ describe("record/replay モード", () => {
     }
   });
 
+  it("--record と --jobs 2 以上の同時指定は CLI レベルでエラーになる(stderr + exit 1)", async () => {
+    // 同一 method+URL への並行リクエストでカセットに書き込まれる行の順序が実行のたびに変わり得るため
+    // (詳細は run.ts の該当チェックのコメント参照)、record モードでは --jobs>1 を禁止する
+    const stderrChunks: string[] = [];
+    const originalWrite = process.stderr.write;
+    process.stderr.write = ((chunk: string) => {
+      stderrChunks.push(chunk.toString());
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      const exitCode = await runCommand([], {
+        history: false,
+        mask: true,
+        reportFile: join(cwd, "klaus-report.xml"),
+        record: cassetteDir,
+        jobs: 2,
+      });
+
+      expect(exitCode).toBe(1);
+      expect(stderrChunks.join("")).toContain("--record and --jobs > 1 cannot be used together");
+    } finally {
+      process.stderr.write = originalWrite;
+    }
+  });
+
   it("カセットファイルの中身が壊れている(行が JSON として不正)場合、replayLoadError は RuntimeError でない元エラーを String() 化して包む", async () => {
     // loadCassetteIndex は各行を JSON.parse するだけで try/catch していないため、
     // 壊れた行があると RuntimeError ではなく素の SyntaxError が投げられる。

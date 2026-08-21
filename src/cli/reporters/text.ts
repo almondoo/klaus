@@ -56,23 +56,31 @@ export function isJsonOutputMode(json?: boolean): boolean {
   return json === true || !process.stdout.isTTY;
 }
 
-/** フロー切り替わり時のヘッダー行(フロー名・ファイル) */
-export function formatFlowHeader(flowName: string, file: string): string {
-  return `${flowName} (${file})`;
+/**
+ * フロー切り替わり時のヘッダー行(フロー名・ファイル)。
+ * --data 実行時のみ、iteration(1始まり)を末尾に ` (iteration N)` として付加する
+ * (通常実行ではこれまでどおりフロー名・ファイルのみ)。
+ */
+export function formatFlowHeader(flowName: string, file: string, iteration?: number): string {
+  // flowName/file は flow YAML の name / ファイルパス由来で攻撃者制御になり得るためサニタイズする
+  const suffix = iteration !== undefined ? ` (iteration ${iteration})` : "";
+  return `${sanitizeForTerminal(flowName)} (${sanitizeForTerminal(file)})${suffix}`;
 }
 
 /** 1 ステップ分の結果行。FAIL の場合は失敗アサーションの詳細を複数行で付加する */
 export function formatStepLine(result: StepResult, useColor: boolean): string {
   const durationMs = Math.round(result.durationMs);
+  // ステップ名は flow YAML の name 由来で攻撃者制御になり得るため、truncate/colorize より前にサニタイズする
+  const name = sanitizeForTerminal(result.name);
 
   if (result.status === "passed") {
     const status = result.response?.status ?? "-";
-    return colorize(`  PASS ${result.name} (${status}, ${durationMs}ms)`, "green", useColor);
+    return colorize(`  PASS ${name} (${status}, ${durationMs}ms)`, "green", useColor);
   }
 
   if (result.status === "failed") {
     const status = result.response?.status ?? "-";
-    const lines = [colorize(`  FAIL ${result.name} (${status}, ${durationMs}ms)`, "red", useColor)];
+    const lines = [colorize(`  FAIL ${name} (${status}, ${durationMs}ms)`, "red", useColor)];
     for (const assertion of result.assertions.filter((a) => !a.ok)) {
       // 制御文字のサニタイズは truncate/colorize より前に行う(colorize が付与する ANSI コードを壊さないため)
       lines.push(`    - ${truncate(sanitizeForTerminal(assertion.message))}`);
@@ -81,13 +89,13 @@ export function formatStepLine(result: StepResult, useColor: boolean): string {
   }
 
   if (result.status === "skipped") {
-    const reason = result.error ? `: ${result.error}` : "";
-    return colorize(`  SKIP ${result.name}${reason}`, "yellow", useColor);
+    const reason = result.error ? `: ${sanitizeForTerminal(result.error)}` : "";
+    return colorize(`  SKIP ${name}${reason}`, "yellow", useColor);
   }
 
   // error(runtime エラー)
   const message = truncate(sanitizeForTerminal(result.error ?? "unknown error"));
-  return colorize(`  ERROR ${result.name}: ${message}`, "red", useColor);
+  return colorize(`  ERROR ${name}: ${message}`, "red", useColor);
 }
 
 /** ステップ配列を4状態(passed/failed/error/skipped)で集計した結果 */
@@ -142,13 +150,20 @@ export function createTextReporter(
     process.stdout.write(text);
   },
 ): TextReporter {
-  let currentFlow: string | null = null;
+  // --data 実行時は同じフロー名がイテレーションごとに複数回現れるため、
+  // フロー名だけでなく iteration も含めて「切り替わったか」を判定する
+  // (iteration が無い通常実行では従来どおりフロー名だけで判定される)。
+  let currentFlow: { name: string; iteration: number | undefined } | null = null;
 
   return {
     onStepStart(context: StepStartContext): void {
-      if (context.flow !== currentFlow) {
-        currentFlow = context.flow;
-        write(`\n${formatFlowHeader(context.flow, context.file)}\n`);
+      if (
+        currentFlow === null ||
+        context.flow !== currentFlow.name ||
+        context.iteration !== currentFlow.iteration
+      ) {
+        currentFlow = { name: context.flow, iteration: context.iteration };
+        write(`\n${formatFlowHeader(context.flow, context.file, context.iteration)}\n`);
       }
     },
     onStepComplete(context: StepCompleteContext): void {

@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!**/dist", "!**/node_modules", "!**/tmp", "!**/.klaus"]
+    "includes": ["**", "!**/dist", "!**/node_modules", "!**/tmp", "!**/.klaus", "!specs"]
   },
   "formatter": {
     "enabled": true,

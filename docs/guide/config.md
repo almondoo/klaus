@@ -28,6 +28,7 @@ run:
   reportFile: klaus-report.xml
   history: true
   mask: true
+  jobs: 4
 ui:
   port: 4884
   host: 127.0.0.1
@@ -37,15 +38,18 @@ ui:
 | Key | Corresponding CLI option | Type |
 |---|---|---|
 | `run.env` | `klaus run --env <name>` | string |
-| `run.report` | `klaus run --report <type>` | `"junit"` |
+| `run.report` | `klaus run --report <list>` | comma-separated list of `"junit"` / `"tap"` (e.g. `"junit,tap"`) |
 | `run.reportFile` | `klaus run --report-file <path>` | string |
 | `run.history` | `klaus run --no-history` (equivalent to disabling with `false`) | boolean |
 | `run.mask` | `klaus run --no-mask` (equivalent to disabling with `false`) | boolean |
+| `run.jobs` | `klaus run --jobs <n>` | number (1-32) |
 | `ui.port` | `klaus ui --port <n>` | number (1-65535) |
 | `ui.host` | `klaus ui --host <host>` | string |
 | `ui.open` | `klaus ui --no-open` (equivalent to disabling with `false`) | boolean |
 
 All keys are optional. Unknown keys cause a schema validation error (see [Error handling](#error-handling) below).
+
+`run.reportFile` only supports a single value (unlike the CLI's repeatable `--report-file`). If `run.report` lists more than one format (e.g. `junit,tap`) and `run.reportFile` is also set, that counts as one `--report-file` for N formats — the same count-mismatch error as passing too few `--report-file` flags on the CLI (see [CLI Reference](cli.md#klaus-run)). To set per-format paths for a multi-format `run.report`, pass `--report-file` on the command line instead (CLI values always take precedence over `klaus.config.yaml`, per the priority rule above).
 
 ## Intentionally unconfigurable keys
 
@@ -56,6 +60,8 @@ The following options cannot be set in `klaus.config.yaml` (the schema has no fi
 | `--allow-protected` | Setting this to `true` by default via config would erode the guardrail that refuses execution against `$protected: true` environments |
 | `--record` / `--replay` | These record/replay modes change the execution side effects (whether real network access happens) significantly, so they must be made explicit on every invocation |
 | `--json` / `--text` | The output mode depends on the caller (a human reading it vs. an agent or script parsing it), so it should be made explicit on every command-line invocation |
+| `--var` / `--env-file` / `--data` | All three are ad-hoc, per-invocation overrides by nature (a one-off variable, a one-off environment file path, or a one-off data file for a data-driven run); giving them a persistent default in config would defeat that purpose |
+| `--tags` / `--exclude-tags` | Also a per-invocation choice of what to run this time; a persistent default in config risks silently excluding some flows on every run without it being obvious |
 
 ## Error handling
 

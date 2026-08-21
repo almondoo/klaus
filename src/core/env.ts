@@ -4,7 +4,7 @@ import { dirname, join, resolve } from "node:path";
 import { parseDocument } from "yaml";
 import { KlausError, ParseError } from "./errors.js";
 import { loadEnvironmentFile } from "./loader.js";
-import { isPathWithinDir } from "./path-guard.js";
+import { isPathWithinDir, isRealPathWithinDir } from "./path-guard.js";
 import type { Environment } from "./schema.js";
 
 /**
@@ -29,9 +29,12 @@ export function toTemplateVariables(environment: Environment): Record<string, st
  * envName に `..` やセパレータ・絶対パスが含まれる場合に検知する(path traversal 防止。
  * UI サーバー経由では env がリクエストボディ由来の untrusted 入力になるため必須)。
  * ファイルシステムへアクセスする前に必ず呼び出すこと。
+ * 文字列上の境界チェック(isPathWithinDir)に加え、シンボリックリンク解決後の実パスでも
+ * 境界チェックを行う(isRealPathWithinDir)。environments/ 配下に他ユーザーが仕込んだ
+ * シンボリックリンク(例: prod.yaml -> /etc/secrets)経由で境界外を読み出す攻撃を防ぐため。
  */
 function assertWithinEnvironmentsDir(envDir: string, resolvedPath: string, envName: string): void {
-  if (!isPathWithinDir(envDir, resolvedPath)) {
+  if (!isPathWithinDir(envDir, resolvedPath) || !isRealPathWithinDir(envDir, resolvedPath)) {
     throw new ParseError(
       `invalid environment name (resolves outside the environments dir): ${envName}`,
     );
@@ -140,14 +143,23 @@ export function resolveEnvironmentPath(cwd: string, envName: string): string {
 
 /**
  * 環境ファイルを読み込む。
- * - envNameOverride が指定されればそれを優先し、未指定ならフロー定義の env を使う
- * - どちらも未指定なら空の環境(変数なし)を返す
+ * - envFilePath が指定されれば最優先で、そのパスを environments/ の探索・境界チェックを経ずに
+ *   直接 loadEnvironmentFile へ渡す(CLI の --env-file 向け。任意パスを許すのが目的のため、
+ *   上方探索や isPathWithinDir 等の境界チェックは意図的に行わない)。相対パスは cwd 引数
+ *   (process.cwd() ではなく呼び出し元が渡した cwd)基準で解決する。絶対パスはそのまま使う
+ *   (node:path の resolve は絶対パスを渡すとそちらを優先するため、この分岐は不要)。
+ * - envFilePath が未指定なら、envNameOverride が指定されればそれを優先し、未指定ならフロー定義の env を使う
+ * - いずれも未指定なら空の環境(変数なし)を返す
  */
 export async function loadEnvironment(
   cwd: string,
   flowEnvName: string | undefined,
   envNameOverride?: string,
+  envFilePath?: string,
 ): Promise<Environment> {
+  if (envFilePath !== undefined) {
+    return loadEnvironmentFile(resolve(cwd, envFilePath));
+  }
   const envName = envNameOverride ?? flowEnvName;
   if (!envName) {
     return {};

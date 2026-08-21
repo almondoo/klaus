@@ -71,6 +71,12 @@ export const historyRefSchema = z.strictObject({
   step: z
     .string()
     .describe("Step name, used together with date/runId to look up the full recorded step."),
+  iteration: z
+    .number()
+    .optional()
+    .describe(
+      "1-based data-driven iteration number, present only when `klaus run --data` was used (matches the flow's iteration field, so history entries from different iterations of the same flow/step are distinguishable).",
+    ),
 });
 export type HistoryRef = z.infer<typeof historyRefSchema>;
 
@@ -178,6 +184,12 @@ export const jsonFlowReportSchema = z.strictObject({
     .number()
     .describe("Flow duration in milliseconds (rounded), summed across its steps."),
   steps: z.array(jsonStepReportSchema).describe("Per-step results, in execution order."),
+  iteration: z
+    .number()
+    .optional()
+    .describe(
+      "1-based data-driven iteration number, present only when `klaus run --data` was used (each row runs every given flow once, in iteration-major order).",
+    ),
 });
 export type JsonFlowReport = z.infer<typeof jsonFlowReportSchema>;
 
@@ -252,19 +264,29 @@ function buildWsMessages(messages: WsMessage[] | undefined): JsonWsMessage[] | u
   return messages?.map((message) => ({ data: truncate(message.data) }));
 }
 
-/** historyEnabled のときだけ、step.startedAt から履歴ファイルの日付を導出して historyRef を組み立てる */
+/**
+ * historyEnabled のときだけ、step.startedAt から履歴ファイルの日付を導出して historyRef を組み立てる。
+ * iteration は flow.iteration をそのまま引き継ぐ(--data 実行時のみ設定され、同一フロー・同一ステップ名の
+ * 複数イテレーションを historyRef のみからでも区別できるようにする)。
+ */
 function buildHistoryRef(
   step: StepResult,
   runId: string,
   historyEnabled: boolean,
+  iteration: number | undefined,
 ): HistoryRef | undefined {
   if (!historyEnabled) return undefined;
-  return { date: historyDateFromTimestamp(step.startedAt), runId, step: step.name };
+  return { date: historyDateFromTimestamp(step.startedAt), runId, step: step.name, iteration };
 }
 
-function buildStep(step: StepResult, runId: string, historyEnabled: boolean): JsonStepReport {
+function buildStep(
+  step: StepResult,
+  runId: string,
+  historyEnabled: boolean,
+  iteration: number | undefined,
+): JsonStepReport {
   const durationMs = Math.round(step.durationMs);
-  const historyRef = buildHistoryRef(step, runId, historyEnabled);
+  const historyRef = buildHistoryRef(step, runId, historyEnabled, iteration);
 
   if (step.status === "passed") {
     return { name: step.name, status: step.status, durationMs, historyRef };
@@ -292,7 +314,8 @@ function buildFlow(flow: FlowResult, runId: string, historyEnabled: boolean): Js
     file: flow.file,
     status: flow.status,
     durationMs: Math.round(flow.durationMs),
-    steps: flow.steps.map((step) => buildStep(step, runId, historyEnabled)),
+    steps: flow.steps.map((step) => buildStep(step, runId, historyEnabled, flow.iteration)),
+    iteration: flow.iteration,
   };
 }
 

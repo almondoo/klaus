@@ -28,6 +28,7 @@ run:
   reportFile: klaus-report.xml
   history: true
   mask: true
+  jobs: 4
 ui:
   port: 4884
   host: 127.0.0.1
@@ -37,15 +38,18 @@ ui:
 | キー | 対応する CLI オプション | 型 |
 |---|---|---|
 | `run.env` | `klaus run --env <name>` | string |
-| `run.report` | `klaus run --report <type>` | `"junit"` |
+| `run.report` | `klaus run --report <list>` | `"junit"` / `"tap"` のカンマ区切りリスト(例: `"junit,tap"`) |
 | `run.reportFile` | `klaus run --report-file <path>` | string |
 | `run.history` | `klaus run --no-history`(`false` で無効化に相当) | boolean |
 | `run.mask` | `klaus run --no-mask`(`false` で無効化に相当) | boolean |
+| `run.jobs` | `klaus run --jobs <n>` | number(1〜32) |
 | `ui.port` | `klaus ui --port <n>` | number(1〜65535) |
 | `ui.host` | `klaus ui --host <host>` | string |
 | `ui.open` | `klaus ui --no-open`(`false` で無効化に相当) | boolean |
 
 いずれのキーも省略可能。未知のキーを含む場合はスキーマ検証エラーになる([実行結果](#エラー時の扱い)を参照)。
+
+`run.reportFile` は単一値のみ対応する(CLI の繰り返し指定可能な `--report-file` とは異なる)。`run.report` に複数フォーマット(例: `junit,tap`)を指定した状態で `run.reportFile` も設定した場合、それは「N フォーマットに対して `--report-file` を1個指定した」ことになり、CLI で `--report-file` の指定回数が足りないときと同じ個数不一致エラーになる([CLI リファレンス](cli.md#klaus-run)参照)。複数フォーマットの `run.report` に対してフォーマットごとの出力先を指定したい場合は、コマンドラインで `--report-file` を渡すこと(前述の優先順位のとおり CLI の値が `klaus.config.yaml` より常に優先される)。
 
 ## 意図的に設定不可なキー
 
@@ -56,6 +60,8 @@ ui:
 | `--allow-protected` | `$protected: true` の環境への実行を拒否するガードレールを、config で既定 true にすることで形骸化させないため |
 | `--record` / `--replay` | record/replay モードは副作用(実際のネットワークアクセスの有無)が大きく変わる実行モードのため、呼び出しごとに明示させる |
 | `--json` / `--text` | 出力モードは呼び出し元(人が読むか、エージェントやスクリプトが読むか)に依存するため、コマンドラインで都度明示させる |
+| `--var` / `--env-file` / `--data` | いずれも本質的にその場限り・呼び出しごとの上書き(単発の変数、単発の環境ファイルパス、単発のデータ駆動実行用データファイル)であり、config に恒久的な既定値を持たせると本来の用途に反する |
+| `--tags` / `--exclude-tags` | こちらも今回の実行で何を対象にするかというその場限りの選択であり、config に恒久的な既定値を持たせると、気づかないまま毎回一部のフローが除外され続ける事故につながりかねない |
 
 ## エラー時の扱い
 

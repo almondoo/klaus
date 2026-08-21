@@ -147,6 +147,18 @@ describe("formatJUnit", () => {
     expect(xml).toContain("***");
   });
 
+  it("--data 実行時(flow.iteration 指定あり)は testsuite name にのみ (iteration N) が付き、classname は flow.name のまま", () => {
+    const flow = buildFlow({
+      name: "data flow",
+      iteration: 2,
+      steps: [buildStep({ name: "ok", status: "passed", durationMs: 10 })],
+    });
+    const xml = formatJUnit(buildRunResult([flow]));
+
+    expect(xml).toContain('<testsuite name="data flow (iteration 2)"');
+    expect(xml).toContain('<testcase name="ok" classname="data flow" time="0.010" />');
+  });
+
   it("第2引数を省略した場合、従来と同じ出力になる", () => {
     const flow = buildFlow({
       name: "認証フロー",

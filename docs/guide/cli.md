@@ -1,28 +1,10 @@
 # CLI Reference
 
-klaus has six commands: `init` (scaffolds a starting point), `run` (executes flows), `validate` (schema-validates flows), `schema` (prints a JSON Schema), `ui` (launches the localhost web UI), and `history` (inspects execution history).
+klaus has seven commands: `run` (executes flows), `ui` (launches the localhost web UI), `validate` (schema-validates flows), `schema` (prints a JSON Schema), `generate` (generates flows from an OpenAPI spec; see [Generating Flows from OpenAPI](./generate.md)), `init` (scaffolds a starting point), and `history` (inspects execution history).
 
 ## --help
 
 Both `klaus --help` and `klaus run --help` end with a link to the docs site (this site; the Japanese version is under `/ja/`, not at the site root), a note that `klaus init` scaffolds a starting point, and a one-line exit code summary.
-
-## klaus init
-
-```
-klaus init
-```
-
-Takes no options. Generates a minimal starting point in the current directory.
-
-| Generated file | Contents |
-|---|---|
-| `api/example.yaml` | A single GET to `https://example.com` with a status-200 assertion (with English comments) |
-| `environments/local.yaml` | A minimal environment file with a `baseUrl` |
-| `AGENTS.md` | A guide for AI coding agents, compressing the command set, YAML schema essentials, assert operating guidance, exit code table, and the api/flows directory convention into about 50 lines |
-
-Existing files are never overwritten — they're skipped, with a message printed to stdout. Any needed directories are created automatically. Always exits 0. If at least one file was generated, a hint for the next command is printed at the end: `klaus run api/example.yaml -e local`
-
-`AGENTS.md` also includes notes for agent execution environments: don't launch `klaus ui` casually — run it in the background with explicit timeout management if you do — and OpenAI Codex CLI disables sandbox network access by default, which can make `klaus run`'s HTTP requests fail (set `network_access = true` under `[sandbox_workspace_write]` in `~/.codex/config.toml` to allow them).
 
 ## klaus run
 
@@ -34,20 +16,64 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 
 | Option | Description | Default |
 |---|---|---|
-| `--env <name>` | Overrides the flow definition's `env:` | the flow's `env:` |
+| `--env <name>` | Overrides the flow definition's `env:` (cannot be combined with `--env-file`) | the flow's `env:` |
+| `--env-file <path>` | Loads environment variables from an arbitrary YAML file path (relative to cwd or absolute), instead of a named environment under `environments/`. Overrides the flow definition's `env:`. Cannot be combined with `-e`/`--env` | — |
+| `--var <key=value>` | Sets an ad-hoc template variable (repeatable; the value may itself contain `=`, only the first `=` is treated as the separator). Lands in the same namespace as environment file values (bare <code v-pre>{{name}}</code>), overriding same-named keys loaded from the environment | — |
 | `--json` | Forces JSON output even on a TTY | — |
 | `--text` | Forces text output even when not a TTY (cannot be combined with `--json`) | — |
-| `--report junit` | Generates a JUnit XML report | — |
-| `--report-file <path>` | Output path for the report | `klaus-report.xml` |
+| `--report <list>` | Comma-separated list of report formats to generate: `junit`, `tap` (e.g. `junit,tap`) | — |
+| `--report-file <path>` | Output path for the report format(s) given via `--report` (repeatable; see below) | per-format default (see below) |
 | `--no-history` | Disables writing to the history JSONL | history enabled |
 | `--no-mask` | Disables secret masking in stdout output (JSON/text) | masking enabled |
 | `--record <dir>` | Record mode: sends real HTTP requests and saves masked request/response pairs to a cassette in `<dir>` | — |
 | `--replay <dir>` | Replay mode: serves HTTP responses from the cassette in `<dir>` instead of the network (unrecorded requests fail with exit code 3). Cannot be combined with `--record` | — |
 | `--allow-protected` | Allow running against an environment file marked `$protected: true` (otherwise refused with exit code 3) | — |
+| `--data <path>` | Run data-driven: for each row in this JSON/YAML data file, run all given flow files once (see "Data-driven runs" below) | — |
+| `--tags <list>` | Comma-separated list of tags; only run flows whose `tags:` includes at least one of them (OR semantics; see "Tag-based flow selection" below) | — |
+| `--exclude-tags <list>` | Comma-separated list of tags; drop flows whose `tags:` includes any of them. Takes precedence over `--tags` | — |
+| `--jobs <n>` | Run this many execution units in parallel (integer 1-32; see "Parallel execution (`--jobs`)" below). Cannot be combined with `--record` | 1 (sequential) |
 
-Passing a value other than `junit` to `--report` prints an error to stderr and exits with 1. Passing `--json` and `--text` together also prints an error to stderr and exits with 1 (nothing is run).
+`--report` takes a comma-separated list of formats (entries are trimmed; each must be `junit` or `tap`). Passing an unknown or empty format entry prints an error to stderr and exits with 1. `--report` also rejects a duplicated format (e.g. `--report junit,junit`) and rejects `--report-file` values that resolve to the same output path across formats, both with an error to stderr and exit 1, since either would make two writes race on one file. With N formats given to `--report`, `--report-file` must be passed either **exactly N times** (in the same order, pairing the 1st `--report-file` with the 1st format and so on) or **not at all** (in which case each format is written to its own default filename: `klaus-report.xml` for `junit`, `klaus-report.tap` for `tap`). Any other count — e.g. one `--report-file` for two formats — is rejected with an error and exits with 1 without writing any file. This generalizes the single-format behavior: `--report junit` alone still defaults to `klaus-report.xml`, unchanged from before. Passing `--json` and `--text` together, or `-e`/`--env` and `--env-file` together, also prints an error to stderr and exits with 1 (nothing is run). This `-e`/`--env` + `--env-file` conflict only fires for an `-e`/`--env` **typed on the command line**; a `run.env` default coming from `klaus.config.yaml` yields to an explicit `--env-file` instead of conflicting with it (see [Default CLI options](config.md)).
 
-`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` can have their defaults set via `klaus.config.yaml`. See [Default CLI options](config.md).
+`--env-file` honors a `$protected: true` key in the loaded file exactly like a named environment: the run is refused with exit code 3 unless `--allow-protected` is also passed.
+
+`--var` values are **not** registered as secrets and are **not** masked in output, unlike <code v-pre>{{env.X}}</code> (OS environment variable references). If a value is a real secret, pass it through an OS environment variable and reference it as <code v-pre>{{env.X}}</code> instead, so it benefits from the masking described in [Execution History](history.md).
+
+`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` / `--jobs` can have their defaults set via `klaus.config.yaml`. `--var`, `--env-file`, `--data`, `--tags`, and `--exclude-tags` cannot — see [Default CLI options](config.md).
+
+### Tag-based flow selection (`--tags` / `--exclude-tags`)
+
+Flow definitions may declare `tags: [smoke, auth]` at the top level (see [Flow Definition Reference](flow-definition.md#tags)). `--tags` and `--exclude-tags` each take a comma-separated list (entries are trimmed; an empty entry after trimming — e.g. a leading/trailing/doubled comma — is rejected with a non-zero exit and no stack trace).
+
+- **`--tags`**: keeps a flow if it has **at least one** of the given tags (OR semantics). Omitted → no filtering by inclusion (every flow passes this stage)
+- **`--exclude-tags`**: drops a flow if it has **any** of the given tags, applied after the `--tags` stage. Omitted → nothing is excluded. When a flow matches both `--tags` and `--exclude-tags`, **exclusion wins**
+- **Untagged flows** (no `tags:` field): they match none of `--tags`, so they are dropped whenever `--tags` is given; they match none of `--exclude-tags` either, so they are kept when only `--exclude-tags` is given
+- **Filtered-out flows never run**: a flow dropped by tag filtering does not reach the runner at all, so it produces no entry in the JSON/JUnit output and no execution-history row — this is different from a `skipped` step, which is recorded (see [Flow Behavior on Step Failure](flow-definition.md#flow-behavior-on-step-failure))
+- **Zero matches is an error**: if filtering leaves no flows to run, `klaus run` prints `no flows match the specified tags` to stderr and exits with **1**, without running anything. This is intentional — a silently-green empty run in CI would hide a typo in a tag name
+- **Combined with `--data`**: filtering happens first, before the data-driven row expansion — so the row × flow iteration only covers the flows that survived filtering
+- Not settable via `klaus.config.yaml` (see above)
+
+### Data-driven runs (`--data`)
+
+`--data <path>` runs every given flow file once **per row** in a JSON or YAML data file (Newman-style data-driven execution). The data file must be an array of objects; each value must be a scalar (string / number / boolean / null) — nested objects/arrays are rejected, and there is no CSV support (JSON/YAML only, chosen to avoid adding a new dependency; see the schema doc comment in `src/core/data.ts` for the full rationale). An empty array is also rejected.
+
+- **Iteration order**: rows are the outer loop and flows are the inner loop — `flowA(row1)`, `flowB(row1)`, `flowA(row2)`, `flowB(row2)`, ... (iteration-major order, matching Newman's collection-runner semantics)
+- **Variable injection**: each row's values land in the same template env namespace as `--var` and the environment file (bare <code v-pre>{{name}}</code>), overriding same-named keys from `--var`, which in turn overrides the environment file. Capture variable resolution is unaffected (captures still resolve before the env namespace, per the existing precedence rule)
+- **Value coercion**: `number`/`boolean` row values are stringified with `String(value)` before injection, same as capture values. A key whose value is `null` is **not injected at all** — referencing it in a template then fails with the usual unresolved-variable error (this is intentional, not a bug)
+- **Not masked**: like `--var`, row values are not registered as secrets and are not masked in output — use <code v-pre>{{env.X}}</code> (an OS environment variable) for real secrets
+- **Aggregation**: all iterations' flow results sit flat in the same run — a failure in any iteration fails the run as a whole (same `aggregateStatus` / exit-code rules as a normal multi-flow run)
+- **Reporting**: when `--data` is used, each flow result carries a 1-based `iteration` number. This surfaces as: the `iteration` field on each flow entry in the `--json` output (additive; `version` stays `2`), an `(iteration N)` suffix on the JUnit `<testsuite name="...">` (the `classname` on each `<testcase>` stays the plain flow name), an `(iteration N)` suffix on the text-output flow header, and an `iteration` field on each execution-history JSONL entry (additive; `v` stays `1`)
+
+### Parallel execution (`--jobs`)
+
+`--jobs <n>` runs multiple **execution units** at the same time instead of one after another. An execution unit is one flow file (or, when `--data` is given, one flow-file × data-row pair — the same unit that `--data`'s iteration-major order produces). `<n>` must be an integer between 1 and 32; an out-of-range or non-integer value is rejected with a non-zero exit and no stack trace, the same way `--port`/`--last` are validated.
+
+- **Default is 1 (sequential), not Hurl-style parallel-by-default**: klaus intentionally differs from tools like Hurl here. Without `--jobs`, execution is byte-for-byte identical to versions before this option existed — no worker pool, no reordering layer, nothing changes on the default path.
+- **Steps inside a flow always stay sequential**, no matter how high `--jobs` is set — only the *units* (whole flow-file runs) are parallelized, never the steps within one. A flow that depends on step N's captured value in step N+1 behaves exactly as before.
+- **Result order is always input order, not completion order**: `RunResult.flows` (and therefore the `--json` output, JUnit/TAP report ordering, and exit-code aggregation) lists units in the same iteration-major order `--data` already uses (row outer, flow inner) — regardless of which unit actually finished first. `runId`, `aggregateStatus`, and exit codes are unaffected by `--jobs`.
+- **Text output ordering**: with `--jobs` 2 or higher, klaus buffers each unit's step-progress lines and flushes a unit's full block only once every earlier unit (in input order) has already flushed — so a human reading the text output still sees units in the same order as `--jobs 1`, never interleaved or out of order, even though the underlying requests ran concurrently. (Implementation note: klaus buffers each unit's output in full and releases it once it becomes the earliest not-yet-flushed unit, rather than live-streaming the currently-furthest-along unit.)
+- **Execution history ordering is not guaranteed**: each step still appends exactly one line to `.klaus/history/*.jsonl` (see [Execution History](history.md)), but with `--jobs` > 1, lines from concurrently-running units can interleave in the file in whatever order their writes land — unlike the in-memory `RunResult`, the JSONL file's *line order* does not reflect input order. Every entry still carries `runId`/`flow`/`step`/`startedAt` so a consumer can reconstruct grouping and ordering itself if needed. The writes themselves are not corrupted or torn (each line is one atomic `O_APPEND` write), only their relative order is unspecified.
+- **Cannot be combined with `--record`**: record mode appends every response to the same cassette file (`--record <dir>`) keyed by method+URL. With `--jobs` > 1, concurrent identical requests could get appended in a different relative order on every run, making the *replayed* response for a repeated method+URL pair (`findCassetteEntry` takes the first-recorded match) non-deterministic across recordings. `--record` combined with `--jobs` greater than 1 is therefore rejected with an error and exit code 1 before anything runs. `--replay` has no such restriction: each unit independently loads its own read-only copy of the cassette index before it starts sending requests (not a single index shared/hoisted across units) — since nothing writes to the cassette file during replay, those concurrent independent reads under `--jobs` > 1 are safe.
 
 ## Output Modes
 
@@ -130,6 +156,14 @@ With `--report junit`, an XML file is written to `--report-file` where each flow
 
 Secrets sourced from <code v-pre>{{env.X}}</code> are masked using the same rules as history (URL-encoded forms included (encodeURIComponent, form-urlencoded, and the encodeURI form used to approximate WHATWG URL normalization) as well as JSON-escaped forms; see [Execution History](history.md) for details). This masking is also applied by default to the stdout text / JSON output (including `--json`). Pass `--no-mask` to disable masking on the stdout side only — the history JSONL and JUnit file output are always masked and are unaffected by `--no-mask`. Control characters sourced from the response body are converted to visible escapes (`\xNN`), except for the tab/LF/CR that XML 1.0 permits. **This control-character escaping applies only to the JUnit report and text output; it is not applied to the JSON output** (including `--json`).
 
+### TAP Report
+
+With `--report tap`, a [TAP version 13](https://testanything.org/) file is written to `--report-file`: a `1..N` plan line (N = total step count across all flows) followed by one `ok`/`not ok` line per step, in execution order, named `<flowName> > <stepName>`. A `skipped` step is reported as `ok` with a `# SKIP <reason>` directive (TAP has no separate "skip" line type). A `failed`/`error` step is reported as `not ok`, followed by one `# ...` diagnostic comment per failed assertion (or the runtime error message for `error` steps). Newlines and `#` in flow/step names or diagnostic messages are escaped so they cannot break the line-oriented TAP format.
+
+Masking follows the same rules as the JUnit report (secrets from <code v-pre>{{env.X}}</code>, masked before control-character sanitization, unaffected by `--no-mask`).
+
+Pass a comma-separated list to `--report` (e.g. `--report junit,tap`) to generate both formats in one run — see the `--report`/`--report-file` pairing rule above.
+
 ## Exit code
 
 | code | Meaning |
@@ -148,6 +182,39 @@ Details of the decision rules:
 4. A failure to write the history JSONL only produces a warning on stderr — it does not affect step results or the exit code
 
 An agent (such as Claude Code) can identify where things went wrong from the exit code alone: 2 means fix the definition, 3 means check whether the target API is up, and 4 means compare the assertion against the response.
+
+## klaus ui
+
+```
+klaus ui [-p <n>] [-H <host>] [--no-open]
+```
+
+| Option | Description | Default |
+|---|---|---|
+| `-p`, `--port <n>` | The port to listen on | `4884` (fixed) |
+| `-H`, `--host <host>` | The host to listen on | `127.0.0.1` |
+| `--no-open` | Suppresses automatically opening the browser | opens automatically |
+
+On startup, a URL with a token (`http://127.0.0.1:<port>/?token=…`) is printed to stdout and opened in the default browser. Press Ctrl+C to stop it. For the server's features, security model, and HTTP API, see [localhost UI](ui.md).
+
+`--port` / `--host` / `--no-open` can have their defaults set via `klaus.config.yaml`. See [Default CLI options](config.md).
+
+On a shared multi-user host, this token-bearing URL is passed as an argument to the browser-launch command, so it may be readable by other local users via the process list. On such hosts, pass `--no-open` and open the printed URL yourself instead.
+
+### Using it with docker-compose
+
+To use `klaus ui` inside a container, keep the default port (`4884`) so the port mapping can be pinned, and pass `--host 0.0.0.0` so it's reachable from outside the container.
+
+```yaml
+services:
+  klaus:
+    image: your-klaus-image
+    command: ["klaus", "ui", "--host", "0.0.0.0", "--no-open"]
+    ports:
+      - "4884:4884"
+```
+
+`--host 0.0.0.0` makes the server reachable from other hosts on the network (the printed URL still shows `127.0.0.1` as an openable address, with a `(listening on 0.0.0.0)` note appended). Anyone who knows the token-bearing URL can access the UI/API, so be careful about handling it: don't expose it to untrusted networks and don't share the URL.
 
 ## klaus validate
 
@@ -222,38 +289,23 @@ The `version` field of the `run --json` payload is a plain literal (currently `2
 
 The `request`/`ws` exclusivity and requiredness, the `body`/`graphql` exclusivity, `method` being required unless `graphql` is set, the `ws.url` scheme constraint, and step name uniqueness are all custom validations expressed via zod's `superRefine` and can't be represented in JSON Schema, so they're instead noted in the `description` of the relevant subschema. Always exits 0.
 
-## klaus ui
+## klaus init
 
 ```
-klaus ui [-p <n>] [-H <host>] [--no-open]
+klaus init
 ```
 
-| Option | Description | Default |
-|---|---|---|
-| `-p`, `--port <n>` | The port to listen on | `4884` (fixed) |
-| `-H`, `--host <host>` | The host to listen on | `127.0.0.1` |
-| `--no-open` | Suppresses automatically opening the browser | opens automatically |
+Takes no options. Generates a minimal starting point in the current directory.
 
-On startup, a URL with a token (`http://127.0.0.1:<port>/?token=…`) is printed to stdout and opened in the default browser. Press Ctrl+C to stop it. For the server's features, security model, and HTTP API, see [localhost UI](ui.md).
+| Generated file | Contents |
+|---|---|
+| `api/example.yaml` | A single GET to `https://example.com` with a status-200 assertion (with English comments) |
+| `environments/local.yaml` | A minimal environment file with a `baseUrl` |
+| `AGENTS.md` | A guide for AI coding agents, compressing the command set, YAML schema essentials, assert operating guidance, exit code table, and the api/flows directory convention into about 50 lines |
 
-`--port` / `--host` / `--no-open` can have their defaults set via `klaus.config.yaml`. See [Default CLI options](config.md).
+Existing files are never overwritten — they're skipped, with a message printed to stdout. Any needed directories are created automatically. Always exits 0. If at least one file was generated, a hint for the next command is printed at the end: `klaus run api/example.yaml -e local`
 
-On a shared multi-user host, this token-bearing URL is passed as an argument to the browser-launch command, so it may be readable by other local users via the process list. On such hosts, pass `--no-open` and open the printed URL yourself instead.
-
-### Using it with docker-compose
-
-To use `klaus ui` inside a container, keep the default port (`4884`) so the port mapping can be pinned, and pass `--host 0.0.0.0` so it's reachable from outside the container.
-
-```yaml
-services:
-  klaus:
-    image: your-klaus-image
-    command: ["klaus", "ui", "--host", "0.0.0.0", "--no-open"]
-    ports:
-      - "4884:4884"
-```
-
-`--host 0.0.0.0` makes the server reachable from other hosts on the network (the printed URL still shows `127.0.0.1` as an openable address, with a `(listening on 0.0.0.0)` note appended). Anyone who knows the token-bearing URL can access the UI/API, so be careful about handling it: don't expose it to untrusted networks and don't share the URL.
+`AGENTS.md` also includes notes for agent execution environments: don't launch `klaus ui` casually — run it in the background with explicit timeout management if you do — and OpenAI Codex CLI disables sandbox network access by default, which can make `klaus run`'s HTTP requests fail (set `network_access = true` under `[sandbox_workspace_write]` in `~/.codex/config.toml` to allow them).
 
 ## klaus history
 

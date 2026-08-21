@@ -60,20 +60,29 @@ export default defineConfig({
         sidebar: {
           "/guide/": [
             {
-              text: "User Guide",
+              text: "Getting Started",
+              items: [{ text: "Getting Started", link: "/guide/getting-started" }],
+            },
+            {
+              text: "Guides",
               items: [
-                { text: "Getting Started", link: "/guide/getting-started" },
-                { text: "CLI Reference", link: "/guide/cli" },
-                { text: "Flow Definition Reference", link: "/guide/flow-definition" },
                 { text: "Generating Flows from OpenAPI", link: "/guide/generate" },
                 { text: "record / replay mode", link: "/guide/record-replay" },
+                { text: "localhost UI", link: "/guide/ui" },
+                { text: "Agent Skill (Claude Code / Codex)", link: "/guide/agent-skill" },
+                { text: "Troubleshooting", link: "/guide/troubleshooting" },
+              ],
+            },
+            {
+              text: "Reference",
+              items: [
+                { text: "CLI Reference", link: "/guide/cli" },
+                { text: "Flow Definition Reference", link: "/guide/flow-definition" },
                 {
                   text: "Default CLI options (klaus.config.yaml)",
                   link: "/guide/config",
                 },
                 { text: "Execution History", link: "/guide/history" },
-                { text: "localhost UI", link: "/guide/ui" },
-                { text: "Agent Skill (Claude Code / Codex)", link: "/guide/agent-skill" },
               ],
             },
           ],
@@ -93,17 +102,26 @@ export default defineConfig({
         sidebar: {
           "/ja/guide/": [
             {
-              text: "利用者向けガイド",
+              text: "はじめる",
+              items: [{ text: "Getting Started", link: "/ja/guide/getting-started" }],
+            },
+            {
+              text: "ガイド",
               items: [
-                { text: "Getting Started", link: "/ja/guide/getting-started" },
-                { text: "CLI リファレンス", link: "/ja/guide/cli" },
-                { text: "フロー定義リファレンス", link: "/ja/guide/flow-definition" },
                 { text: "OpenAPI からのフロー生成", link: "/ja/guide/generate" },
                 { text: "record / replay モード", link: "/ja/guide/record-replay" },
-                { text: "CLI オプションの既定値(klaus.config.yaml)", link: "/ja/guide/config" },
-                { text: "実行履歴", link: "/ja/guide/history" },
                 { text: "localhost UI", link: "/ja/guide/ui" },
                 { text: "Agent Skill(Claude Code / Codex)", link: "/ja/guide/agent-skill" },
+                { text: "トラブルシューティング", link: "/ja/guide/troubleshooting" },
+              ],
+            },
+            {
+              text: "リファレンス",
+              items: [
+                { text: "CLI リファレンス", link: "/ja/guide/cli" },
+                { text: "フロー定義リファレンス", link: "/ja/guide/flow-definition" },
+                { text: "CLI オプションの既定値(klaus.config.yaml)", link: "/ja/guide/config" },
+                { text: "実行履歴", link: "/ja/guide/history" },
               ],
             },
           ],

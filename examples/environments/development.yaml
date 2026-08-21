@@ -1,6 +1,7 @@
 # development 環境。local と同じキー構成で値だけ差し替える。
 # 実行時に `--env development` で切り替える。
-# ※このサンプルではデモ用に baseUrl を同じローカル mock(:3000)に向けている。
-#   実運用では dev 環境の実 URL(例: https://dev.example.com)に置き換える。
+# ※このサンプルではデモ用に baseUrl / wsUrl を同じローカル mock(:3000)に向けている。
+#   実運用では dev 環境の実 URL(例: https://dev.example.com / wss://dev.example.com)に置き換える。
 baseUrl: http://127.0.0.1:3000
+wsUrl: ws://127.0.0.1:3000
 testEmail: dev@example.com

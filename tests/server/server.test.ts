@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { join } from "node:path";
@@ -1167,6 +1167,73 @@ describe("klaus server", () => {
       expect(res.status).toBe(200);
       const flows = (await res.json()) as Array<{ path: string }>;
       expect(flows.map((f) => f.path)).toEqual(["valid.yaml"]);
+    });
+  });
+
+  describe("GET /api/flows/detail: シンボリックリンクによる境界外読み出し", () => {
+    // 他の describe の workDir に symlink を仕込むと一覧走査(GET /api/flows)等の他テストに影響しうるため、
+    // 専用の workDir・server を使う。境界外の実体を置く outsideDir も別途用意し、afterAll で両方削除する。
+    let dir: string;
+    let outsideDir: string;
+    let server: StartServerResult;
+    let apiBase: string;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(join(tmpRoot, "klaus-server-symlink-"));
+      outsideDir = await mkdtemp(join(tmpRoot, "klaus-server-symlink-outside-"));
+
+      // cwd(dir)の外側に置かれた、本来読めてはいけないファイル
+      await writeFile(join(outsideDir, "secret.yaml"), "apiKey: leaked\n", "utf-8");
+      // dir 配下に、境界外の secret.yaml を指すシンボリックリンクを仕込む
+      // (isPathWithinDir だけの文字列比較では resolve(dir, "linked.yaml") 自体が dir 配下と判定されてしまう)
+      await symlink(join(outsideDir, "secret.yaml"), join(dir, "linked.yaml"));
+
+      // 比較対象: シンボリックリンクでない通常のフローファイル(回帰確認用)
+      await writeFile(
+        join(dir, "normal.yaml"),
+        [
+          "name: normal flow",
+          "steps:",
+          "  - name: step1",
+          "    request:",
+          "      method: GET",
+          '      url: "http://example.com"',
+          "",
+        ].join("\n"),
+        "utf-8",
+      );
+
+      server = await startServer({ cwd: dir, port: 0 });
+      apiBase = `http://127.0.0.1:${server.port}`;
+    });
+
+    afterAll(async () => {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+      await rm(outsideDir, { recursive: true, force: true });
+    });
+
+    it("path が cwd 配下のシンボリックリンク経由で境界外を指す場合は 403(readFile が追随する前に検知する)", async () => {
+      const res = await fetch(
+        `${apiBase}/api/flows/detail?path=${encodeURIComponent("linked.yaml")}`,
+        {
+          headers: { "X-Klaus-Token": server.token },
+        },
+      );
+      expect(res.status).toBe(403);
+      expect(await res.text()).toBe("Forbidden: path traversal detected");
+    });
+
+    it("path が通常ファイル(シンボリックリンクでない)を指す場合は従来どおり 200 で読み込める(回帰確認)", async () => {
+      const res = await fetch(
+        `${apiBase}/api/flows/detail?path=${encodeURIComponent("normal.yaml")}`,
+        {
+          headers: { "X-Klaus-Token": server.token },
+        },
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { name: string };
+      expect(body.name).toBe("normal flow");
     });
   });
 

@@ -7,6 +7,7 @@ klaus request definitions are plain YAML. **One file = one flow (a sequence of s
 ```yaml
 name: auth flow        # Required: flow name
 env: local             # Optional: references environments/local.yaml
+tags: [smoke, auth]    # Optional: flow-level tags, used by `klaus run --tags` / `--exclude-tags`
 steps:                 # Required: at least one. name must be unique within the flow
   - name: login
     request: { ... }   # Exactly one of request / ws / use is required (mutually exclusive)
@@ -15,10 +16,22 @@ steps:                 # Required: at least one. name must be unique within the 
     assert: { ... }    # Optional: assertions
 ```
 
-- Environment files are resolved as `environments/<name>.yaml` by searching upward from the cwd (stopping at the first ancestor directory containing `.git`, or at the filesystem root). See [Getting Started](getting-started.md) for details. `klaus run --env <name>` overrides the flow's `env:`
+- Environment files are resolved as `environments/<name>.yaml` by searching upward from the cwd (stopping at the first ancestor directory containing `.git`, or at the filesystem root). See [Getting Started](getting-started.md) for details. `klaus run --env <name>` overrides the flow's `env:`. `klaus run --env-file <path>` loads an environment file from an arbitrary path instead (no upward search), and `klaus run --var <key=value>` adds or overrides individual variables on top — see [CLI Reference](cli.md#klaus-run)
 - Environment files are a flat map of `key: string value`. Values can use templates (such as <code v-pre>{{env.X}}</code>)
 - Setting the reserved key `$protected: true` in an environment file makes `klaus run` refuse to run against that environment by default (exit 3). It only runs when `--allow-protected` is explicitly passed. This is a guardrail against accidentally running against a production-like environment; `$protected` cannot be referenced as a template variable (<code v-pre>{{...}}</code>). Execution via `klaus ui` / the server API never passes this flag, so protected environments are always refused there
 - `$protected` can only be set or unset by editing the file directly. It is not shown in the `klaus ui` environment editor, and saving from the UI leaves any existing `$protected` value untouched
+
+## tags
+
+```yaml
+name: auth flow
+tags: [smoke, auth]   # Optional: array of non-empty strings. No uniqueness constraint
+steps: [ ... ]
+```
+
+- Flow-level only — there is no step-level tag
+- Used exclusively for flow selection via `klaus run --tags <list>` / `--exclude-tags <list>` (see [CLI Reference](cli.md#tag-based-flow-selection-tags-exclude-tags)); tags themselves have no other effect on execution
+- Not exposed in `klaus ui` or the server API
 
 ## request (HTTP step)
 
@@ -165,11 +178,14 @@ Where expansion applies: `request.url` / values of `request.headers` / values of
 
 ```yaml
 capture:
-  token: "$.token"     # variable name: JSONPath
+  token: "$.token"            # variable name: JSONPath
+  userId: "$.data.user.id"    # nested field
+  firstId: "$.items[0].id"    # array index
 ```
 
 - Applies a JSONPath to the JSON response, making the result available as a template variable in subsequent steps (the classic case being login → token → Authorization header)
 - **If it doesn't match, or the response isn't JSON, this is a RuntimeError** and the step becomes error (exit 3). A silent chain like `Bearer undefined` cannot happen. A capture whose value is `null` is treated as a success
+- **Captured values are not masked.** Secret masking covers only values resolved via <code v-pre>{{env.X}}</code>, so a token captured here is written as-is to the history JSONL, the JUnit report, and record cassettes. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) for the masking boundaries
 - Ignored on SSE / WS steps
 
 ## assert (assertions)
@@ -233,9 +249,75 @@ Common semantics for `events` / `messages`:
 - SSE / WS steps, which have no body, always yield ok:false. An HTTP response whose body exists but fails to parse as JSON is validated against the schema as the raw string (e.g. a schema requiring `type: object` fails, while `type: string` may pass)
 - If the schema itself is invalid and ajv fails to compile it, this does not throw; it's reported as an ok:false assertion failure instead
 
+### `regex` patterns are template-rendered
+
+Like other assertion values, the pattern given to a `regex` matcher (`assert.headers[].regex`, `assert.body[].regex`, `assert.bodyText.regex`, `assert.events[].regex`, `assert.messages[].regex`) is template-rendered before matching, so <code v-pre>{{...}}</code> in it is not limited to a literal — it can resolve from a capture or a `--var`. Because a capture is populated from the response body of the API under test, a flow that feeds a captured value into `regex` effectively lets that API choose the pattern used to check it. A catastrophic-backtracking pattern (e.g. `^(a+)+$`) then makes matching take exponentially longer per added character of input — a few dozen characters is already enough to hang for well over a minute — and no timeout bounds assertion evaluation (unlike `request.timeoutMs`, which covers only the HTTP request itself). In `klaus ui`, this blocks the shared server process, not just the run.
+
+This is an availability effect only (the run hangs; no data is exposed or altered), and reaching it already requires the ability to run/edit flows (the session token in `klaus ui`). It also only happens when a flow deliberately routes a captured or `--var` value into `regex` — a literal pattern written directly in the flow file is unaffected. `contains` and `equals` do not evaluate a pattern, so they are unaffected regardless of where their value comes from. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) for the related regex-timeout scope note.
+
+## if
+
+```yaml
+steps:
+  - name: login
+    request: { method: POST, url: "{{env.baseUrl}}/login" }
+    assert: { status: 200 }
+  - name: cleanup
+    request: { method: DELETE, url: "{{env.baseUrl}}/session" }
+    if: steps.login.status == "passed"   # only run when login passed
+  - name: use-token
+    request: { method: GET, url: "{{env.baseUrl}}/me", headers: { Authorization: "Bearer {{token}}" } }
+    if: captures.token != ""
+```
+
+- `if` gates whether the step runs at all. It is a small, intentionally limited condition grammar — **not** a general expression language — evaluated by `src/core/condition.ts`:
+  - `ref op literal`, where `ref` is `steps.<name>.status` or `captures.<name>`, `op` is `==` or `!=`, and `literal` is a double-quoted string, a single-quoted string, or a bare token with no whitespace
+  - `stepName` / `captureName` may not contain `.` or whitespace
+  - Quoted literals do not support escape sequences; to include the other quote character in a value, wrap it in the opposite quote style (e.g. use single quotes to include a `"`)
+  - A literal that starts with `'` or `"` must end with the same quote character; an unterminated quote (e.g. `captures.token == "abc`) is **not** silently treated as a bare token — it is rejected as a malformed expression (RuntimeError)
+  - Comparison is always done as a string. The `captures.<name>` side is coerced the same way template rendering (e.g. <code v-pre>{{token}}</code>) stringifies values — objects/arrays are JSON-stringified, other values via `String()`; `steps.<name>.status` is already a string
+- **No <code v-pre>{{...}}</code> template rendering is applied inside `if`.** Reference prior captures directly via `captures.<name>` (not <code v-pre>{{name}}</code>)
+- `steps.<name>.status` can only reference a step that appears **earlier** in the same flow and has already completed (including one that finished via `continueOnError`, in which case its real `failed`/`error` status is visible to later conditions — this is the point of combining `if` with `continueOnError`, e.g. running cleanup only when setup passed)
+- When the condition evaluates to **false**, the step becomes `skipped` **without executing** (no request is sent, `retry` does not apply) with `error: "skipped because condition not met: <expression>"`. This does not skip the rest of the flow — later steps still run as normal (see [Flow Behavior on Step Failure](#flow-behavior-on-step-failure) for the distinct "previous step failed" skip reason)
+- When the condition **throws** — a malformed expression, or a reference to an unknown step/capture name — the step becomes `error` with the underlying message (e.g. listing the available step/capture names), and this follows the normal error semantics described below (remaining steps are skipped unless `continueOnError` is set)
+- A `skipRest` in effect from an earlier unhandled failure (see below) takes priority: if the flow is already skipping remaining steps, `if` is not even evaluated for this step
+
+## retry
+
+```yaml
+retry:
+  count: 3          # Required. Number of retries after the first attempt (1-100)
+  intervalMs: 500   # Optional. Fixed wait between attempts in milliseconds. Defaults to 1000
+```
+
+- `count` is the number of *retries* after the first attempt, so the step runs **at most `count + 1` times in total**
+- The step is retried when its outcome is **`failed`** (assertion failure) or **`error`** (thrown exception, such as a connection failure or timeout). A `passed` outcome stops the loop immediately, even before `count` is exhausted
+- The wait between attempts is fixed at `intervalMs` (no backoff, no condition expressions)
+- Applies uniformly to `request`, `sse`, and `ws` steps — the whole step (request/response and assertions) is re-run on each attempt
+- **Only the final attempt is recorded**: one entry in the step results, one history entry, and a single `onStepStart` / `onStepComplete` pair per step. Earlier failed/error attempts are not kept
+- When `retry` is set, the result and history entry carry an `attempts` field with the number of executions actually performed (1 or more). Without `retry`, `attempts` is omitted. `durationMs` remains the final attempt's own duration, as before
+
+## continueOnError
+
+```yaml
+steps:
+  - name: optional-check
+    request: { method: GET, url: "{{env.baseUrl}}/optional" }
+    assert: { status: 200 }
+    continueOnError: true   # Optional. Defaults to false
+  - name: next-step
+    request: { method: GET, url: "{{env.baseUrl}}/next" }
+```
+
+- When `continueOnError: true` is set on a step, a final outcome of **`failed`** or **`error`** on that step does not skip the remaining steps — the flow keeps running from the next step
+- "Final outcome" means **after `retry` is exhausted**, if `retry` is also set: retries run first as usual, and `continueOnError` only takes effect once no more retries remain
+- The step itself keeps its `failed`/`error` status, and the flow's (and run's) aggregate status and exit code are unaffected — they still reflect the failure as usual (see [CLI Reference](cli.md#exit-code))
+- `continueOnError` only affects *that step's own* failure. If a *later* step without `continueOnError` fails, it still skips the steps after it, as described below
+
 ## Flow Behavior on Step Failure
 
-- When a step becomes **failed** (assertion failure) or **error** (runtime error), the **remaining steps in that flow are not run and are recorded as skipped**
+- When a step becomes **failed** (assertion failure) or **error** (runtime error), the **remaining steps in that flow are not run and are recorded as skipped** (`error: "skipped because a previous step failed"`) — unless the failing step has `continueOnError: true` set, in which case the remaining steps still run (see [continueOnError](#continueonerror))
+- A step whose [`if`](#if) condition evaluates to false is also recorded as `skipped`, but for a different reason (`error: "skipped because condition not met: <expression>"`) and **without** triggering the above "remaining steps skipped" behavior — the flow keeps running from the next step either way
 - When multiple flow files are passed, **other flows still run** even if one flow fails
 - The final exit code follows the priority rules in the [CLI Reference](cli.md#exit-code)
 
