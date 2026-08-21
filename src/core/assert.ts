@@ -24,6 +24,12 @@ const ajv = new Ajv2020({ allErrors: true, strict: false });
  * ユーザー定義(フロー YAML の assert マッチャー・CLI 変数注入)由来の regex パターンをコンパイルする唯一の箇所。
  * CodeQL の js/regex-injection alert をこの 1 箇所に集約するため、ユーザー入力を new RegExp に渡すコードは
  * 必ずこの関数を経由すること(新たな構築箇所を作ると新規 alert が発生する)。
+ *
+ * パターンの由来はフロー YAML への直書きに限らない。assert の値はテンプレート展開されるため、
+ * capture(検証対象 API のレスポンスから埋まる値)や --var 経由でも渡り得る。とくに capture 経由の場合は
+ * パターン自体を検証対象 API 側が実質的に選べることになる(--var は CLI 実行者が与える値なので該当しない)。
+ * いずれも可用性(評価のハングアップ)にのみ影響する既知のリスクとして許容している
+ * (docs/guide/flow-definition.md の regex 節を参照)。
  */
 function compileUserRegex(pattern: string): RegExp {
   return new RegExp(pattern);

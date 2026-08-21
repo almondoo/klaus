@@ -249,6 +249,12 @@ Common semantics for `events` / `messages`:
 - SSE / WS steps, which have no body, always yield ok:false. An HTTP response whose body exists but fails to parse as JSON is validated against the schema as the raw string (e.g. a schema requiring `type: object` fails, while `type: string` may pass)
 - If the schema itself is invalid and ajv fails to compile it, this does not throw; it's reported as an ok:false assertion failure instead
 
+### `regex` patterns are template-rendered
+
+Like other assertion values, the pattern given to a `regex` matcher (`assert.headers[].regex`, `assert.body[].regex`, `assert.bodyText.regex`, `assert.events[].regex`, `assert.messages[].regex`) is template-rendered before matching, so <code v-pre>{{...}}</code> in it is not limited to a literal — it can resolve from a capture or a `--var`. Because a capture is populated from the response body of the API under test, a flow that feeds a captured value into `regex` effectively lets that API choose the pattern used to check it. A catastrophic-backtracking pattern (e.g. `^(a+)+$`) then makes matching take exponentially longer per added character of input — a few dozen characters is already enough to hang for well over a minute — and no timeout bounds assertion evaluation (unlike `request.timeoutMs`, which covers only the HTTP request itself). In `klaus ui`, this blocks the shared server process, not just the run.
+
+This is an availability effect only (the run hangs; no data is exposed or altered), and reaching it already requires the ability to run/edit flows (the session token in `klaus ui`). It also only happens when a flow deliberately routes a captured or `--var` value into `regex` — a literal pattern written directly in the flow file is unaffected. `contains` and `equals` do not evaluate a pattern, so they are unaffected regardless of where their value comes from. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) for the related regex-timeout scope note.
+
 ## if
 
 ```yaml
