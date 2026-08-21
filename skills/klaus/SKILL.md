@@ -10,10 +10,15 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
 ## Commands
 
 - `klaus run <files...>`: run flow definition YAML files
-  - `--env <name>`: overrides the flow's env with the values in environments/<name>.yaml
+  - `--env <name>`: overrides the flow's env with the values in environments/<name>.yaml (mutually exclusive with `--env-file`)
+  - `--env-file <path>`: load env variables from an arbitrary YAML file instead of a named environment (mutually exclusive with `-e/--env`)
+  - `--var <key=value>`: set an ad-hoc template variable (repeatable); overrides same-named env values but is NOT masked as a secret — use an OS environment variable with `{{env.X}}` for real secrets
   - `--json`: force JSON output even when running on a TTY
-  - `--report junit` / `--report-file <path>`: also write a JUnit XML report
+  - `--report <list>` / `--report-file <path>`: comma-separated additional report formats, `junit` and/or `tap` (e.g. `--report junit,tap`); `--report-file` is repeatable, one per format in the same order (defaults: `klaus-report.xml` / `klaus-report.tap`)
   - `--no-history`: disable writing to the execution history (.klaus/history/*.jsonl)
+  - `--data <path>`: data-driven run — a JSON/YAML file of rows; runs every given flow once per row, row values land in the template env namespace, and each result gets a 1-based `iteration` number
+  - `--tags <list>` / `--exclude-tags <list>`: comma-separated flow-level tag filters (OR semantics for `--tags`; `--exclude-tags` wins on overlap)
+  - `--jobs <n>`: run up to `n` execution units (flow, or flow x data-row when `--data` is set) in parallel, 1-32, default 1; steps within one flow stay sequential; cannot combine with `--record`
 - `klaus validate [files...]`: schema-validate flow YAML without executing (with no arguments, discovers and validates all flows; errors carry a fix-example hint)
 - `klaus schema`: print the flow YAML's JSON Schema to stdout (useful for editor completion and improving flow generation accuracy)
 - `klaus history`: list execution history (`--flow <name>` / `--failed` / `--last <n>` / `--fields <csv>`; the default output is a summary without bodies)
@@ -34,12 +39,15 @@ Non-TTY output (pipes, CI, agent execution, etc.) is automatically JSON. Result 
 
 ## YAML schema essentials
 
-- flow: `name` (required) / `env` (optional, overridable with `--env`) / `steps` (one or more, name must be unique within the flow)
-- step: alongside `name`, exactly one of `request` / `ws` / `use` is required (mutually exclusive). `capture` / `assert` / `sse` are optional (`use` also excludes `sse`)
+- flow: `name` (required) / `env` (optional, overridable with `--env`) / `steps` (one or more, name must be unique within the flow) / `tags` (optional, non-empty strings, matched by `klaus run --tags`/`--exclude-tags`; no step-level tags)
+- step: alongside `name`, exactly one of `request` / `ws` / `use` is required (mutually exclusive). `capture` / `assert` / `sse` / `if` / `retry` / `continueOnError` are optional (`use` also excludes `sse`)
 - use: path (relative to the flow file) to a single-step flow file whose request/sse/assert are reused as this step's; `name` and `capture` come from this step, and an `assert` written here is merged additively with the referenced step's
 - request: `method` (omittable only when `graphql` is set, defaults to POST) / `url` / `headers` / `query` (key-value, merged into the URL's query string; `query` wins on key collision) / `body` (mutually exclusive with `graphql`) / `timeoutMs` (defaults to 30000ms)
 - capture: extract variables from the response body via JSONPath — nested fields and array indexes work (e.g. `{ token: "$.data.token", firstId: "$.items[0].id" }`)
-- `{{var}}` resolution order: (1) the step's capture variables, then (2) values from environments. `{{env.X}}` references OS environment variable X (a runtime error if undefined)
+- `if`: a condition string gating the step (e.g. `steps.create.status == "passed"`, `captures.userId != "0"`); only `==`/`!=` against a literal, no `{{...}}` rendering; false makes the step `skipped` (no request, no retry); a malformed expression or unknown reference makes it `error`
+- `retry`: `{ count: 1-100, intervalMs: 0-600000 (default 1000) }` — retries the whole step while its outcome is `failed`/`error`; `count` is the number of retries *after* the first attempt, so at most `count + 1` executions happen, and only the final attempt is recorded
+- `continueOnError: true`: subsequent steps still run after this step ends `failed`/`error` (the step itself, and the flow/run, still report that failure)
+- `{{var}}` resolution order: (1) the step's capture variables, then (2) values from environments; at the CLI level, `--var` overrides same-named environment values, and `--data` row values override both. `{{env.X}}` references OS environment variable X (a runtime error if undefined)
 
 ## Assert operating guidance
 
