@@ -82,7 +82,9 @@ jobs:
           name: npm-package
           path: "almondoo-klaus-*.tgz"
           if-no-files-found: error
-          retention-days: 1
+          # publish ジョブの手動承認が遅れても artifact が失効しないよう猶予を持たせる
+          # (1 日にしていたところ、承認まで 34 時間かかり失効 → 公開失敗した実績あり)
+          retention-days: 7
 
   publish:
     needs: build
