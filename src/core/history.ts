@@ -1,4 +1,4 @@
-import { appendFile, mkdir } from "node:fs/promises";
+import { appendFile, chmod, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { mapDeepStrings } from "./deep-map.js";
 import type { AssertionResult, RequestSnapshot, ResponseSnapshot, SseEvent } from "./types.js";
@@ -212,9 +212,26 @@ export function historyFilePath(cwd: string, date: Date = new Date()): string {
   return join(cwd, ".klaus", "history", `${toDateStr(date)}.jsonl`);
 }
 
-/** 履歴を1行(JSON Lines)追記する。ディレクトリが無ければ作成する */
+/**
+ * 履歴を1行(JSON Lines)追記する。ディレクトリが無ければ作成する。
+ * 履歴には平文の認証情報が残り得るため、ディレクトリ・ファイルを所有者のみ読み書き可能な権限
+ * (0o700 / 0o600)で作成する。既存の(緩い権限で作られた)ディレクトリ・ファイルについては、
+ * 書き込み前に締め直す(書き込み後に締め直すと、緩い権限のまま新しい行が追記される瞬間が生じ、
+ * 平文の認証情報が一時的に世界読み取り可能になり得るため)。ファイルが未作成の場合の
+ * chmod(ENOENT)は無視し、appendFile の mode オプションによる新規作成時の 0o600 に委ねる
+ * (POSIX のみ。Windows では no-op)。
+ */
 export async function appendHistory(cwd: string, entry: HistoryEntry): Promise<void> {
   const filePath = historyFilePath(cwd);
-  await mkdir(dirname(filePath), { recursive: true });
-  await appendFile(filePath, `${JSON.stringify(entry)}\n`, "utf-8");
+  const dir = dirname(filePath);
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") {
+    await chmod(dir, 0o700);
+    try {
+      await chmod(filePath, 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+  await appendFile(filePath, `${JSON.stringify(entry)}\n`, { encoding: "utf-8", mode: 0o600 });
 }
