@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import type { HistoryEntry } from "../api/client";
-import { getHistory } from "../api/client";
-
-const PAGE_SIZE = 20;
+import { historyOptions } from "../api/queries";
 
 export interface UseHistoryResult {
   entries: HistoryEntry[];
@@ -14,44 +12,17 @@ export interface UseHistoryResult {
 
 /** GET /api/history を before カーソルで遅延読み込みする hook */
 export function useHistory(flow?: string): UseHistoryResult {
-  const [entries, setEntries] = useState<HistoryEntry[]>([]);
-  const [nextBefore, setNextBefore] = useState<string | undefined>(undefined);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(
-    async (before?: string) => {
-      setLoading(true);
-      setError(null);
-      try {
-        const page = await getHistory({ flow, before, limit: PAGE_SIZE });
-        setEntries((prev) => (before ? [...prev, ...page.entries] : page.entries));
-        setNextBefore(page.nextBefore);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setLoading(false);
-      }
-    },
-    [flow],
-  );
-
-  // flow が変わるたびに1ページ目から読み直す(load 自体も flow の変化で再生成されるが、
-  // 「flow が変わった」ことを明示するため依存配列にも残す)
-  // biome-ignore lint/correctness/useExhaustiveDependencies: flow は load 経由で間接参照だが意図を明示するため残す
-  useEffect(() => {
-    setEntries([]);
-    setNextBefore(undefined);
-    void load(undefined);
-  }, [flow, load]);
+  const { data, isPending, isFetchingNextPage, error, fetchNextPage, hasNextPage } =
+    useInfiniteQuery(historyOptions(flow));
 
   return {
-    entries,
-    loading,
-    error,
-    hasMore: nextBefore !== undefined,
+    // ページごとの entries を1本のフラットな配列に結合する(元実装の accumulation 相当)
+    entries: data ? data.pages.flatMap((page) => page.entries) : [],
+    loading: isPending || isFetchingNextPage,
+    error: error instanceof Error ? error.message : error ? String(error) : null,
+    hasMore: hasNextPage,
     loadMore: () => {
-      if (nextBefore) void load(nextBefore);
+      void fetchNextPage();
     },
   };
 }

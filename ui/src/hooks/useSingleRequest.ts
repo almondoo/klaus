@@ -1,4 +1,5 @@
-import { useCallback, useRef, useState } from "react";
+import { useMutation } from "@tanstack/react-query";
+import { useCallback } from "react";
 import type { SingleRequestRequestBody, StepResult } from "../api/client";
 import { runSingleRequest } from "../api/client";
 
@@ -10,37 +11,37 @@ export interface UseSingleRequestResult {
 }
 
 /**
- * POST /api/request を実行する hook(単発リクエスト実行版。useRun.ts の状態管理規約を参考にする。
- * SSE ではなく単発の JSON レスポンスのため、進捗ステップの概念は無く loading/error/result のみ持つ)。
+ * POST /api/request を実行する hook(単発リクエスト実行版)。
+ * useMutation の呼び出しごとの state が最新実行を表すため、古い実行の応答が
+ * 後から返ってきても上書きされない(旧来の requestIdRef による世代管理は不要)。
  */
 export function useSingleRequest(): UseSingleRequestResult {
-  const [result, setResult] = useState<StepResult | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const mutation = useMutation({
+    mutationFn: ({
+      request,
+      env,
+    }: {
+      request: SingleRequestRequestBody["request"];
+      env?: string;
+    }) => runSingleRequest({ request, env }),
+  });
 
-  // 実行のたびにインクリメントし、古い実行の応答が後から返ってきても
-  // 最新の実行の状態を上書きしないようにするための世代カウンタ
-  const requestIdRef = useRef(0);
+  const execute = useCallback(
+    (request: SingleRequestRequestBody["request"], env?: string) => {
+      mutation.mutate({ request, env });
+    },
+    [mutation],
+  );
 
-  const execute = useCallback((request: SingleRequestRequestBody["request"], env?: string) => {
-    const requestId = ++requestIdRef.current;
-    setLoading(true);
-    setError(null);
-
-    runSingleRequest({ request, env })
-      .then((payload) => {
-        if (requestIdRef.current !== requestId) return;
-        setResult(payload.result);
-      })
-      .catch((err: unknown) => {
-        if (requestIdRef.current !== requestId) return;
-        setError(err instanceof Error ? err.message : String(err));
-      })
-      .finally(() => {
-        if (requestIdRef.current !== requestId) return;
-        setLoading(false);
-      });
-  }, []);
-
-  return { result, loading, error, execute };
+  return {
+    result: mutation.data?.result ?? null,
+    loading: mutation.isPending,
+    error:
+      mutation.error instanceof Error
+        ? mutation.error.message
+        : mutation.error
+          ? String(mutation.error)
+          : null,
+    execute,
+  };
 }

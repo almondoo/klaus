@@ -30,10 +30,6 @@ export function App() {
   const [activeTab, setActiveTab] = useState<Tab>("request");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [envEditorOpen, setEnvEditorOpen] = useState(false);
-  // capture 保存成功のたびにインクリメントし、EnvEditor の key に使うことで強制再マウント→
-  // 再取得させる(開いたまま値を保存された場合の表示更新用。useEnvironmentDetail 自体に
-  // 外部トリガーを追加すると影響範囲が広がるため、key による再マウントで代替する)
-  const [envRefreshKey, setEnvRefreshKey] = useState(0);
 
   const {
     detail: flowDetail,
@@ -130,11 +126,7 @@ export function App() {
         />
 
         {envEditorOpen && selectedEnv && (
-          <EnvEditor
-            key={envRefreshKey}
-            envName={selectedEnv}
-            onClose={() => setEnvEditorOpen(false)}
-          />
+          <EnvEditor envName={selectedEnv} onClose={() => setEnvEditorOpen(false)} />
         )}
 
         <div className="flex-1">
@@ -152,7 +144,6 @@ export function App() {
                   error={singleRequest.error}
                   result={singleRequest.result}
                   envName={selectedEnv || undefined}
-                  onSaved={() => setEnvRefreshKey((k) => k + 1)}
                 />
               </div>
             </div>
