@@ -168,6 +168,11 @@ export async function handlePostEnvironmentCapture(
   if (typeof body.path !== "string") {
     return c.json({ error: "path is required" }, 400);
   }
+  // $protected は予約キー。PUT と同様に API 経由での上書きを許可しない
+  // (boolean を期待するスキーマを capture の文字列化した値で破壊してしまうため)。
+  if (body.key === "$protected") {
+    return c.json({ error: "$protected is a reserved key and cannot be edited via this API" }, 400);
+  }
 
   let captured: Record<string, unknown>;
   try {

@@ -1111,6 +1111,29 @@ describe("klaus server", () => {
       expect(await res.json()).toEqual({ error: "path is required" });
     });
 
+    it("key が $protected の場合は 400 で拒否され、ファイルは変更されない", async () => {
+      const beforeContent = await readFile(
+        join(dir, "environments", "capture-target.yaml"),
+        "utf-8",
+      );
+
+      const res = await postCapture("capture-target", {
+        key: "$protected",
+        path: "$.token",
+        json: { token: "abc123" },
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: "$protected is a reserved key and cannot be edited via this API",
+      });
+
+      const afterContent = await readFile(
+        join(dir, "environments", "capture-target.yaml"),
+        "utf-8",
+      );
+      expect(afterContent).toBe(beforeContent);
+    });
+
     it("ファイル書き込みに失敗すると EnvironmentNotFoundError 以外の例外は 500 で rethrow される", async () => {
       const res = await postCapture("readonly-capture", {
         key: "token",
