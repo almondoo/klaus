@@ -15,6 +15,7 @@ import "@fontsource/fira-sans/latin-ext-500.css";
 import "@fontsource/fira-sans/latin-ext-600.css";
 import "./styles/globals.css";
 
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
@@ -22,8 +23,18 @@ import { App } from "./App";
 const container = document.getElementById("root");
 if (!container) throw new Error("#root element not found");
 
+// localhost API 前提のため retry せず、エラーは即座に画面へ表示する
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: { retry: false },
+    mutations: { retry: false },
+  },
+});
+
 createRoot(container).render(
   <StrictMode>
-    <App />
+    <QueryClientProvider client={queryClient}>
+      <App />
+    </QueryClientProvider>
   </StrictMode>,
 );

@@ -1,5 +1,5 @@
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { appendHistory, historyFilePath, maskHistoryEntry } from "../src/core/history.js";
 
@@ -89,6 +89,55 @@ describe("history", () => {
     const lines = content.trim().split("\n");
     expect(lines).toHaveLength(3);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "履歴ファイル(0o600)とディレクトリ(0o700)を所有者のみアクセス可能な権限で作成する",
+    async () => {
+      const entry = {
+        v: 1 as const,
+        runId: "run-1",
+        flow: "sample flow",
+        step: "step1",
+        startedAt: "2026-08-07T12:00:00.000Z",
+        durationMs: 1,
+        assertions: [],
+      };
+      await appendHistory(dir, entry);
+
+      const filePath = historyFilePath(dir);
+      const fileStat = await stat(filePath);
+      const dirStat = await stat(dirname(filePath));
+      expect(fileStat.mode & 0o777).toBe(0o600);
+      expect(dirStat.mode & 0o777).toBe(0o700);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "既存の緩い権限のディレクトリ・ファイルは追記のたびに締め直す",
+    async () => {
+      const entry = {
+        v: 1 as const,
+        runId: "run-1",
+        flow: "sample flow",
+        step: "step1",
+        startedAt: "2026-08-07T12:00:00.000Z",
+        durationMs: 1,
+        assertions: [],
+      };
+      // 先に緩い権限で作っておく(過去バージョンで作成された既存ファイルを模す)
+      await appendHistory(dir, entry);
+      const filePath = historyFilePath(dir);
+      await chmod(dirname(filePath), 0o755);
+      await chmod(filePath, 0o644);
+
+      await appendHistory(dir, entry);
+
+      const fileStat = await stat(filePath);
+      const dirStat = await stat(dirname(filePath));
+      expect(fileStat.mode & 0o777).toBe(0o600);
+      expect(dirStat.mode & 0o777).toBe(0o700);
+    },
+  );
 });
 
 describe("maskHistoryEntry", () => {

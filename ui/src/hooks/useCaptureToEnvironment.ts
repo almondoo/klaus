@@ -1,6 +1,8 @@
-import { useCallback, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useCallback } from "react";
 import type { EnvironmentDetail } from "../api/client";
 import { captureToEnvironment } from "../api/client";
+import { environmentDetailOptions } from "../api/queries";
 
 export interface UseCaptureToEnvironmentResult {
   saving: boolean;
@@ -17,36 +19,53 @@ export interface UseCaptureToEnvironmentResult {
   reset: () => void;
 }
 
-/**
- * POST /api/environments/:name/capture を実行する hook。
- * useSingleRequest / useEnvironmentDetail の状態管理規約(loading→saving・error は setState で保持し、
- * 実行のたびに前回の状態をリセットする)を踏襲する。
- */
-export function useCaptureToEnvironment(): UseCaptureToEnvironmentResult {
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [savedKey, setSavedKey] = useState<string | null>(null);
+interface CaptureVariables {
+  envName: string;
+  key: string;
+  path: string;
+  json: unknown;
+}
 
-  const capture = useCallback(async (envName: string, key: string, path: string, json: unknown) => {
-    setSaving(true);
-    setError(null);
-    setSavedKey(null);
-    try {
-      const detail = await captureToEnvironment(envName, { key, path, json });
-      setSavedKey(key);
-      return detail;
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-      return null;
-    } finally {
-      setSaving(false);
-    }
-  }, []);
+/** POST /api/environments/:name/capture を実行する hook */
+export function useCaptureToEnvironment(): UseCaptureToEnvironmentResult {
+  const queryClient = useQueryClient();
+
+  const mutation = useMutation({
+    mutationFn: ({ envName, key, path, json }: CaptureVariables) =>
+      captureToEnvironment(envName, { key, path, json }),
+    onSuccess: (_detail, variables) => {
+      // 保存先 env の詳細キャッシュを無効化し、開いていれば EnvEditor 側に再取得させる
+      queryClient.invalidateQueries({
+        queryKey: environmentDetailOptions(variables.envName).queryKey,
+      });
+    },
+  });
+
+  const capture = useCallback(
+    async (envName: string, key: string, path: string, json: unknown) => {
+      try {
+        return await mutation.mutateAsync({ envName, key, path, json });
+      } catch {
+        return null;
+      }
+    },
+    [mutation],
+  );
 
   const reset = useCallback(() => {
-    setError(null);
-    setSavedKey(null);
-  }, []);
+    mutation.reset();
+  }, [mutation]);
 
-  return { saving, error, savedKey, capture, reset };
+  return {
+    saving: mutation.isPending,
+    error:
+      mutation.error instanceof Error
+        ? mutation.error.message
+        : mutation.error
+          ? String(mutation.error)
+          : null,
+    savedKey: mutation.isSuccess ? (mutation.variables?.key ?? null) : null,
+    capture,
+    reset,
+  };
 }

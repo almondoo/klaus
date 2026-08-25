@@ -16,8 +16,6 @@ export interface ResponseViewProps {
   result: StepResult | null;
   /** レスポンスの抽出値を保存する対象の env 名(TopBar の env セレクタと同期。未選択時は保存不可) */
   envName?: string | undefined;
-  /** env への保存に成功した直後に呼ばれる(EnvEditor を開いている場合の表示更新のトリガー用) */
-  onSaved?: (() => void) | undefined;
 }
 
 /**
@@ -25,7 +23,7 @@ export interface ResponseViewProps {
  * StepRow.tsx の request/response 表示パターン(見出し + JsonBlock)を踏襲する。
  * レスポンスボディがある場合のみ、JSONPath で値を抽出して env に保存するセクションを表示する。
  */
-export function ResponseView({ loading, error, result, envName, onSaved }: ResponseViewProps) {
+export function ResponseView({ loading, error, result, envName }: ResponseViewProps) {
   // 早期 return より前でフックを呼ぶ(Rules of Hooks)。result が無い間も captureJsonPath 等の
   // 入力状態は保持して構わない(実行ごとにリセットする必要は無い簡易な下書き扱い)。
   const [captureKey, setCaptureKey] = useState("");
@@ -59,13 +57,9 @@ export function ResponseView({ loading, error, result, envName, onSaved }: Respo
   async function handleCapture(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!envName || !canCapture) return;
-    const saved = await capture.capture(
-      envName,
-      captureKey.trim(),
-      capturePath.trim(),
-      responseBody,
-    );
-    if (saved) onSaved?.();
+    // 保存成功時の EnvEditor 側の表示更新は useCaptureToEnvironment 内の
+    // クエリ無効化(invalidateQueries)で行われるため、ここでの明示的な通知は不要
+    await capture.capture(envName, captureKey.trim(), capturePath.trim(), responseBody);
   }
 
   return (

@@ -1,6 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
 import type { FlowListEntry } from "../api/client";
-import { getFlows } from "../api/client";
-import { useAsyncResource } from "./useAsyncResource";
+import { flowsOptions } from "../api/queries";
 
 export interface UseFlowsResult {
   flows: FlowListEntry[];
@@ -11,6 +11,13 @@ export interface UseFlowsResult {
 
 /** GET /api/flows を読み込む hook */
 export function useFlows(): UseFlowsResult {
-  const { data, loading, error, reload } = useAsyncResource<FlowListEntry[]>(getFlows, [], []);
-  return { flows: data, loading, error, reload };
+  const { data, isPending, error, refetch } = useQuery(flowsOptions());
+  return {
+    flows: data ?? [],
+    loading: isPending,
+    error: error instanceof Error ? error.message : error ? String(error) : null,
+    reload: () => {
+      void refetch();
+    },
+  };
 }

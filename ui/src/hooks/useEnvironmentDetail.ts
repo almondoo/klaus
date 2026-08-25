@@ -1,7 +1,8 @@
-import { useCallback, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback } from "react";
 import type { EnvironmentDetail } from "../api/client";
-import { getEnvironmentDetail, updateEnvironment } from "../api/client";
-import { useAsyncResource } from "./useAsyncResource";
+import { updateEnvironment } from "../api/client";
+import { environmentDetailOptions, environmentsOptions } from "../api/queries";
 
 export interface UseEnvironmentDetailResult {
   detail: EnvironmentDetail | null;
@@ -19,40 +20,57 @@ export interface UseEnvironmentDetailResult {
  * name が未指定(env セレクタ未選択)の間は取得を行わない。
  */
 export function useEnvironmentDetail(name: string | undefined): UseEnvironmentDetailResult {
+  const queryClient = useQueryClient();
   const {
     data: detail,
-    loading,
+    isPending,
     error,
-    reload,
-    setData: setDetail,
-  } = useAsyncResource<EnvironmentDetail | null>(
-    () => getEnvironmentDetail(name ?? ""),
-    null,
-    [name],
-    { initialLoading: false, enabled: name !== undefined, disabledReset: "all" },
-  );
+    refetch,
+  } = useQuery({
+    ...environmentDetailOptions(name ?? ""),
+    enabled: name !== undefined,
+  });
 
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const mutation = useMutation({
+    mutationFn: (values: Record<string, string>) => {
+      if (!name) throw new Error("env 未選択のため保存できません");
+      return updateEnvironment(name, values);
+    },
+    onSuccess: (updated) => {
+      if (!name) return;
+      // PUT レスポンスをそのまま詳細キャッシュへ反映し、一覧側は再取得させる
+      queryClient.setQueryData(environmentDetailOptions(name).queryKey, updated);
+      queryClient.invalidateQueries({ queryKey: environmentsOptions().queryKey, exact: true });
+    },
+  });
 
   const save = useCallback(
     async (values: Record<string, string>): Promise<boolean> => {
       if (!name) return false;
-      setSaving(true);
-      setSaveError(null);
       try {
-        const updated = await updateEnvironment(name, values);
-        setDetail(updated);
+        await mutation.mutateAsync(values);
         return true;
-      } catch (err) {
-        setSaveError(err instanceof Error ? err.message : String(err));
+      } catch {
         return false;
-      } finally {
-        setSaving(false);
       }
     },
-    [name, setDetail],
+    [name, mutation],
   );
 
-  return { detail, loading, error, saving, saveError, save, reload };
+  return {
+    detail: name === undefined ? null : (detail ?? null),
+    loading: isPending && name !== undefined,
+    error: error instanceof Error ? error.message : error ? String(error) : null,
+    saving: mutation.isPending,
+    saveError:
+      mutation.error instanceof Error
+        ? mutation.error.message
+        : mutation.error
+          ? String(mutation.error)
+          : null,
+    save,
+    reload: () => {
+      void refetch();
+    },
+  };
 }

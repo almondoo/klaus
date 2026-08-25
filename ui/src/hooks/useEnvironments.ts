@@ -1,6 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
 import type { EnvironmentListEntry } from "../api/client";
-import { getEnvironments } from "../api/client";
-import { useAsyncResource } from "./useAsyncResource";
+import { environmentsOptions } from "../api/queries";
 
 export interface UseEnvironmentsResult {
   environments: EnvironmentListEntry[];
@@ -10,10 +10,10 @@ export interface UseEnvironmentsResult {
 
 /** GET /api/environments を読み込む hook */
 export function useEnvironments(): UseEnvironmentsResult {
-  const { data, loading, error } = useAsyncResource<EnvironmentListEntry[]>(
-    getEnvironments,
-    [],
-    [],
-  );
-  return { environments: data, loading, error };
+  const { data, isPending, error } = useQuery(environmentsOptions());
+  return {
+    environments: data ?? [],
+    loading: isPending,
+    error: error instanceof Error ? error.message : error ? String(error) : null,
+  };
 }
