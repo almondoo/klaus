@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { type RunCommandOptions, runCommand } from "../../src/cli/run.js";
 import { historyFilePath } from "../../src/core/history.js";
+import { readAllHistoryEntries } from "../../src/core/history-query.js";
 import { closeServer, listenEphemeral, reserveClosedPort } from "../support/net.js";
 
 // loadFlow/runLoadedFlows が ParseError 以外を投げた場合、runCommand が catch せずそのまま呼び出し元へ
@@ -857,12 +858,9 @@ describe("runCommand", () => {
       );
 
       expect(exitCode).toBe(0);
-      const historyContent = await readFile(historyFilePath(workDir), "utf-8");
-      const lines = historyContent.trim().split("\n");
-      expect(lines).toHaveLength(6);
-      const entries = lines.map(
-        (line) => JSON.parse(line) as { flow: string; step: string; runId: string },
-      );
+      // UTC 日付をまたいでファイルが分かれても全件を拾えるよう全履歴ファイルを読む
+      const entries = await readAllHistoryEntries(workDir);
+      expect(entries).toHaveLength(6);
       const keys = new Set(entries.map((e) => `${e.flow}:${e.step}`));
       const expectedKeys = new Set(flowNames.flatMap((name) => [`${name}:step1`, `${name}:step2`]));
       expect(keys).toEqual(expectedKeys);
@@ -1272,11 +1270,9 @@ describe("runCommand", () => {
         );
 
         expect(exitCode).toBe(0);
-        const historyContent = await readFile(historyFilePath(workDir), "utf-8");
-        const entries = historyContent
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line) as { iteration?: number });
+        // UTC 日付をまたいでも全件を拾えるよう全履歴ファイルを読み、
+        // startedAt 降順で返るため reverse して実行順(昇順)に戻す
+        const entries = (await readAllHistoryEntries(workDir)).reverse();
         expect(entries.map((entry) => entry.iteration)).toEqual([1, 2]);
       } finally {
         process.cwd = cwdSpy;
