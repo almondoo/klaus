@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { FlowDetail } from "../api/client";
 import { flowDetailOptions } from "../api/queries";
+import { queryErrorMessage } from "../utils/error";
 
 export interface UseFlowDetailResult {
   detail: FlowDetail | null;
@@ -19,6 +20,6 @@ export function useFlowDetail(path: string | undefined): UseFlowDetailResult {
     // detail を null にリセットする(loading/error は queryFn 未実行のため元々変化しない)
     detail: path === undefined ? null : (data ?? null),
     loading: isPending && path !== undefined,
-    error: error instanceof Error ? error.message : error ? String(error) : null,
+    error: queryErrorMessage(error),
   };
 }

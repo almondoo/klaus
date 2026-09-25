@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { FlowListEntry } from "../api/client";
 import { flowsOptions } from "../api/queries";
+import { queryErrorMessage } from "../utils/error";
 
 export interface UseFlowsResult {
   flows: FlowListEntry[];
@@ -15,7 +16,7 @@ export function useFlows(): UseFlowsResult {
   return {
     flows: data ?? [],
     loading: isPending,
-    error: error instanceof Error ? error.message : error ? String(error) : null,
+    error: queryErrorMessage(error),
     reload: () => {
       void refetch();
     },

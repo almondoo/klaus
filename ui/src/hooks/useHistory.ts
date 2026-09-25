@@ -1,6 +1,7 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import type { HistoryEntry } from "../api/client";
 import { historyOptions } from "../api/queries";
+import { queryErrorMessage } from "../utils/error";
 
 export interface UseHistoryResult {
   entries: HistoryEntry[];
@@ -19,7 +20,7 @@ export function useHistory(flow?: string): UseHistoryResult {
     // ページごとの entries を1本のフラットな配列に結合する(元実装の accumulation 相当)
     entries: data ? data.pages.flatMap((page) => page.entries) : [],
     loading: isPending || isFetchingNextPage,
-    error: error instanceof Error ? error.message : error ? String(error) : null,
+    error: queryErrorMessage(error),
     hasMore: hasNextPage,
     loadMore: () => {
       void fetchNextPage();

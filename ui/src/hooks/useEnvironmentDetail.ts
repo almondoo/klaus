@@ -3,6 +3,7 @@ import { useCallback } from "react";
 import type { EnvironmentDetail } from "../api/client";
 import { updateEnvironment } from "../api/client";
 import { environmentDetailOptions, environmentsOptions } from "../api/queries";
+import { queryErrorMessage } from "../utils/error";
 
 export interface UseEnvironmentDetailResult {
   detail: EnvironmentDetail | null;
@@ -60,14 +61,9 @@ export function useEnvironmentDetail(name: string | undefined): UseEnvironmentDe
   return {
     detail: name === undefined ? null : (detail ?? null),
     loading: isPending && name !== undefined,
-    error: error instanceof Error ? error.message : error ? String(error) : null,
+    error: queryErrorMessage(error),
     saving: mutation.isPending,
-    saveError:
-      mutation.error instanceof Error
-        ? mutation.error.message
-        : mutation.error
-          ? String(mutation.error)
-          : null,
+    saveError: queryErrorMessage(mutation.error),
     save,
     reload: () => {
       void refetch();
