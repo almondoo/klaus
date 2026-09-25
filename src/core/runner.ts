@@ -369,6 +369,35 @@ async function executeStep(
   const startedAt = new Date().toISOString();
   let requestSnapshot: RequestSnapshot | undefined;
 
+  // WS/SSE/HTTP 各分岐の結果組み立てを共通化する。キー順は
+  // base → request → 分岐固有フィールド(resultExtra / historyExtra)→ assertions を維持する
+  // (WS は StepResult に wsMessages、HistoryEntry に response を持つため extra を別々に受け取る)。
+  const finish = (
+    request: RequestSnapshot,
+    durationMs: number,
+    assertions: StepResult["assertions"],
+    captured: Record<string, unknown>,
+    resultExtra: Pick<StepResult, "response" | "events" | "wsMessages">,
+    historyExtra: Pick<HistoryEntry, "response" | "events">,
+  ): { result: StepResult; captured: Record<string, unknown>; historyEntry: HistoryEntry } => {
+    const status = assertions.every((a) => a.ok) ? "passed" : "failed";
+    return {
+      result: {
+        ...buildStepResultBase(step.name, startedAt, durationMs, status),
+        request,
+        ...resultExtra,
+        assertions,
+      },
+      captured,
+      historyEntry: {
+        ...buildHistoryBase(runId, flowName, step.name, startedAt, durationMs, status, iteration),
+        request,
+        ...historyExtra,
+        assertions,
+      },
+    };
+  };
+
   try {
     // 保護環境への実行が拒否されている場合、リクエストを送らずここでステップ error にする
     if (blockedError) {
@@ -420,39 +449,23 @@ async function executeStep(
         durationMs: wsResult.durationMs,
         messages: wsResult.messages,
       });
-      const ok = assertions.every((a) => a.ok);
-
-      const stepResult: StepResult = {
-        ...buildStepResultBase(step.name, startedAt, wsResult.durationMs, ok ? "passed" : "failed"),
-        request: requestSnapshot,
-        wsMessages: wsResult.messages,
-        assertions,
-      };
 
       // capture は WS ステップでは(SSE と同様)無視する
-      return {
-        result: stepResult,
-        captured: {},
-        historyEntry: {
-          ...buildHistoryBase(
-            runId,
-            flowName,
-            step.name,
-            startedAt,
-            wsResult.durationMs,
-            ok ? "passed" : "failed",
-            iteration,
-          ),
-          request: requestSnapshot,
+      return finish(
+        requestSnapshot,
+        wsResult.durationMs,
+        assertions,
+        {},
+        { wsMessages: wsResult.messages },
+        {
           // response 相当として受信メッセージを body に格納する(status は HTTP の 101 Switching Protocols 相当)
           response: {
             status: 101,
             headers: {},
             body: wsResult.messages.map((m) => m.data),
           },
-          assertions,
         },
-      };
+      );
     }
 
     if (!step.request) {
@@ -487,7 +500,6 @@ async function executeStep(
         durationMs: sseResult.durationMs,
         events: sseResult.events,
       });
-      const ok = assertions.every((a) => a.ok);
 
       // SSE では response.body に events を二重保持しない(受信イベントは StepResult.events 側に格納する)
       const responseSnapshot: ResponseSnapshot = {
@@ -495,41 +507,10 @@ async function executeStep(
         headers: sseResult.headers,
         body: undefined,
       };
-
-      const stepResult: StepResult = {
-        ...buildStepResultBase(
-          step.name,
-          startedAt,
-          sseResult.durationMs,
-          ok ? "passed" : "failed",
-        ),
-        request: requestSnapshot,
-        response: responseSnapshot,
-        events: sseResult.events,
-        assertions,
-      };
+      const extra = { response: responseSnapshot, events: sseResult.events };
 
       // capture は JSON レスポンス(SSE 以外)にのみ適用する
-      return {
-        result: stepResult,
-        captured: {},
-        historyEntry: {
-          ...buildHistoryBase(
-            runId,
-            flowName,
-            step.name,
-            startedAt,
-            sseResult.durationMs,
-            ok ? "passed" : "failed",
-            iteration,
-          ),
-          request: requestSnapshot,
-          response: responseSnapshot,
-          // 受信イベントは response.body に二重保持せず events に格納する(StepResult と同じ方針)
-          events: sseResult.events,
-          assertions,
-        },
-      };
+      return finish(requestSnapshot, sseResult.durationMs, assertions, {}, extra, extra);
     }
 
     const response = await resolveHttpResponse(
@@ -545,7 +526,6 @@ async function executeStep(
       bodyText: response.bodyText,
       durationMs: response.durationMs,
     });
-    const ok = assertions.every((a) => a.ok);
     const captured = captureValues(step.capture, response.body, step.name);
 
     const responseSnapshot: ResponseSnapshot = {
@@ -553,32 +533,9 @@ async function executeStep(
       headers: response.headers,
       body: response.body,
     };
+    const extra = { response: responseSnapshot };
 
-    const stepResult: StepResult = {
-      ...buildStepResultBase(step.name, startedAt, response.durationMs, ok ? "passed" : "failed"),
-      request: requestSnapshot,
-      response: responseSnapshot,
-      assertions,
-    };
-
-    return {
-      result: stepResult,
-      captured,
-      historyEntry: {
-        ...buildHistoryBase(
-          runId,
-          flowName,
-          step.name,
-          startedAt,
-          response.durationMs,
-          ok ? "passed" : "failed",
-          iteration,
-        ),
-        request: requestSnapshot,
-        response: responseSnapshot,
-        assertions,
-      },
-    };
+    return finish(requestSnapshot, response.durationMs, assertions, captured, extra, extra);
   } catch (error) {
     // runtime エラー(接続不能・タイムアウト・テンプレート未解決等)はここに集約する
     const message = error instanceof KlausError ? error.message : String(error);
@@ -638,6 +595,20 @@ function checkEnvironmentAllowed(
 }
 
 /**
+ * replay モードのカセットを読み込んで ActiveRecording を返す。
+ * 読み込み失敗はここでは投げず replayLoadError に保持する(実際の HTTP ステップ実行時まで遅延させる)。
+ */
+async function loadReplay(dir: string): Promise<ActiveRecording> {
+  try {
+    const replayIndex = await loadCassetteIndex(dir);
+    return { mode: "replay", dir, replayIndex };
+  } catch (error) {
+    const replayLoadError = error instanceof RuntimeError ? error : new RuntimeError(String(error));
+    return { mode: "replay", dir, replayLoadError };
+  }
+}
+
+/**
  * 既に読み込み済みの Flow を実行する。
  * loadFlow を経由しないため、ファイルを介さないユニットテストからも呼べる。
  */
@@ -663,25 +634,47 @@ export async function executeFlow(
   );
   const historySink = resolveHistorySink(cwd, options.history);
 
-  // replay モードでは実行前にカセットを読み込み、索引化しておく(ステップごとの再読み込みを避ける)。
-  // 読み込み失敗(ファイルが無い等)はここでは投げず、activeRecording.replayLoadError に保持して、
-  // 実際に HTTP ステップが実行されるタイミング(resolveHttpResponse)まで遅延させる
-  // (record モードは事前読み込み不要。ステップごとに追記するだけでよい)。
-  let activeRecording: ActiveRecording | undefined;
-  if (options.recording) {
-    if (options.recording.mode === "replay") {
-      try {
-        const replayIndex = await loadCassetteIndex(options.recording.dir);
-        activeRecording = { mode: "replay", dir: options.recording.dir, replayIndex };
-      } catch (error) {
-        const replayLoadError =
-          error instanceof RuntimeError ? error : new RuntimeError(String(error));
-        activeRecording = { mode: "replay", dir: options.recording.dir, replayLoadError };
-      }
-    } else {
-      activeRecording = { mode: "record", dir: options.recording.dir };
-    }
-  }
+  // replay モードでは実行前にカセットを索引化しておく(ステップごとの再読み込みを避ける。
+  // 保持した replayLoadError は resolveHttpResponse で投げる)。
+  // record モードは事前読み込み不要(ステップごとに追記するだけでよい)。
+  const activeRecording: ActiveRecording | undefined = !options.recording
+    ? undefined
+    : options.recording.mode === "replay"
+      ? await loadReplay(options.recording.dir)
+      : { mode: "record", dir: options.recording.dir };
+
+  // ループ内の各コールバックで共通に付与する iteration/unitIndex(設定時のみ)
+  const unitContext = {
+    ...(options.iteration !== undefined ? { iteration: options.iteration } : {}),
+    ...(options.unitIndex !== undefined ? { unitIndex: options.unitIndex } : {}),
+  };
+
+  // skipped ステップの StepResult/HistoryEntry を組み立てる(リクエストを送っていないため request/response を持たない)
+  const buildSkipped = (
+    step: Step,
+    reason: string,
+  ): { result: StepResult; historyEntry: HistoryEntry } => {
+    const skippedStartedAt = new Date().toISOString();
+    return {
+      result: {
+        ...buildStepResultBase(step.name, skippedStartedAt, 0, "skipped"),
+        assertions: [],
+        error: reason,
+      },
+      historyEntry: {
+        ...buildHistoryBase(
+          runId,
+          flow.name,
+          step.name,
+          skippedStartedAt,
+          0,
+          "skipped",
+          options.iteration,
+        ),
+        assertions: [],
+      },
+    };
+  };
 
   const captures: Record<string, unknown> = {};
   // {{env.X}} で解決した値をフロー実行全体で蓄積する(履歴に書き込む前のマスクに使う)
@@ -701,8 +694,7 @@ export async function executeFlow(
       flow: flow.name,
       file: filePath,
       step: step.name,
-      ...(options.iteration !== undefined ? { iteration: options.iteration } : {}),
-      ...(options.unitIndex !== undefined ? { unitIndex: options.unitIndex } : {}),
+      ...unitContext,
     });
 
     let result: StepResult;
@@ -710,25 +702,7 @@ export async function executeFlow(
     let historyEntry: HistoryEntry | undefined;
 
     if (skipRest) {
-      const skippedStartedAt = new Date().toISOString();
-      result = {
-        ...buildStepResultBase(step.name, skippedStartedAt, 0, "skipped"),
-        assertions: [],
-        error: "skipped because a previous step failed",
-      };
-      // skipped ステップはリクエストを送っていないため request/response を持たない
-      historyEntry = {
-        ...buildHistoryBase(
-          runId,
-          flow.name,
-          step.name,
-          skippedStartedAt,
-          0,
-          "skipped",
-          options.iteration,
-        ),
-        assertions: [],
-      };
+      ({ result, historyEntry } = buildSkipped(step, "skipped because a previous step failed"));
     } else {
       // skipRest によるスキップが優先されるため、条件式の評価はここに来た場合のみ行う。
       // 評価結果は「true(実行する)」「false(条件不成立でスキップ)」「例外(不正な式・未知の名前)」の3通り。
@@ -756,25 +730,10 @@ export async function executeFlow(
           error: conditionError.message,
         };
       } else if (!conditionMet) {
-        const skippedStartedAt = new Date().toISOString();
-        result = {
-          ...buildStepResultBase(step.name, skippedStartedAt, 0, "skipped"),
-          assertions: [],
-          error: `skipped because condition not met: ${step.if}`,
-        };
-        // skipRest によるスキップと同様、リクエストを送っていないため request/response を持たない
-        historyEntry = {
-          ...buildHistoryBase(
-            runId,
-            flow.name,
-            step.name,
-            skippedStartedAt,
-            0,
-            "skipped",
-            options.iteration,
-          ),
-          assertions: [],
-        };
+        ({ result, historyEntry } = buildSkipped(
+          step,
+          `skipped because condition not met: ${step.if}`,
+        ));
       } else {
         const templateContext: TemplateContext = {
           captures,
@@ -863,8 +822,7 @@ export async function executeFlow(
       flow: flow.name,
       file: filePath,
       result,
-      ...(options.iteration !== undefined ? { iteration: options.iteration } : {}),
-      ...(options.unitIndex !== undefined ? { unitIndex: options.unitIndex } : {}),
+      ...unitContext,
     });
   }
 
@@ -929,7 +887,7 @@ function stringifyDataRow(row: DataRow): Record<string, string> {
   return result;
 }
 
-/** runLoadedFlows が --jobs 2 以上で展開する実行ユニット(行 × フローの組)1件分 */
+/** runLoadedFlows が展開する実行ユニット(行 × フローの組)1件分 */
 interface RunUnit {
   filePath: string;
   flow: Flow;
@@ -939,10 +897,9 @@ interface RunUnit {
 }
 
 /**
- * entries(× options.dataRows)を、runLoadedFlows の逐次実行(jobs=1)と同じ入力順
- * (行(外側) × フロー(内側)のイテレーション優先順)でユニット配列に展開する。
- * --jobs 2 以上の並列実行専用のヘルパー(逐次実行の既存コードパスはこの関数を経由しない。
- * 出力・履歴のバイト単位の後方互換を壊さないよう、既存分岐に手を入れないための意図的な重複)。
+ * entries(× options.dataRows)を、行(外側) × フロー(内側)のイテレーション優先順でユニット配列に展開する。
+ * dataRows が未指定・空配列の場合は entries をそのまま1ユニットずつにする(iteration/variables なし)。
+ * runLoadedFlows の逐次実行・並列実行はどちらもこの展開結果を入力順として使う。
  */
 function buildRunUnits(entries: LoadedFlowEntry[], options: RunFlowOptions): RunUnit[] {
   const units: RunUnit[] = [];
@@ -1011,12 +968,12 @@ async function runUnitsInParallel(
  * (行(外側) × フロー(内側): flowA(it1), flowB(it1), flowA(it2), ...)で反復する。
  * 各行の値は options.variables(--var 由来)を上書きする形で合成し、executeFlow に渡す
  * (テンプレート側の優先順位は row > --var > 環境ファイルの値になる)。dataRows が未指定・空配列の場合は
- * 従来どおり entries を1回ずつ実行するだけの経路のまま(挙動はバイト単位で変わらない)。
+ * entries を1回ずつ実行する。いずれの場合もユニット列(行 × フローの組)は buildRunUnits が展開する。
  *
- * options.jobs が 2 以上の場合、上記のユニット列(行 × フローの組)を jobs 個のワーカーで並列実行する
+ * options.jobs が 2 以上の場合、そのユニット列を jobs 個のワーカーで並列実行する
  * (1ユニット = 1回の executeFlow 呼び出し。フロー内のステップは常に逐次のまま変わらない)。
  * RunResult.flows は完了順ではなく常に入力順を保つ(runUnitsInParallel が index 書き込みで保証する)。
- * jobs 未指定・1 の場合は既存の逐次実行コードパスをそのまま通る(このブロックには一切触れない)。
+ * jobs 未指定・1 の場合は同じユニット列を unitIndex なしで逐次実行する。
  */
 export async function runLoadedFlows(
   entries: LoadedFlowEntry[],
@@ -1027,32 +984,22 @@ export async function runLoadedFlows(
   const runStartedAt = performance.now();
   const jobs = options.jobs ?? 1;
 
+  const units = buildRunUnits(entries, options);
   let flows: FlowResult[];
   if (jobs > 1) {
-    const units = buildRunUnits(entries, options);
     flows = await runUnitsInParallel(units, options, runId, jobs);
   } else {
+    // 逐次実行では unitIndex を設定しない(--data 実行時のみ variables/iteration を上書きする)
     flows = [];
-    if (options.dataRows && options.dataRows.length > 0) {
-      let iteration = 0;
-      for (const row of options.dataRows) {
-        iteration++;
-        const variables = { ...options.variables, ...stringifyDataRow(row) };
-        for (const { filePath, flow } of entries) {
-          const flowResult = await executeFlow(flow, filePath, {
-            ...options,
-            runId,
-            variables,
-            iteration,
-          });
-          flows.push(flowResult);
-        }
-      }
-    } else {
-      for (const { filePath, flow } of entries) {
-        const flowResult = await executeFlow(flow, filePath, { ...options, runId });
-        flows.push(flowResult);
-      }
+    for (const unit of units) {
+      const flowResult = await executeFlow(unit.flow, unit.filePath, {
+        ...options,
+        runId,
+        ...(unit.iteration !== undefined
+          ? { variables: unit.variables, iteration: unit.iteration }
+          : {}),
+      });
+      flows.push(flowResult);
     }
   }
 

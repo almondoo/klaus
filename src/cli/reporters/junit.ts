@@ -16,7 +16,7 @@ export interface FormatJUnitOptions {
  * XML に埋め込む文字列値すべてに同じ順序を強制する。
  */
 function escapeXmlText(value: string, secretVariants: readonly string[]): string {
-  const masked = secretVariants.length > 0 ? maskString(value, secretVariants) : value;
+  const masked = maskString(value, secretVariants);
   const sanitized = sanitizeForXml(masked);
   return sanitized.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
