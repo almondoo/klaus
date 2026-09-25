@@ -1,7 +1,11 @@
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { collectYamlFiles, discoverFlowCandidates } from "../src/core/discovery.js";
+import {
+  collectYamlFiles,
+  discoverFlowCandidates,
+  discoverFlowCandidatesWithRaw,
+} from "../src/core/discovery.js";
 
 const projectRoot = join(__dirname, "..");
 const tmpRoot = join(projectRoot, "tmp");
@@ -51,5 +55,41 @@ describe("discoverFlowCandidates", () => {
 
     const result = await discoverFlowCandidates(workDir);
     expect(result).toEqual([]);
+  });
+});
+
+describe("discoverFlowCandidatesWithRaw", () => {
+  let workDir: string;
+
+  beforeEach(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    workDir = await mkdtemp(join(tmpRoot, "klaus-discovery-raw-"));
+  });
+
+  afterEach(async () => {
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  it("候補ごとに filePath とパース済みドキュメント raw を返す", async () => {
+    await writeFile(join(workDir, "flow.yaml"), "name: f\nsteps:\n  - name: s\n", "utf-8");
+
+    const result = await discoverFlowCandidatesWithRaw(workDir);
+    expect(result).toEqual([
+      { filePath: join(workDir, "flow.yaml"), raw: { name: "f", steps: [{ name: "s" }] } },
+    ]);
+  });
+
+  it("discoverFlowCandidates と同じ並び順・除外規則になる", async () => {
+    await mkdir(join(workDir, "sub"));
+    await writeFile(join(workDir, "b.yaml"), "steps: []\n", "utf-8");
+    await writeFile(join(workDir, "a.yml"), "steps: []\n", "utf-8");
+    await writeFile(join(workDir, "sub", "c.yaml"), "steps: []\n", "utf-8");
+    await writeFile(join(workDir, "not-flow.yaml"), "baseUrl: https://example.com\n", "utf-8");
+    await writeFile(join(workDir, "broken.yaml"), "steps: [\n", "utf-8");
+
+    const withRaw = await discoverFlowCandidatesWithRaw(workDir);
+    const paths = await discoverFlowCandidates(workDir);
+    expect(withRaw.map((candidate) => candidate.filePath)).toEqual(paths);
+    expect(paths).toHaveLength(3);
   });
 });

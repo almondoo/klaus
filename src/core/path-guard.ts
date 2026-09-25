@@ -1,5 +1,5 @@
 import { realpathSync } from "node:fs";
-import { basename, dirname, join, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 
 /**
  * candidate が dir 自身、または dir 配下(サブパス)であるかどうかを判定する。
@@ -83,4 +83,9 @@ export function isRealPathWithinDir(dir: string, candidate: string): boolean {
   if (realCandidate === undefined) return false;
 
   return isPathWithinDir(realDir, realCandidate);
+}
+
+/** 絶対パスを cwd 相対の POSIX 形式(/ 区切り)の表示用パスに変換する */
+export function toDisplayPath(cwd: string, path: string): string {
+  return relative(cwd, path).split(sep).join("/");
 }

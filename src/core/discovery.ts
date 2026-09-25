@@ -56,17 +56,23 @@ export function isFlowCandidate(raw: unknown): boolean {
   return typeof raw === "object" && raw !== null && "steps" in raw;
 }
 
+/** フロー候補1件分: ファイルの絶対パスと、候補判定に使った YAML パース結果(二重パース回避のため呼び出し側へ渡す) */
+export interface FlowCandidateWithRaw {
+  filePath: string;
+  raw: unknown;
+}
+
 /**
- * dir 以下のフロー候補 YAML(最上位に `steps` キーを持つもの)の絶対パス一覧を返す。
+ * dir 以下のフロー候補 YAML(最上位に `steps` キーを持つもの)を、パース結果付きで返す。
  * YAML 構文自体が壊れていて最上位のキーを判定できないファイル・読み込めないファイルは候補外として除外する。
  * 各ファイルの読み込み・パースは Promise.all で並行に行う(Promise.all は入力順を保つため、
  * 返す配列は files の並び順のまま候補外を取り除いたものになる)。
  */
-export async function discoverFlowCandidates(dir: string): Promise<string[]> {
+export async function discoverFlowCandidatesWithRaw(dir: string): Promise<FlowCandidateWithRaw[]> {
   const files = await collectYamlFiles(dir);
 
   const candidates = await Promise.all(
-    files.map(async (filePath): Promise<string | undefined> => {
+    files.map(async (filePath): Promise<FlowCandidateWithRaw | undefined> => {
       let content: string;
       try {
         content = await readFile(filePath, "utf-8");
@@ -81,9 +87,20 @@ export async function discoverFlowCandidates(dir: string): Promise<string[]> {
         return undefined;
       }
 
-      return isFlowCandidate(raw) ? filePath : undefined;
+      return isFlowCandidate(raw) ? { filePath, raw } : undefined;
     }),
   );
 
-  return candidates.filter((filePath): filePath is string => filePath !== undefined);
+  return candidates.filter(
+    (candidate): candidate is FlowCandidateWithRaw => candidate !== undefined,
+  );
+}
+
+/**
+ * dir 以下のフロー候補 YAML(最上位に `steps` キーを持つもの)の絶対パス一覧を返す。
+ * 探索・除外規則と並び順は discoverFlowCandidatesWithRaw と同一。
+ */
+export async function discoverFlowCandidates(dir: string): Promise<string[]> {
+  const candidates = await discoverFlowCandidatesWithRaw(dir);
+  return candidates.map((candidate) => candidate.filePath);
 }

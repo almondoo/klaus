@@ -13,12 +13,13 @@ import {
   handlePutEnvironment,
   listEnvironments,
 } from "./routes/environments.js";
-import { listFlows, resolveWithinCwd, summarizeStep } from "./routes/flows.js";
+import { listFlows, summarizeStep } from "./routes/flows.js";
 import { getHistoryPage } from "./routes/history.js";
 import { handleSingleRequest } from "./routes/request.js";
 import { handleRunRequest } from "./routes/runs.js";
 import { createStaticHandler } from "./routes/static.js";
 import type { FlowDetail } from "./types.js";
+import { pathTraversalResponse, resolveWithinCwd } from "./validation.js";
 
 export interface CreateAppOptions {
   /** フロー探索・実行の基準ディレクトリ */
@@ -125,7 +126,7 @@ export function createApp(options: CreateAppOptions): Hono {
     if (!rawPath) return c.json({ error: "path is required" }, 400);
 
     const resolvedPath = resolveWithinCwd(cwd, rawPath);
-    if (!resolvedPath) return c.text("Forbidden: path traversal detected", 403);
+    if (!resolvedPath) return pathTraversalResponse(c);
 
     try {
       const flow = await loadFlow(resolvedPath);

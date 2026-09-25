@@ -15,8 +15,11 @@ import type {
   StepResultPayload,
   StepStartPayload,
 } from "../types.js";
-import { ENV_NAME_PATTERN } from "./environments.js";
-import { resolveWithinCwd } from "./flows.js";
+import {
+  invalidOptionalEnvResponse,
+  pathTraversalResponse,
+  resolveWithinCwd,
+} from "../validation.js";
 
 /**
  * stream.writeSSE を安全に呼び出すラッパーを作る。
@@ -66,13 +69,12 @@ export async function handleRunRequest(c: Context, cwd: string): Promise<Respons
 
   const resolvedPath = resolveWithinCwd(cwd, body.path);
   if (!resolvedPath) {
-    return c.text("Forbidden: path traversal detected", 403);
+    return pathTraversalResponse(c);
   }
   // env は environments/<name>.yaml に展開されるため、パス区切り・親参照を含む値を拒否する
   // (path と同じく untrusted 入力。cwd 外の *.yaml 読み出し防止)
-  if (body.env !== undefined && !ENV_NAME_PATTERN.test(body.env)) {
-    return c.text("Forbidden: invalid env name", 403);
-  }
+  const invalidEnv = invalidOptionalEnvResponse(c, body.env);
+  if (invalidEnv) return invalidEnv;
   const requestedPath = body.path;
   const envNameOverride = body.env;
 

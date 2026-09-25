@@ -13,10 +13,10 @@
 
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
-import { parse as parseYaml, YAMLParseError } from "yaml";
-import { ZodError, z } from "zod";
+import { parse as parseYaml } from "yaml";
+import { z } from "zod";
 import { ParseError } from "./errors.js";
-import { formatZodError } from "./loader.js";
+import { toParseError } from "./loader.js";
 
 /** データファイル1行分。値はスカラー(string | number | boolean | null)のみ */
 export type DataRow = Record<string, string | number | boolean | null>;
@@ -35,25 +35,15 @@ const SUPPORTED_EXTENSIONS = [".json", ".yaml", ".yml"];
 
 /**
  * パース・検証系の例外をファイルパス付きの ParseError に整形する。
- * loader.ts の toParseError と同じ方針(YAML 構文エラー・zod エラーをそれぞれ人間可読な
- * 1行にまとめる)を踏襲しつつ、JSON.parse が投げる SyntaxError も同様に扱う。
+ * loader.ts の toParseError に委譲しつつ、JSON.parse が投げる SyntaxError のみ独自に扱う。
  */
-function toParseError(error: unknown, filePath: string): ParseError {
-  if (error instanceof YAMLParseError) {
-    const pos = error.linePos?.[0];
-    const location = pos ? ` (line ${pos.line}, column ${pos.col})` : "";
-    return new ParseError(`YAML syntax error${location}: ${error.message}`, filePath);
-  }
-  if (error instanceof ZodError) {
-    return new ParseError(`schema validation failed: ${formatZodError(error)}`, filePath);
-  }
+function toDataParseError(error: unknown, filePath: string): ParseError {
+  // YAMLParseError・ZodError は Error を直接継承し SyntaxError ではないため、
+  // SyntaxError(JSON.parse 由来)を先に判定しても toParseError 側の分類とは衝突しない
   if (error instanceof SyntaxError) {
     return new ParseError(`JSON syntax error: ${error.message}`, filePath);
   }
-  if (error instanceof Error) {
-    return new ParseError(error.message, filePath);
-  }
-  return new ParseError(String(error), filePath);
+  return toParseError(error, filePath);
 }
 
 /**
@@ -84,6 +74,6 @@ export async function loadDataFile(filePath: string): Promise<DataRow[]> {
     const raw: unknown = ext === ".json" ? JSON.parse(content) : parseYaml(content);
     return dataFileSchema.parse(raw);
   } catch (error) {
-    throw toParseError(error, filePath);
+    throw toDataParseError(error, filePath);
   }
 }

@@ -2,8 +2,12 @@
  * `klaus validate` サブコマンドの実装。
  * 実行・ネットワークアクセスは一切せず、フロー定義 YAML のスキーマ検証のみを行う。
  */
-import { discoverFlowCandidates, type FlowIssue, validateFlowFile } from "../core/index.js";
-import { toDisplayPath } from "./fs-utils.js";
+import {
+  discoverFlowCandidates,
+  type FlowIssue,
+  toDisplayPath,
+  validateFlowFile,
+} from "../core/index.js";
 import { isJsonOutputMode } from "./reporters/text.js";
 
 /** validate コマンドのオプション(commander から渡される値を正規化した形) */

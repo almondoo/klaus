@@ -27,6 +27,14 @@ export function formatZodError(error: ZodError): string {
     .join("; ");
 }
 
+/**
+ * ZodError をスキーマ検証失敗メッセージ("schema validation failed: ...")に整形する。
+ * loader・data・cli/config・server(フロー一覧)で同じ文言を使うため、生成箇所をここに一本化する。
+ */
+export function formatSchemaValidationMessage(error: ZodError): string {
+  return `schema validation failed: ${formatZodError(error)}`;
+}
+
 /** YAMLParseError を位置情報付きの人間可読なメッセージに整形する(toParseError・validateFlowYaml で共用) */
 function formatYamlSyntaxError(error: YAMLParseError): string {
   const pos = error.linePos?.[0];
@@ -34,13 +42,16 @@ function formatYamlSyntaxError(error: YAMLParseError): string {
   return `YAML syntax error${location}: ${error.message}`;
 }
 
-/** YAML の構文エラーをファイル名・位置付きのメッセージに整形して ParseError を投げる */
-function toParseError(error: unknown, filePath?: string): ParseError {
+/**
+ * YAML の構文エラーをファイル名・位置付きのメッセージに整形して ParseError を投げる。
+ * data.ts・cli/config.ts でも同じ整形を使うため公開する。
+ */
+export function toParseError(error: unknown, filePath?: string): ParseError {
   if (error instanceof YAMLParseError) {
     return new ParseError(formatYamlSyntaxError(error), filePath);
   }
   if (error instanceof ZodError) {
-    return new ParseError(`schema validation failed: ${formatZodError(error)}`, filePath);
+    return new ParseError(formatSchemaValidationMessage(error), filePath);
   }
   if (error instanceof Error) {
     return new ParseError(error.message, filePath);
