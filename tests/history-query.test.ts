@@ -220,4 +220,127 @@ describe("getHistoryPage / readAllHistoryEntries", () => {
       },
     );
   });
+
+  describe("新しいファイルからの早期打ち切り", () => {
+    /** 早期打ち切り前の実装(全件読み込み → 安定ソート → フィルタ → slice)と同じ手順で期待値を作る */
+    async function referencePage(
+      cwd: string,
+      query: { flow?: string; limit?: number; before?: string; failed?: boolean },
+    ) {
+      const limit = query.limit && query.limit > 0 ? query.limit : 50;
+      let all = await readAllHistoryEntries(cwd);
+      if (query.flow) all = all.filter((e) => e.flow === query.flow);
+      if (query.before) {
+        const before = query.before;
+        all = all.filter((e) => e.startedAt < before);
+      }
+      if (query.failed) all = all.filter((e) => e.status === "failed");
+      const page = all.slice(0, limit);
+      return {
+        entries: page,
+        nextBefore: all.length > limit ? page[page.length - 1]?.startedAt : undefined,
+      };
+    }
+
+    async function writeThreeDays(cwd: string): Promise<void> {
+      await writeHistoryFile(cwd, "2026-08-06.jsonl", [
+        entry({ step: "d6-a", startedAt: "2026-08-06T10:00:00.000Z" }),
+        entry({ step: "d6-b", startedAt: "2026-08-06T11:00:00.000Z", status: "failed" }),
+      ]);
+      await writeHistoryFile(cwd, "2026-08-07.jsonl", [
+        // 日付をまたいだ実行: 前日の startedAt のエントリが翌日のファイルに書かれている
+        entry({ step: "d7-prev", startedAt: "2026-08-06T23:59:59.000Z" }),
+        entry({ step: "d7-a", startedAt: "2026-08-07T01:00:00.000Z", status: "failed" }),
+        entry({ step: "d7-tie1", startedAt: "2026-08-07T02:00:00.000Z" }),
+        entry({ step: "d7-tie2", startedAt: "2026-08-07T02:00:00.000Z" }),
+      ]);
+      await writeHistoryFile(cwd, "2026-08-08.jsonl", [
+        entry({ step: "d8-prev", startedAt: "2026-08-07T02:00:00.000Z" }),
+        entry({ step: "d8-a", startedAt: "2026-08-08T00:00:00.000Z" }),
+        entry({ step: "d8-b", startedAt: "2026-08-08T05:00:00.000Z", status: "failed" }),
+      ]);
+    }
+
+    it("limit・before・failed の各組み合わせで全件読み込みと同じページを返す", async () => {
+      await writeThreeDays(dir);
+      const queries = [
+        { limit: 1 },
+        { limit: 2 },
+        { limit: 3 },
+        { limit: 4 },
+        { limit: 5 },
+        { limit: 20 },
+        { limit: 2, before: "2026-08-08T00:00:00.000Z" },
+        { limit: 2, before: "2026-08-07T02:00:00.000Z" },
+        { limit: 1, before: "2026-08-07T00:00:00.000Z" },
+        { limit: 1, failed: true },
+        { limit: 2, failed: true },
+      ];
+      for (const query of queries) {
+        expect(await getHistoryPage(dir, query), JSON.stringify(query)).toEqual(
+          await referencePage(dir, query),
+        );
+      }
+    });
+
+    it("前日の startedAt を持つエントリが新しい日付のファイルにあっても、同時刻の並びを含め全件読み込みと一致する", async () => {
+      await writeThreeDays(dir);
+
+      const page = await getHistoryPage(dir, { limit: 4 });
+
+      // d8-prev(08-08 ファイル)は d7-tie1/d7-tie2(08-07 ファイル)と同時刻で、ファイル名降順の連結順により先に並ぶ
+      expect(page.entries.map((e) => e.step)).toEqual(["d8-b", "d8-a", "d8-prev", "d7-tie2"]);
+      expect(page.nextBefore).toBe("2026-08-07T02:00:00.000Z");
+    });
+
+    it("先頭 limit+1 件が確定した時点で、それより古い日付のファイルを読まない", async () => {
+      await writeThreeDays(dir);
+      // 読み込むと EISDIR で失敗する古い日付の「ファイル」を置き、読まれていないことを確認する
+      await mkdir(join(dir, ".klaus", "history", "2026-08-01.jsonl"));
+
+      const page = await getHistoryPage(dir, { limit: 1 });
+
+      expect(page.entries.map((e) => e.step)).toEqual(["d8-b"]);
+      expect(page.nextBefore).toBe("2026-08-08T05:00:00.000Z");
+    });
+
+    it("次のファイルに上位へ入り得るエントリがある間は打ち切らない", async () => {
+      await writeThreeDays(dir);
+      // limit+1 件目(d8-prev: 08-07T02:00)が 08-07 ファイルの上限(08-08T00:00)未満のため 08-07 も読む必要がある
+      const page = await getHistoryPage(dir, { limit: 2 });
+
+      expect(page.entries.map((e) => e.step)).toEqual(["d8-b", "d8-a"]);
+      expect(page.nextBefore).toBe("2026-08-08T00:00:00.000Z");
+      expect(page).toEqual(await referencePage(dir, { limit: 2 }));
+    });
+
+    it("時計の巻き戻りで前日ファイルに翌日の startedAt があっても、nextBefore ページングが全件読み込みと一致する", async () => {
+      // 2026-01-01 ファイルに翌日境界より後の startedAt(24 時間未満の巻き戻りを模擬)を置く
+      await writeHistoryFile(dir, "2026-01-01.jsonl", [
+        entry({ step: "d1-a", startedAt: "2026-01-01T10:00:00.000Z" }),
+        entry({ step: "d1-skew", startedAt: "2026-01-02T00:00:05.500Z" }),
+      ]);
+      await writeHistoryFile(dir, "2026-01-02.jsonl", [
+        entry({ step: "d2-a", startedAt: "2026-01-02T00:00:01.000Z" }),
+        entry({ step: "d2-a2", startedAt: "2026-01-02T00:00:02.000Z" }),
+        entry({ step: "d2-a3", startedAt: "2026-01-02T00:00:03.000Z" }),
+        entry({ step: "d2-b", startedAt: "2026-01-02T00:00:10.000Z" }),
+        entry({ step: "d2-c", startedAt: "2026-01-02T05:00:00.000Z" }),
+        entry({ step: "d2-d", startedAt: "2026-01-02T06:00:00.000Z" }),
+      ]);
+
+      // マージンが翌日境界(+1 日)だけだと、2 ページ目で 2026-01-01 ファイルを読まずに打ち切り d1-skew を取りこぼす
+      const steps: string[] = [];
+      let before: string | undefined;
+      for (let guard = 0; guard < 10; guard++) {
+        const query = before === undefined ? { limit: 2 } : { limit: 2, before };
+        const page = await getHistoryPage(dir, query);
+        expect(page, JSON.stringify(query)).toEqual(await referencePage(dir, query));
+        steps.push(...page.entries.map((e) => e.step));
+        if (page.nextBefore === undefined) break;
+        before = page.nextBefore;
+      }
+      expect(steps).toEqual(["d2-d", "d2-c", "d2-b", "d1-skew", "d2-a3", "d2-a2", "d2-a", "d1-a"]);
+    });
+  });
 });

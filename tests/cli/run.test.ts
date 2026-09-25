@@ -807,10 +807,25 @@ describe("runCommand", () => {
       const exitCode = await runCommand([flowPath], baseOptions({ history: true }));
 
       expect(exitCode).toBe(0);
-      const historyContent = await readFile(historyFilePath(workDir), "utf-8");
-      expect(historyContent).toContain('"flow":"success flow"');
-      const report = readJson() as { flows: Array<{ steps: Array<{ historyRef?: unknown }> }> };
-      expect(report.flows[0]?.steps[0]?.historyRef).toBeDefined();
+      const report = readJson() as {
+        flows: Array<{
+          steps: Array<{ historyRef?: { date: string; runId: string; step: string } }>;
+        }>;
+      };
+      const historyRef = report.flows[0]?.steps[0]?.historyRef;
+      expect(historyRef).toBeDefined();
+      // historyRef.date が実際にステップの書き込まれたファイルを指すことを固定する(UTC 日付跨ぎでも安定)
+      const historyContent = await readFile(
+        historyFilePath(workDir, new Date(`${historyRef?.date}T00:00:00.000Z`)),
+        "utf-8",
+      );
+      const entries = historyContent
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line) as { flow: string; step: string; runId: string });
+      expect(entries).toContainEqual(
+        expect.objectContaining({ flow: "success flow", step: "ok", runId: historyRef?.runId }),
+      );
     } finally {
       process.cwd = cwdSpy;
     }

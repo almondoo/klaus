@@ -1,6 +1,6 @@
-import { appendFile, chmod, mkdir } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { mapDeepStrings } from "./deep-map.js";
+import { appendPrivateLine } from "./private-file.js";
 import type { AssertionResult, RequestSnapshot, ResponseSnapshot, SseEvent } from "./types.js";
 
 /**
@@ -200,38 +200,55 @@ function toDateStr(date: Date): string {
 
 /**
  * ISO タイムスタンプ(HistoryEntry.startedAt 等)を履歴ファイル名の日付部分(YYYY-MM-DD)に変換する。
- * historyFilePath 内部の日付導出ロジックと同じものを、書き込み時点の Date を持たない
+ * historyFilePath 内部の日付導出ロジックと同じものを、Date を持たず startedAt 文字列だけを持つ
  * 呼び出し元(CLI JSON レポーター等が historyRef を組み立てる場合)からも使えるように公開する。
  */
 export function historyDateFromTimestamp(isoTimestamp: string): string {
   return toDateStr(new Date(isoTimestamp));
 }
 
-/** cwd 基準で今日の履歴ファイルパスを返す(.klaus/history/<YYYY-MM-DD>.jsonl) */
+/**
+ * cwd 基準で指定日付(UTC)の履歴ファイルパスを返す(.klaus/history/<YYYY-MM-DD>.jsonl)。
+ * 書き込み時は通常エントリの startedAt から求めた Date を渡す(省略時は現在時刻 = 今日のファイル)。
+ */
 export function historyFilePath(cwd: string, date: Date = new Date()): string {
   return join(cwd, ".klaus", "history", `${toDateStr(date)}.jsonl`);
 }
 
+const HISTORY_FILE_NAME_PATTERN = /^(\d{4}-\d{2}-\d{2})\.jsonl$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * 履歴ファイル名(YYYY-MM-DD.jsonl)から「そのファイルに含まれ得る startedAt の上限(排他、ISO 文字列)」を返す。
+ * 不変条件: ファイル名はエントリ自身の startedAt の UTC 日付(appendHistory → historyFilePath / toDateStr)であり、
+ * startedAt が ISO-8601 UTC 文字列(runner が toISOString() で生成する形式)であれば、現行の書き込みでは
+ * ファイル D の全エントリは D 00:00:00.000Z <= startedAt < D の翌日 00:00:00.000Z を満たす。
+ * 公開 API appendHistory に解釈不能な startedAt(今日のファイルへフォールバック)や非 ISO 文字列が渡された
+ * エントリはこの不変条件の対象外であり、そのようなデータに対しては getHistoryPage の打ち切りが全件読みと
+ * 一致することは保証されない。
+ * ただし旧仕様(追記時点の UTC 日付で命名)で書かれた既存ファイルは、24 時間未満の時計の巻き戻りにより
+ * startedAt が D の翌日以降のエントリを含み得るため、それらを取りこぼさないよう 1 日分の安全マージンを
+ * 意図的に残し、D + 2 日 00:00:00.000Z を上限とする(ページあたり最大 1 ファイル余分に読むだけで済む)。
+ * 契約どおりの名前・実在する日付でない場合は上限を決められないため undefined を返す。
+ */
+export function historyFileStartedAtUpperBound(fileName: string): string | undefined {
+  const match = HISTORY_FILE_NAME_PATTERN.exec(fileName);
+  if (!match?.[1]) return undefined;
+  const dayStart = Date.parse(`${match[1]}T00:00:00.000Z`);
+  if (Number.isNaN(dayStart)) return undefined;
+  // 2026-02-30 のような存在しない日付の繰り上がりを検出するため往復一致を確認する
+  if (new Date(dayStart).toISOString().slice(0, 10) !== match[1]) return undefined;
+  return new Date(dayStart + 2 * DAY_MS).toISOString();
+}
+
 /**
  * 履歴を1行(JSON Lines)追記する。ディレクトリが無ければ作成する。
- * 履歴には平文の認証情報が残り得るため、ディレクトリ・ファイルを所有者のみ読み書き可能な権限
- * (0o700 / 0o600)で作成する。既存の(緩い権限で作られた)ディレクトリ・ファイルについては、
- * 書き込み前に締め直す(書き込み後に締め直すと、緩い権限のまま新しい行が追記される瞬間が生じ、
- * 平文の認証情報が一時的に世界読み取り可能になり得るため)。ファイルが未作成の場合の
- * chmod(ENOENT)は無視し、appendFile の mode オプションによる新規作成時の 0o600 に委ねる
- * (POSIX のみ。Windows では no-op)。
+ * 履歴には平文の認証情報が残り得るため、所有者限定権限での追記を appendPrivateLine に委ねる。
  */
 export async function appendHistory(cwd: string, entry: HistoryEntry): Promise<void> {
-  const filePath = historyFilePath(cwd);
-  const dir = dirname(filePath);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  if (process.platform !== "win32") {
-    await chmod(dir, 0o700);
-    try {
-      await chmod(filePath, 0o600);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-  await appendFile(filePath, `${JSON.stringify(entry)}\n`, { encoding: "utf-8", mode: 0o600 });
+  // ファイル名はエントリ自身の startedAt の UTC 日付で決める(追記時点の日付ではない)。
+  // startedAt が不正で日付に変換できない場合は、例外にせず追記時点の日付にフォールバックする。
+  const startedAt = new Date(entry.startedAt);
+  const filePath = historyFilePath(cwd, Number.isNaN(startedAt.getTime()) ? new Date() : startedAt);
+  await appendPrivateLine(filePath, JSON.stringify(entry));
 }
