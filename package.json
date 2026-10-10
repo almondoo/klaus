@@ -72,22 +72,22 @@
     "zod": "^4"
   },
   "devDependencies": {
-    "@apidevtools/swagger-parser": "^12.1.0",
+    "@apidevtools/swagger-parser": "^13.1.0",
     "@biomejs/biome": "^2",
     "@types/node": "^26.2.0",
     "@types/ws": "^8.18.1",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/coverage-v8": "^5.0.2",
     "ajv": "^8.20.0",
     "commander": "^15",
     "eventsource-parser": "^4.0.0",
     "hono": "^4.13.1",
-    "jsonpath-plus": "^10.4.0",
+    "jsonpath-plus": "^11.1.0",
     "tsup": "^8.5",
     "typescript": "^5.9",
     "undici": "^8",
-    "vitepress": "2.0.0-alpha.19",
+    "vitepress": "2.0.0-alpha.20",
     "vitepress-plugin-llms": "^1.13.5",
-    "vitest": "^4",
+    "vitest": "^5",
     "ws": "^8.21.3",
     "yaml": "^2.9.0"
   }
