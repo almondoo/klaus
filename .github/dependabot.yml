@@ -43,3 +43,22 @@ updates:
       actions:
         patterns:
           - "*"
+
+  # verify 用 Docker のベースイメージ(verify/docker/Dockerfile と Dockerfile.mock-api の
+  # node:<tag>@sha256:<digest> 行)をタグと digest の両方で更新する。
+  # 注意: Dependabot が更新するのは FROM 行のみ。pnpm tarball の URL / ADD --checksum と
+  # CI(.github/workflows)の pnpm の version: は更新されないため、手動で揃えて上げること。
+  # FROM scratch と FROM pnpm-${TARGETARCH}(ステージ参照)はタグを持たないため更新対象外。
+  # cooldown は docker では default-days のみ対応(semver-*-days は指定しても効かない)。
+  # node のメジャー更新(26 -> 27 等)も PR として届くので、LTS かどうかは PR で確認すること。
+  - package-ecosystem: "docker"
+    directory: "/verify/docker"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    # 2 つの Dockerfile の node 更新を 1 PR にまとめる(版ずれを防ぐ)
+    groups:
+      verify-docker:
+        patterns:
+          - "*"
