@@ -3,6 +3,25 @@
 Records what changed in each release, plus **the decisions behind it and the pitfalls I hit along the way**.
 The current spec lives in the respective references ([CLI](../../guide/cli.md) / [Flow definition](../../guide/flow-definition.md) / [Architecture](architecture.md)) — this is the place I keep "why it ended up this way."
 
+Changes in 0.2.0 through 0.14.3 are not recorded on this page (see the git history and GitHub Releases).
+
+## Next release (unreleased)
+
+### Upgraded the JSONPath engine (jsonpath-plus) to v11
+
+jsonpath-plus was upgraded from v10.4.0 to v11.2.2. Because it includes upstream bug fixes, **results change for some uncommon JSONPath expressions used in captures and assertions**. A differential test of 10.4.0 against 11.2.2 showed the following changes.
+
+| Expression | Before | After |
+|---|---|---|
+| `$.data['a,b']` (a key containing a comma) | the value itself | `[value]` (an array) |
+| `$.data['a','b']` | `undefined` | an array of both values |
+| `$.data.list[0:0]` | the whole array | `undefined` |
+| `$.list[?(@.id ?? 0)]` (`??` inside a filter) | threw | works |
+
+Results for common forms such as `$.a.b`, `$['k']`, filters, `..`, `*`, and `.length` are unchanged. Review the expected values in your captures and assertions only if you use comma-containing keys or the `[0:0]` slice.
+
+The supported runtime is Node.js `>=22.19.0` (`engines.node`). CI verifies both the floor, 22.19.0, and the latest, 26.
+
 ## 0.1.1
 
 No functional changes. First release that switches the npm publish path from manual publishing to GitHub Actions' Trusted Publishing (OIDC).
