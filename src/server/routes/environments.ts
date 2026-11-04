@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Context } from "hono";
-import { toTemplateVariables } from "../../core/env.js";
+import { RESERVED_ENV_KEY, toTemplateVariables } from "../../core/env.js";
 import {
   captureValues,
   EnvironmentNotFoundError,
@@ -24,18 +24,9 @@ import type {
   EnvironmentListEntry,
   EnvironmentUpdateRequestBody,
 } from "../types.js";
+import { invalidEnvironmentNameResponse, reservedEnvKeyResponse } from "../validation.js";
 
 const YAML_EXT = ".yaml";
-
-// env 名は environments/<name>.yaml に展開されるため、パス区切り・親参照を含む値は拒否する
-// (URL パラメータ由来の untrusted 入力。runs.ts / request.ts の env 検証と同一パターンのため export して共有する)
-export const ENV_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
-
-/** env 名が ENV_NAME_PATTERN に一致しない場合、拒否レスポンス(403)を返す(一致すれば null) */
-function invalidEnvNameResponse(c: Context, name: string): Response | null {
-  if (ENV_NAME_PATTERN.test(name)) return null;
-  return c.text("Forbidden: invalid environment name", 403);
-}
 
 /**
  * environments/<name>.yaml のパスを解決する。ファイルが存在しない場合は 404 レスポンスを返す
@@ -71,7 +62,7 @@ export async function handleGetEnvironmentDetail(
   cwd: string,
   name: string,
 ): Promise<Response> {
-  const invalidName = invalidEnvNameResponse(c, name);
+  const invalidName = invalidEnvironmentNameResponse(c, name);
   if (invalidName) return invalidName;
 
   const path = resolveExistingEnvironmentPath(c, cwd, name);
@@ -92,7 +83,7 @@ export async function handlePutEnvironment(
   cwd: string,
   name: string,
 ): Promise<Response> {
-  const invalidName = invalidEnvNameResponse(c, name);
+  const invalidName = invalidEnvironmentNameResponse(c, name);
   if (invalidName) return invalidName;
 
   const body = await parseJsonBody<EnvironmentUpdateRequestBody>(c);
@@ -115,8 +106,8 @@ export async function handlePutEnvironment(
   // $protected は予約キー。GET では values から除外して返しているため、クライアントが
   // それを含めて送ってくるのは異常系(壊れたクライアント/意図的な改ざん)のみ。
   // API 経由での編集は許可せず、ファイル直接編集のみを正としてここで拒否する。
-  if (Object.hasOwn(body.values, "$protected")) {
-    return c.json({ error: "$protected is a reserved key and cannot be edited via this API" }, 400);
+  if (Object.hasOwn(body.values, RESERVED_ENV_KEY)) {
+    return reservedEnvKeyResponse(c);
   }
 
   try {
@@ -155,7 +146,7 @@ export async function handlePostEnvironmentCapture(
   cwd: string,
   name: string,
 ): Promise<Response> {
-  const invalidName = invalidEnvNameResponse(c, name);
+  const invalidName = invalidEnvironmentNameResponse(c, name);
   if (invalidName) return invalidName;
 
   const body = await parseJsonBody<EnvironmentCaptureRequestBody>(c);
@@ -170,8 +161,8 @@ export async function handlePostEnvironmentCapture(
   }
   // $protected は予約キー。PUT と同様に API 経由での上書きを許可しない
   // (boolean を期待するスキーマを capture の文字列化した値で破壊してしまうため)。
-  if (body.key === "$protected") {
-    return c.json({ error: "$protected is a reserved key and cannot be edited via this API" }, 400);
+  if (body.key === RESERVED_ENV_KEY) {
+    return reservedEnvKeyResponse(c);
   }
 
   let captured: Record<string, unknown>;

@@ -6,7 +6,7 @@ To inspect it directly from the CLI without the browser UI, use `klaus history` 
 
 ## File Conventions
 
-- Path: `.klaus/history/<YYYY-MM-DD>.jsonl` (**relative to the cwd**; the date is the local date)
+- Path: `.klaus/history/<YYYY-MM-DD>.jsonl` (**relative to the cwd**; the date is the UTC date of each entry's `startedAt`, i.e. the step's start time)
 - The directory is created automatically
 - Writing can be disabled with `klaus run --no-history`
 - **A write failure does not affect the execution result** (only a warning is printed to stderr; step pass/fail is unaffected)

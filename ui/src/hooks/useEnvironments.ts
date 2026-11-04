@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import type { EnvironmentListEntry } from "../api/client";
 import { environmentsOptions } from "../api/queries";
+import { queryErrorMessage } from "../utils/error";
 
 export interface UseEnvironmentsResult {
   environments: EnvironmentListEntry[];
@@ -14,6 +15,6 @@ export function useEnvironments(): UseEnvironmentsResult {
   return {
     environments: data ?? [],
     loading: isPending,
-    error: error instanceof Error ? error.message : error ? String(error) : null,
+    error: queryErrorMessage(error),
   };
 }

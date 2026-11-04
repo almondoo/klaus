@@ -1,9 +1,10 @@
-import { appendFile, chmod, mkdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { RuntimeError } from "./errors.js";
 import { expandSecretVariants, maskDeep } from "./history.js";
 import type { HttpResponse } from "./http.js";
 import { parseJsonBody } from "./http.js";
+import { appendPrivateLine } from "./private-file.js";
 
 /**
  * カセット(record/replay モードで使う記録済みリクエスト/レスポンス)1エントリのスキーマ。
@@ -58,25 +59,10 @@ export function buildCassetteEntry(
 
 /**
  * カセットファイルへ1エントリを追記する(record モード)。dir が無ければ作成する。
- * カセットには平文の認証情報が残り得るため、ディレクトリ・ファイルを所有者のみ読み書き可能な権限
- * (0o700 / 0o600)で作成する。既存の(緩い権限で作られた)ディレクトリ・ファイルについては、
- * 書き込み前に締め直す(書き込み後に締め直すと、緩い権限のまま新しい行が追記される瞬間が生じ、
- * 平文の認証情報が一時的に世界読み取り可能になり得るため)。ファイルが未作成の場合の
- * chmod(ENOENT)は無視し、appendFile の mode オプションによる新規作成時の 0o600 に委ねる
- * (POSIX のみ。Windows では no-op)。
+ * カセットには平文の認証情報が残り得るため、所有者限定権限での追記を appendPrivateLine に委ねる。
  */
 export async function appendCassetteEntry(dir: string, entry: CassetteEntry): Promise<void> {
-  const filePath = cassetteFilePath(dir);
-  await mkdir(dir, { recursive: true, mode: 0o700 });
-  if (process.platform !== "win32") {
-    await chmod(dir, 0o700);
-    try {
-      await chmod(filePath, 0o600);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    }
-  }
-  await appendFile(filePath, `${JSON.stringify(entry)}\n`, { encoding: "utf-8", mode: 0o600 });
+  await appendPrivateLine(cassetteFilePath(dir), JSON.stringify(entry));
 }
 
 /**

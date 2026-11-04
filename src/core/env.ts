@@ -7,11 +7,14 @@ import { loadEnvironmentFile } from "./loader.js";
 import { isPathWithinDir, isRealPathWithinDir } from "./path-guard.js";
 import type { Environment } from "./schema.js";
 
+/** 環境ファイルの予約キー(保護フラグ)。API 経由の編集対象・テンプレート変数から除外する */
+export const RESERVED_ENV_KEY = "$protected";
+
 /**
  * 環境が保護対象($protected: true)かどうかを判定する。
  */
 export function isProtectedEnvironment(environment: Environment): boolean {
-  return environment.$protected === true;
+  return environment[RESERVED_ENV_KEY] === true;
 }
 
 /**
@@ -20,7 +23,7 @@ export function isProtectedEnvironment(environment: Environment): boolean {
  * runner.ts で TemplateContext を組み立てる直前に必ずこれを通す。
  */
 export function toTemplateVariables(environment: Environment): Record<string, string> {
-  const { $protected: _protected, ...variables } = environment;
+  const { [RESERVED_ENV_KEY]: _protected, ...variables } = environment;
   return variables;
 }
 
@@ -208,7 +211,7 @@ export async function saveEnvironment(
 
   const existing = (doc.toJSON() as Record<string, unknown> | null) ?? {};
   for (const key of Object.keys(existing)) {
-    if (!(key in values) && key !== "$protected") {
+    if (!(key in values) && key !== RESERVED_ENV_KEY) {
       doc.delete(key);
     }
   }

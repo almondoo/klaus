@@ -8,14 +8,19 @@ vi.mock("@/api/client", () => ({
   getFlows: vi.fn(),
 }));
 
+// Wrapper はモジュールレベルで定義し、createWrapper() が呼ばれるたびに client を差し替える(テストごとに独立)
+let currentClient: QueryClient;
+
+function Wrapper({ children }: { children: ReactNode }) {
+  return <QueryClientProvider client={currentClient}>{children}</QueryClientProvider>;
+}
+
 /** テストごとに独立した QueryClient を生成する(キャッシュ汚染防止。retry は無効化して失敗を即座に反映させる) */
 function createWrapper() {
-  const queryClient = new QueryClient({
+  currentClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
-  };
+  return Wrapper;
 }
 
 describe("useFlows", () => {

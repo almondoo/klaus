@@ -11,8 +11,8 @@ import { dirname, isAbsolute, join } from "node:path";
 // 生成ロジック側では $ref を一切気にしなくてよい。
 import SwaggerParser from "@apidevtools/swagger-parser";
 import { stringify as stringifyYaml } from "yaml";
-import { type FlowIssue, validateFlowYaml } from "../core/index.js";
-import { fileExists, toDisplayPath } from "./fs-utils.js";
+import { type FlowIssue, toDisplayPath, validateFlowYaml } from "../core/index.js";
+import { fileExists } from "./fs-utils.js";
 import { isJsonOutputMode } from "./reporters/text.js";
 
 /** generate コマンドのオプション(commander から渡される値を正規化した形) */

@@ -140,11 +140,6 @@ export interface RunResultPayload {
   flow: FlowResult;
 }
 
-export type RunSseEvent =
-  | { event: "step-start"; data: StepStartPayload }
-  | { event: "step-result"; data: StepResultPayload }
-  | { event: "run-result"; data: RunResultPayload };
-
 /**
  * POST /api/request のリクエストボディ。単発リクエスト実行(フロー定義を経由しない即時実行)用。
  * server/types.ts の同名型と手動同期する契約(このファイル冒頭のコメント参照)。

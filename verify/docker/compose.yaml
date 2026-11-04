@@ -4,7 +4,7 @@
 #   1本でまかなう。HOST=0.0.0.0 を渡して起動し、他コンテナから `mock-api:3000` で到達できる
 #   ようにする(examples/mock-server.mjs 自体は examples/README.md の用途を優先し、
 #   HOST/PORT を環境変数で上書きできる最小限の変更のみを加えている。既定値は変更前と同一)。
-# - klaus: .pack/klaus.tgz(pack 済み tarball)を npm install -g したクリーンな Node 22 の
+# - klaus: .pack/klaus.tgz(pack 済み tarball)を pnpm add -g したクリーンな Node 26 の
 #   常駐コンテナ。検証(run.sh)も手動操作(make exec)も、このコンテナへの
 #   docker compose exec で klaus コマンドを実行する。
 #
@@ -27,14 +27,8 @@ services:
   mock-api:
     build:
       context: ../../examples
-      dockerfile_inline: |
-        FROM node:22.19-slim
-        WORKDIR /app
-        COPY mock-server.mjs .
-        RUN npm install "ws@^8.21.3"
-        EXPOSE 3000
-        USER node
-        CMD ["node", "mock-server.mjs"]
+      # コンテキスト(examples/)の外にある Dockerfile を、コンテキスト基準の相対パスで指す
+      dockerfile: ../verify/docker/Dockerfile.mock-api
     environment:
       # examples/mock-server.mjs の HOST 環境変数上書きを使い、compose ネットワーク越しに
       # `mock-api:3000` として他コンテナ(klaus)から到達できるようにする。

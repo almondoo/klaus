@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { WebSocketServer } from "ws";
 import type { HistoryEntry } from "../src/core/history.js";
 import { historyFilePath } from "../src/core/history.js";
+import { readAllHistoryEntries } from "../src/core/history-query.js";
 import type { LoadedFlowEntry, StepCompleteContext, StepStartContext } from "../src/core/runner.js";
 import { executeFlow, runFlows, runLoadedFlows } from "../src/core/runner.js";
 import { flowSchema } from "../src/core/schema.js";
@@ -197,16 +198,16 @@ describe("executeFlow", () => {
 
     await executeFlow(flow, "failing-flow.yaml", { cwd });
 
-    const filePath = historyFilePath(cwd);
-    const content = await readFile(filePath, "utf-8");
-    const lines = content.trim().split("\n");
-    expect(lines).toHaveLength(2);
+    // UTC 日付をまたいでも全件を拾えるよう全履歴ファイルを読み、
+    // startedAt 降順で返るため reverse して実行順(昇順)に戻す
+    const entries = (await readAllHistoryEntries(cwd)).reverse();
+    expect(entries).toHaveLength(2);
 
-    const failedEntry = JSON.parse(lines[0] as string);
+    const failedEntry = entries[0] as HistoryEntry;
     expect(failedEntry.step).toBe("login-wrong-password");
     expect(failedEntry.status).toBe("failed");
 
-    const skippedEntry = JSON.parse(lines[1] as string);
+    const skippedEntry = entries[1] as HistoryEntry;
     expect(skippedEntry.step).toBe("get-me");
     expect(skippedEntry.status).toBe("skipped");
     expect(skippedEntry.request).toBeUndefined();

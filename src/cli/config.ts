@@ -10,14 +10,13 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { parse as parseYaml, YAMLParseError } from "yaml";
-import { ZodError } from "zod";
+import { parse as parseYaml } from "yaml";
 import {
   assertTrustedAncestorSource,
   type CliConfig,
   configSchema,
-  formatZodError,
   ParseError,
+  toParseError,
 } from "../core/index.js";
 import type { RunCommandOptions } from "./run.js";
 import type { UiCommandOptions } from "./ui.js";
@@ -59,22 +58,6 @@ function resolveConfigPath(cwd: string): string | undefined {
   return undefined;
 }
 
-/** YAML 構文エラー / zod スキーマ違反を、ファイルパス付きの ParseError に整形する(loader.ts の toParseError と同じ方針) */
-function toConfigParseError(error: unknown, path: string): ParseError {
-  if (error instanceof YAMLParseError) {
-    const pos = error.linePos?.[0];
-    const location = pos ? ` (line ${pos.line}, column ${pos.col})` : "";
-    return new ParseError(`YAML syntax error${location}: ${error.message}`, path);
-  }
-  if (error instanceof ZodError) {
-    return new ParseError(`schema validation failed: ${formatZodError(error)}`, path);
-  }
-  if (error instanceof Error) {
-    return new ParseError(error.message, path);
-  }
-  return new ParseError(String(error), path);
-}
-
 /**
  * cwd から上方探索して klaus.config.yaml を読み込み、検証済みの CliConfig を返す。
  * 見つからなければ undefined を返す(エラーではない。config ファイルは任意)。
@@ -101,7 +84,7 @@ export async function loadCliConfig(cwd: string): Promise<CliConfig | undefined>
     const raw: unknown = parseYaml(content);
     return configSchema.parse(raw);
   } catch (error) {
-    throw toConfigParseError(error, path);
+    throw toParseError(error, path);
   }
 }
 

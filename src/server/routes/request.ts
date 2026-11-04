@@ -9,7 +9,7 @@ import { executeSingleRequest, formatZodError } from "../../core/index.js";
 import { requestSchema } from "../../core/schema.js";
 import { parseJsonBody } from "../json-body.js";
 import type { SingleRequestRequestBody, SingleRequestResultPayload } from "../types.js";
-import { ENV_NAME_PATTERN } from "./environments.js";
+import { invalidOptionalEnvResponse } from "../validation.js";
 
 /** POST /api/request: 単一のリクエスト定義を実行し、同期 JSON で { result } を返す */
 export async function handleSingleRequest(c: Context, cwd: string): Promise<Response> {
@@ -23,9 +23,8 @@ export async function handleSingleRequest(c: Context, cwd: string): Promise<Resp
 
   // env は environments/<name>.yaml に展開されるため、パス区切り・親参照を含む値を拒否する
   // (env はリクエストボディ由来の untrusted 入力。runs.ts の検証と同じ方針)
-  if (body.env !== undefined && !ENV_NAME_PATTERN.test(body.env)) {
-    return c.text("Forbidden: invalid env name", 403);
-  }
+  const invalidEnv = invalidOptionalEnvResponse(c, body.env);
+  if (invalidEnv) return invalidEnv;
 
   const parsed = requestSchema.safeParse(body.request);
   if (!parsed.success) {

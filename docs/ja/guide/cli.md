@@ -147,7 +147,7 @@ request/response スナップショットや assertions などの詳細を持つ
 - **truncate**: 詳細に含まれる request/response の `body`(JSON ボディは文字列化してから)、SSE `events` の `data`、WS `wsMessages` の `data` はいずれも約500文字で切り詰める(text 出力の切り詰めと同じ規則)。JSON ボディの構造そのままの全文は履歴側にしか無い
 - <code v-pre>{{env.X}}</code> 由来のシークレットは既定でマスクされる(履歴 JSONL・`--report junit` と同じ規則。URL エンコード形(encodeURIComponent 形・form-urlencoded 形・WHATWG URL 正規化に近い encodeURI 形)・JSON エスケープ形も対象。詳細は [実行履歴](history.md) を参照)。`--no-mask` を付けるとこの JSON 出力のマスクだけを無効化できる(履歴 JSONL・JUnit ファイル出力は常にマスクされる)
 - 制御文字の可視エスケープ(text 出力や JUnit レポートで行われるもの)はここには適用されず、生の値のまま出力される
-- **historyRef**: 履歴記録が有効な実行(`--no-history` を付けていない)では、各ステップ(passed 含む)に `historyRef: { date, runId, step }` が付く。全文が必要な場合は `klaus history show <runId> --step <step>` で取得する(詳細は [klaus history](#klaus-history) / [実行履歴](history.md) を参照)。`--no-history` 実行時は `historyRef` を省略する
+- **historyRef**: 履歴記録が有効な実行(`--no-history` を付けていない)では、各ステップ(passed 含む)に `historyRef: { date, runId, step }` が付く。全文が必要な場合は `klaus history show <runId> --step <step>` で取得する(詳細は [klaus history](#klaus-history) / [実行履歴](history.md) を参照)。`historyRef.date` はそのステップが書き込まれた履歴ファイルの UTC 日付(ステップの `startedAt` から導出)。`--no-history` 実行時は `historyRef` を省略する
 - SSE / WebSocket ステップでは `response.body` は無く、受信データは `events`(SSE)/ `wsMessages`(WS)フィールドに入る
 
 ### JUnit レポート

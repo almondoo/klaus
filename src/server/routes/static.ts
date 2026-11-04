@@ -5,7 +5,7 @@
 import { readFile, stat } from "node:fs/promises";
 import { extname, join } from "node:path";
 import type { Context } from "hono";
-import { resolveWithinCwd } from "./flows.js";
+import { resolveWithinCwd } from "../validation.js";
 
 const CONTENT_TYPES: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -59,7 +59,7 @@ export function createStaticHandler(staticDir: string) {
 
     if (pathname !== "/") {
       // path traversal 対策: staticDir 配下に正規化解決される場合のみ実ファイルを試す
-      // (flows.ts の resolveWithinCwd と同一の境界判定ロジックを再利用する。
+      // (validation.ts の resolveWithinCwd と同一の境界判定ロジックを再利用する。
       // pathname は "/" 始まりの絶対パス形式のため、"." を前置して相対パス扱いにする)
       const requested = resolveWithinCwd(staticDir, `.${pathname}`);
       if (requested !== null) {

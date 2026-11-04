@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createParser } from "eventsource-parser";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { HistoryEntry } from "../../src/core/index.js";
-import { historyFilePath } from "../../src/core/index.js";
+import { readAllHistoryEntries } from "../../src/core/index.js";
 import { createApp } from "../../src/server/app.js";
 import type { StartServerResult } from "../../src/server/index.js";
 import { startServer } from "../../src/server/index.js";
@@ -139,7 +139,7 @@ async function collectSseEvents(
  * SSE 配信のクライアント切断後もフロー実行(履歴書き込み)が最後まで継続することを検証するために使う。
  */
 async function waitForHistorySteps(
-  historyPath: string,
+  cwd: string,
   flowName: string,
   expectedCount: number,
   timeoutMs: number,
@@ -148,14 +148,13 @@ async function waitForHistorySteps(
   for (;;) {
     let entries: HistoryEntry[] = [];
     try {
-      const content = await readFile(historyPath, "utf-8");
-      entries = content
-        .split("\n")
-        .filter((line) => line.length > 0)
-        .map((line) => JSON.parse(line) as HistoryEntry)
+      // UTC 日付をまたいでファイルが分かれても拾えるよう全履歴ファイルを読む。
+      // readAllHistoryEntries は startedAt 降順なので reverse して実行順(昇順)に戻す
+      entries = (await readAllHistoryEntries(cwd))
+        .reverse()
         .filter((entry) => entry.flow === flowName);
     } catch {
-      // ファイルがまだ作成されていない場合は空として扱い、リトライする
+      // 書き込み途中の読み取り競合などで失敗した場合は空として扱い、リトライする
     }
     if (entries.length >= expectedCount) {
       return entries.map((entry) => entry.step);
@@ -605,8 +604,7 @@ describe("klaus server", () => {
     }
 
     // (a) 切断後も実行が継続し、3ステップ分すべての履歴が書き込まれる
-    const historyPath = historyFilePath(workDir);
-    const stepNames = await waitForHistorySteps(historyPath, "disconnect flow", 3, 5000);
+    const stepNames = await waitForHistorySteps(workDir, "disconnect flow", 3, 5000);
     expect(stepNames).toEqual(["step-a", "step-b", "step-c"]);
 
     // (b) 切断後もサーバーは後続の新規リクエストに正常応答する

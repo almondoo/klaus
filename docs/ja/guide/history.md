@@ -6,7 +6,7 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
 
 ## ファイル規則
 
-- パス: `.klaus/history/<YYYY-MM-DD>.jsonl`(**cwd 基準**、日付はローカル日付)
+- パス: `.klaus/history/<YYYY-MM-DD>.jsonl`(**cwd 基準**、日付は各エントリの `startedAt`(ステップの開始時刻)の UTC 日付)
 - ディレクトリは自動作成される
 - `klaus run --no-history` で書き込みを無効化できる
 - **書き込みに失敗しても実行結果には影響しない**(stderr に警告が出るだけで、ステップの pass/fail はそのまま)

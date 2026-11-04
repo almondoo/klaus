@@ -29,7 +29,7 @@ export interface FormatTapOptions {
  * TAP 14 のエスケープを解さない Perl 系ハーネスでは '\' が二重に表示される。
  */
 function sanitizeForTap(text: string, secretVariants: readonly string[]): string {
-  const masked = secretVariants.length > 0 ? maskString(text, secretVariants) : text;
+  const masked = maskString(text, secretVariants);
   return sanitizeForTerminal(masked).replace(/\\/g, "\\\\").replace(/#/g, "\\#");
 }
 

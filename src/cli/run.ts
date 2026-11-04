@@ -276,18 +276,20 @@ function createOrderedTextFlusher(
     }
   }
 
+  // ユニットごとのバッファを取得(無ければ作成)してイベントを追加する
+  function push(index: number, event: OrderedTextEvent): void {
+    const events = buffers.get(index) ?? [];
+    events.push(event);
+    buffers.set(index, events);
+  }
+
   return {
     onStepStart(context: StepStartContext): void {
-      const index = context.unitIndex ?? 0;
-      const events = buffers.get(index) ?? [];
-      events.push({ kind: "start", context });
-      buffers.set(index, events);
+      push(context.unitIndex ?? 0, { kind: "start", context });
     },
     onStepComplete(context: StepCompleteContext): void {
       const index = context.unitIndex ?? 0;
-      const events = buffers.get(index) ?? [];
-      events.push({ kind: "complete", context });
-      buffers.set(index, events);
+      push(index, { kind: "complete", context });
       completedCounts.set(index, (completedCounts.get(index) ?? 0) + 1);
       flushReady();
     },
@@ -436,7 +438,7 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   const write = options.mask
     ? (text: string) => {
         const variants = expandSecretVariants(collectedSecrets);
-        process.stdout.write(variants.length > 0 ? maskString(text, variants) : text);
+        process.stdout.write(maskString(text, variants));
       }
     : (text: string) => {
         process.stdout.write(text);

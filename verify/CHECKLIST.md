@@ -19,7 +19,7 @@ klaus の実装一式(CLI / core / localhost UI)を `examples/` を使って手�
   CLI で `-e` を明示すればどちらの config よりも優先される(例: `--env development` はホスト用の
   設定なので、コンテナ内で明示すると接続エラーになる。config が上書きされていることの確認にもなる)。
 - `klaus` コマンドが解決できる前提で書いてある。ホストで見つからない場合は、リポジトリ root で
-  `pnpm build && npm link` して bin を通すか、`klaus` を `node ../dist/cli.js` に読み替える。
+  `pnpm build && pnpm link --global` して bin を通すか、`klaus` を `node ../dist/cli.js` に読み替える。
 
 ## 0. ビルドとテスト(自動検証)
 

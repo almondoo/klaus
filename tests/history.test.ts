@@ -1,7 +1,12 @@
 import { chmod, mkdir, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { appendHistory, historyFilePath, maskHistoryEntry } from "../src/core/history.js";
+import {
+  appendHistory,
+  historyFilePath,
+  historyFileStartedAtUpperBound,
+  maskHistoryEntry,
+} from "../src/core/history.js";
 
 describe("history", () => {
   const tmpRoot = join(process.cwd(), "tmp");
@@ -36,8 +41,8 @@ describe("history", () => {
       ],
     });
 
-    // appendHistory は実行時点の日付ファイルに書くため、読み出しも引数なし(= 今日)で解決する
-    const filePath = historyFilePath(dir);
+    // appendHistory はエントリの startedAt の UTC 日付ファイルに書くため、読み出しも同じ日付で解決する
+    const filePath = historyFilePath(dir, new Date("2026-08-07T12:00:00.000Z"));
     const content = await readFile(filePath, "utf-8");
     const lines = content.trim().split("\n");
     expect(lines).toHaveLength(1);
@@ -61,7 +66,7 @@ describe("history", () => {
       assertions: [],
     });
 
-    const filePath = historyFilePath(dir);
+    const filePath = historyFilePath(dir, new Date("2026-08-07T12:00:00.000Z"));
     const content = await readFile(filePath, "utf-8");
     const parsed = JSON.parse(content.trim());
     expect(parsed.status).toBe("skipped");
@@ -76,7 +81,7 @@ describe("history", () => {
         runId: "run-1",
         flow: "sample flow",
         step: `step${i}`,
-        startedAt: new Date().toISOString(),
+        startedAt: "2026-08-07T12:00:00.000Z",
         durationMs: 1,
         request: { method: "GET", url: "http://localhost/x", headers: {} },
         response: { status: 200, headers: {}, body: null },
@@ -84,10 +89,40 @@ describe("history", () => {
       });
     }
 
-    const filePath = historyFilePath(dir);
+    const filePath = historyFilePath(dir, new Date("2026-08-07T12:00:00.000Z"));
     const content = await readFile(filePath, "utf-8");
     const lines = content.trim().split("\n");
     expect(lines).toHaveLength(3);
+  });
+
+  it("追記時点ではなくエントリの startedAt の UTC 日付のファイルに書き込む", async () => {
+    await appendHistory(dir, {
+      v: 1,
+      runId: "run-1",
+      flow: "sample flow",
+      step: "step1",
+      startedAt: "2026-01-01T23:59:59.999Z",
+      durationMs: 1,
+      assertions: [],
+    });
+
+    const content = await readFile(join(dir, ".klaus", "history", "2026-01-01.jsonl"), "utf-8");
+    expect(JSON.parse(content.trim()).startedAt).toBe("2026-01-01T23:59:59.999Z");
+  });
+
+  it("startedAt が日付として不正な場合は追記時点(今日)のファイルにフォールバックする", async () => {
+    await appendHistory(dir, {
+      v: 1,
+      runId: "run-1",
+      flow: "sample flow",
+      step: "step1",
+      startedAt: "not-a-date",
+      durationMs: 1,
+      assertions: [],
+    });
+
+    const content = await readFile(historyFilePath(dir), "utf-8");
+    expect(JSON.parse(content.trim()).startedAt).toBe("not-a-date");
   });
 
   it.skipIf(process.platform === "win32")(
@@ -104,7 +139,7 @@ describe("history", () => {
       };
       await appendHistory(dir, entry);
 
-      const filePath = historyFilePath(dir);
+      const filePath = historyFilePath(dir, new Date(entry.startedAt));
       const fileStat = await stat(filePath);
       const dirStat = await stat(dirname(filePath));
       expect(fileStat.mode & 0o777).toBe(0o600);
@@ -126,7 +161,7 @@ describe("history", () => {
       };
       // 先に緩い権限で作っておく(過去バージョンで作成された既存ファイルを模す)
       await appendHistory(dir, entry);
-      const filePath = historyFilePath(dir);
+      const filePath = historyFilePath(dir, new Date(entry.startedAt));
       await chmod(dirname(filePath), 0o755);
       await chmod(filePath, 0o644);
 
@@ -357,5 +392,17 @@ describe("maskHistoryEntry", () => {
     const masked = maskHistoryEntry(entry, ["secret-token-1"]);
     expect(masked.request).toBeUndefined();
     expect(masked.response).toBeUndefined();
+  });
+});
+
+describe("historyFileStartedAtUpperBound", () => {
+  it("契約どおりのファイル名はファイル日付 + 2 日 00:00Z(1 日の安全マージン込み)を返す", () => {
+    expect(historyFileStartedAtUpperBound("2026-01-01.jsonl")).toBe("2026-01-03T00:00:00.000Z");
+    expect(historyFileStartedAtUpperBound("2026-12-31.jsonl")).toBe("2027-01-02T00:00:00.000Z");
+  });
+
+  it("存在しない日付や契約外のファイル名は undefined を返す", () => {
+    expect(historyFileStartedAtUpperBound("2026-02-30.jsonl")).toBeUndefined();
+    expect(historyFileStartedAtUpperBound("notes.jsonl")).toBeUndefined();
   });
 });

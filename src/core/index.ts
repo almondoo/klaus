@@ -27,7 +27,12 @@ export {
 } from "./cassette.js";
 export type { DataRow } from "./data.js";
 export { loadDataFile } from "./data.js";
-export { collectYamlFiles, discoverFlowCandidates, isFlowCandidate } from "./discovery.js";
+export {
+  collectYamlFiles,
+  discoverFlowCandidates,
+  discoverFlowCandidatesWithRaw,
+  isFlowCandidate,
+} from "./discovery.js";
 export {
   assertTrustedAncestorSource,
   EnvironmentNotFoundError,
@@ -56,15 +61,17 @@ export { DEFAULT_TIMEOUT_MS, sendRawRequest, sendRequest } from "./http.js";
 export type { FlowIssue, FlowValidationResult } from "./loader.js";
 export {
   describeFlowSchemaIssues,
+  formatSchemaValidationMessage,
   formatZodError,
   loadEnvironmentFile,
   loadFlow,
   parseEnvironmentYaml,
   parseFlowYaml,
+  toParseError,
   validateFlowFile,
   validateFlowYaml,
 } from "./loader.js";
-export { isPathWithinDir, isRealPathWithinDir } from "./path-guard.js";
+export { isPathWithinDir, isRealPathWithinDir, toDisplayPath } from "./path-guard.js";
 export type {
   ExecuteSingleRequestOptions,
   ExecuteSingleRequestResult,

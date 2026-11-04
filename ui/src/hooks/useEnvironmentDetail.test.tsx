@@ -10,14 +10,18 @@ vi.mock("@/api/client", () => ({
   updateEnvironment: vi.fn(),
 }));
 
+// Wrapper はモジュールレベルで定義し、createWrapper() が呼ばれるたびに client を差し替える(テストごとに独立)
+let currentClient: QueryClient;
+
+function Wrapper({ children }: { children: ReactNode }) {
+  return <QueryClientProvider client={currentClient}>{children}</QueryClientProvider>;
+}
+
 function createWrapper() {
-  const queryClient = new QueryClient({
+  currentClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  const Wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
-  );
-  return { Wrapper, queryClient };
+  return { Wrapper, queryClient: currentClient };
 }
 
 describe("useEnvironmentDetail", () => {

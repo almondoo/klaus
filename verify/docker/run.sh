@@ -10,9 +10,9 @@
 # klaus コンテナに入って自由に実行でき、`make verify-down` で片付ける。
 #
 # 注意(依存関係の取得元について):
-#   klaus イメージ内の `npm install -g klaus.tgz` は zod をレジストリから
+#   klaus イメージ内の `pnpm add -g klaus.tgz` は zod をレジストリから
 #   取得する(dependencies に残しているため)。これは実際のユーザー環境と同じ挙動であり、
-#   意図した検証対象そのもの。
+#   意図した検証対象そのもの(pnpm の minimumReleaseAge を効かせ、公開から 7 日未満の版は使わない)。
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
