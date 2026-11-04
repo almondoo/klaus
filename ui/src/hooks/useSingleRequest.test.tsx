@@ -9,13 +9,18 @@ vi.mock("@/api/client", () => ({
   runSingleRequest: vi.fn(),
 }));
 
+// Wrapper はモジュールレベルで定義し、createWrapper() が呼ばれるたびに client を差し替える(テストごとに独立)
+let currentClient: QueryClient;
+
+function Wrapper({ children }: { children: ReactNode }) {
+  return <QueryClientProvider client={currentClient}>{children}</QueryClientProvider>;
+}
+
 function createWrapper() {
-  const queryClient = new QueryClient({
+  currentClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>;
-  };
+  return Wrapper;
 }
 
 function makeResult(name: string): StepResult {
@@ -101,7 +106,8 @@ describe("useSingleRequest", () => {
       result.current.execute({ url: "https://example.com/second" });
     });
 
-    expect(runSingleRequest).toHaveBeenCalledTimes(2);
+    // mutationFn の呼び出しは非同期に行われるため、2 回呼ばれるまで待ってから応答順を操作する
+    await waitFor(() => expect(runSingleRequest).toHaveBeenCalledTimes(2));
 
     // 到着順を意図的に逆転させる: 2 回目(最新)を先に解決し、その後で 1 回目(古い)を解決する
     await act(async () => {
