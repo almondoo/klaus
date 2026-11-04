@@ -1,0 +1,31 @@
+# mock-api(examples/mock-server.mjs)用イメージ。compose.yaml の mock-api サービスが
+# ビルドコンテキスト examples/ とこのファイルを組み合わせてビルドする。
+# Dependabot(docker)がベースイメージを検出できるよう、ファイル名は Dockerfile.<suffix> 形式にしている。
+# digest 固定の理由と更新手順は verify/docker/Dockerfile の冒頭コメントを参照(同じ値を使う)。
+# pnpm の URL と sha256 も Dockerfile と同じ値を使う(更新時は両方を揃えること)。
+ARG TARGETARCH
+
+FROM scratch AS pnpm-amd64
+ADD --checksum=sha256:565ff81174a14f6f7bd5d84c1b17e51031a80230d370a1fe24be5d16bd02a825 \
+    https://github.com/pnpm/pnpm/releases/download/v12.16.1/pnpm-linux-x64.tar.gz /pnpm.tar.gz
+
+FROM scratch AS pnpm-arm64
+ADD --checksum=sha256:f5847699e5d528f8f8e9bcfb385e58cb9fba7482af1b1aa7b70737be42277f81 \
+    https://github.com/pnpm/pnpm/releases/download/v12.16.1/pnpm-linux-arm64.tar.gz /pnpm.tar.gz
+
+FROM pnpm-${TARGETARCH} AS pnpm
+
+FROM node:26.12-slim@sha256:94816674c62774da0d099a947bf4613b9e1972a2733abd0d0cd80e795f8411d0
+COPY --from=pnpm /pnpm.tar.gz /tmp/pnpm.tar.gz
+RUN mkdir -p /opt/pnpm \
+    && tar -xzf /tmp/pnpm.tar.gz -C /opt/pnpm --no-same-owner \
+    && rm /tmp/pnpm.tar.gz
+ENV PATH=/opt/pnpm:${PATH}
+WORKDIR /app
+COPY mock-server.mjs .
+# lockfile と同じ版を完全固定する(--save-exact)。公開から 7 日未満の版は
+# pnpm_config_minimum_release_age(分)で解決させない。ビルドスクリプトは許可しない
+RUN pnpm_config_minimum_release_age=10080 pnpm add --save-exact "ws@8.22.0"
+EXPOSE 3000
+USER node
+CMD ["node", "mock-server.mjs"]

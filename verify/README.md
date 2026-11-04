@@ -5,14 +5,18 @@ npm publish 相当の検証を、クリーンな Docker コンテナ上で行う
 
 ## 目的
 
-`verify/docker/` は、npm publish で実際にユーザーへ届く内容(`npm pack` の `files` 選定結果)や
-`bin` 配線、依存バンドル漏れ、engines で指定した Node 22 系での動作を、クリーンな Docker
-コンテナに tarball を `npm install -g` して確認するための仕組み。具体的には:
+`verify/docker/` は、npm publish で実際にユーザーへ届く内容(`pnpm pack` の `files` 選定結果)や
+`bin` 配線、依存バンドル漏れ、Node 26 系での動作を、クリーンな Docker
+コンテナに tarball を `pnpm add -g` して確認するための仕組み。具体的には:
 
 - files 指定の過不足(`.map` 等の除外漏れ・必須ファイルの欠落)を tarball ベースで確認する
-- `bin.klaus` の配線(`npm install -g` 後に `klaus` コマンドとして解決されるか)を確認する
+- `bin.klaus` の配線(`pnpm add -g` 後に `klaus` コマンドとして解決されるか)を確認する
 - バンドル漏れ(zod 以外の実行時依存が `node_modules` に現れず、`dist/*.js` 単体で動くか)を確認する
-- engines で指定した Node 22 系のクリーンな環境で実際に動くかを確認する
+- Node 26 系のクリーンな環境で実際に動くかを確認する
+
+イメージ内では npm / npx / corepack を使わず、pnpm で tarball をグローバルインストールする
+(pnpm は公式 GitHub Release のバイナリを sha256 検証付きで取得し、依存は公開から 7 日以上の版のみ解決する)。
+そのため、npm のグローバルインストール固有の挙動の差異はこの検証では確認できない。
 
 Docker デーモンが利用できない環境では `docker compose build` の時点で失敗するため、
 事前に `docker version` で確認しておく。
@@ -24,7 +28,8 @@ verify/
 ├── CHECKLIST.md            # 動作確認チェックリスト(examples/ 一式 + make verify のコンテナ実行手順)
 └── docker/
     ├── compose.yaml         # mock-api / klaus の2サービス定義
-    ├── Dockerfile           # klaus.tgz を npm install -g するクリーンな Node 22 イメージ
+    ├── Dockerfile           # klaus.tgz を pnpm add -g するクリーンな Node 26 イメージ
+    ├── Dockerfile.mock-api  # mock-api(examples/mock-server.mjs + ws)用イメージ。compose.yaml から参照
     ├── run.sh                # make verify の実体。build:all -> pack -> build -> 起動 -> スモーク一式
     ├── klaus.config.yaml     # コンテナ内専用の config(run.env: docker)。examples/klaus.config.yaml を上書きする
     └── .pack/                # run.sh が生成する pack 作業ディレクトリ(git 管理外)
@@ -43,7 +48,7 @@ drift するため廃止した。
 
 1. `pnpm build:all` で dist / dist/ui を再ビルド
 2. `pnpm pack` で publish 相当の tarball を生成(`.pack/klaus.tgz`)
-3. `docker compose build` でイメージをビルド(klaus イメージは tarball を `npm install -g`)
+3. `docker compose build` でイメージをビルド(klaus イメージは tarball を `pnpm add -g`)
 4. `mock-api` の healthy 待ちの上で `klaus` コンテナを常駐起動(`sleep infinity`)
 5. **auth-flow スモーク**: `examples/flows/auth-flow.yaml`(cwd `/work/examples`)を `-e` なしで
    実行し PASS を確認(config オーバーレイが効いているかを最初に素早く検知する1本)
@@ -72,7 +77,7 @@ drift するため廃止した。
 - `mock-api`: 検証用ダミー API(`examples/mock-server.mjs`)。`HOST=0.0.0.0` で起動し、compose
   ネットワーク越しに他コンテナから `mock-api:3000` として到達できる。examples/ 一式のスモークと
   auth-flow のスモークの両方をこのサービス1本でまかなう。
-- `klaus`: `.pack/klaus.tgz`(pack 済み tarball)を `npm install -g` したクリーンな Node 22 の
+- `klaus`: `.pack/klaus.tgz`(pack 済み tarball)を `pnpm add -g` したクリーンな Node 26 の
   常駐コンテナ。`examples/` はホストから rw マウントされており(`../../examples:/work/examples`)、
   `klaus generate` 等の書き込みもそのまま反映される(ただし本検証の generate スモークはコンテナ内
   `/tmp` を使うため、ホスト側の `examples/` には残らない)。フロー定義・環境ファイル・mock-server は
