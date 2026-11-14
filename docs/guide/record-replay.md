@@ -71,7 +71,17 @@ The listening URL is printed to stdout; per-request logs go to stderr. Stop it w
 | `--ignore-query` | Match on method and path only |
 | `--sequence` | Serve repeated recordings of the same request in recorded order, repeating the last one when exhausted |
 | `--origin <url>` | Serve only entries recorded for this origin (for example `http://api.example.com`) |
+| `--allow-host <host>` | Also accept this `Host` header name, without a port (repeatable). Widens the Host check, see below |
 | `--json` | Print the startup line (stdout) and request logs (stderr) as JSON Lines |
+
+### Host header check
+
+To block DNS rebinding (a web page on another site re-pointing its hostname at your machine to read recorded responses from your browser), the mock rejects any request whose `Host` header is not expected, with `403` and a small JSON body, before matching anything.
+
+- Bound to a loopback address (the default): only `127.0.0.1:<port>`, `localhost:<port>`, and `[::1]:<port>` are accepted (case-insensitive), where `<port>` is the actual listening port, including with `--port 0`. A missing `Host` is rejected.
+- Bound to a non-loopback address (`--host 0.0.0.0` and similar): the host name cannot be known in advance, so only the port must match.
+- `--allow-host <host>` adds host names (for example a docker-compose service name) that are accepted with the listening port. Every use widens the check, so list only names you control.
+- `--cors` does not relax this check.
 
 ### Mock matching rule
 

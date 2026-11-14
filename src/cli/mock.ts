@@ -29,6 +29,8 @@ export interface MockCommandOptions {
   ignoreQuery?: boolean;
   sequence?: boolean;
   origin?: string;
+  /** Host ヘッダーとして追加で許可するホスト名(ポートは含めない)。--allow-host の累積結果 */
+  allowHost?: string[];
   /** 起動行とリクエストログを機械可読(JSON Lines)にする */
   json?: boolean;
 }
@@ -74,6 +76,37 @@ function writeJson(
   res.end(body);
 }
 
+/** ループバック判定(src/server/app.ts の isLoopbackHost と同じ範囲。[::1] 表記も許容する) */
+function isLoopbackBind(host: string): boolean {
+  return host === "127.0.0.1" || host === "localhost" || host === "::1" || host === "[::1]";
+}
+
+/**
+ * DNS リバインディング対策の Host ヘッダー検証(src/server/app.ts の Host 検証と同じ規則)。
+ * - ループバックへバインド: 127.0.0.1 / localhost / [::1] と --allow-host のホスト名で、
+ *   ポートが実際の待ち受けポートと一致するものだけを許可(大文字小文字は区別しない)
+ * - ループバック以外へバインド: ホスト名は事前に列挙できないため、ポート一致のみを確認
+ * Host が無い場合は常に拒否する。--cors はこの検証には影響しない。
+ */
+export function isHostHeaderAllowed(
+  hostHeader: string | undefined,
+  port: number,
+  bindHost: string,
+  allowHosts: readonly string[] = [],
+): boolean {
+  if (hostHeader === undefined || hostHeader === "") return false;
+  const match = /^(\[[^\]]*\]|[^:\]]*):(\d+)$/.exec(hostHeader.trim());
+  if (match === null || match[2] !== String(port)) return false;
+  if (!isLoopbackBind(bindHost)) return true;
+  const name = (match[1] as string).toLowerCase();
+  return (
+    name === "127.0.0.1" ||
+    name === "localhost" ||
+    name === "[::1]" ||
+    allowHosts.some((allowed) => allowed.toLowerCase() === name)
+  );
+}
+
 /**
  * mock サーバーを起動する(listen 完了まで待つ)。close は進行中の接続も切って停止する。
  * カセットの読み込み失敗・空は RuntimeError(呼び出し側で exit 2 に変換)。
@@ -104,10 +137,22 @@ export async function startMockServer(
   const delay = options.delay ?? 0;
   const corsHeaders = cors ? CORS_HEADERS : {};
 
+  const bindHost = options.host ?? "127.0.0.1";
+  const allowHosts = options.allowHost ?? [];
+  // 実際の待ち受けポート(--port 0 では listen 後に確定する)
+  let listeningPort = 0;
+
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     drain(req);
     const method = (req.method ?? "GET").toUpperCase();
     const target = req.url ?? "/";
+
+    // Host 検証は遅延・preflight・照合よりも前に行う(--cors でも緩めない。CORS ヘッダーも付けない)
+    if (!isHostHeaderAllowed(req.headers.host, listeningPort, bindHost, allowHosts)) {
+      writeJson(res, 403, { error: "invalid Host header", hint: "use --allow-host <host>" }, {});
+      log({ event: "request", method, path: target, status: 403, matched: false });
+      return;
+    }
     if (delay > 0) await sleep(delay);
 
     // preflight(--cors 時のみ)。マッチングより前に応答する
@@ -170,12 +215,13 @@ export async function startMockServer(
     socket.on("close", () => sockets.delete(socket));
   });
 
-  const host = options.host ?? "127.0.0.1";
+  const host = bindHost;
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(options.port ?? MOCK_DEFAULT_PORT, host, () => resolve());
   });
   const address = server.address() as AddressInfo;
+  listeningPort = address.port;
   const urlHost = host.includes(":") ? `[${host}]` : host;
   const url = `http://${urlHost}:${address.port}`;
 
@@ -314,6 +360,18 @@ export function registerMockCommand(program: Command): void {
         const message = validateOrigin(value);
         if (message !== undefined) throw new InvalidArgumentError(message);
         return value;
+      },
+    )
+    .option(
+      "--allow-host <host>",
+      "additionally accept this Host header name (repeatable; widens the DNS-rebinding check, e.g. a docker-compose service name)",
+      (value: string, previous: string[] = []) => {
+        if (!/^(\[[0-9a-fA-F:.]+\]|[A-Za-z0-9._-]+)$/.test(value)) {
+          throw new InvalidArgumentError(
+            `invalid --allow-host value: ${value} (host name only, without port)`,
+          );
+        }
+        return [...previous, value];
       },
     )
     .option("--json", "machine-readable startup line and request logs (JSON Lines)")

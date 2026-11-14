@@ -3,7 +3,7 @@ import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { registerMockCommand, startMockServer } from "../../src/cli/mock.js";
+import { isHostHeaderAllowed, registerMockCommand, startMockServer } from "../../src/cli/mock.js";
 import { appendCassetteEntry, cassetteFilePath } from "../../src/core/cassette.js";
 
 const noopLog = () => {};
@@ -267,6 +267,75 @@ describe("klaus mock", () => {
     expect((await fetch(`${cors.url}/c`)).headers.get("access-control-allow-origin")).toBe("*");
   });
 
+  /** Host ヘッダーを上書きして GET /h を送り、ステータスと本文を返す */
+  function requestWithHost(
+    url: string,
+    host: string | undefined,
+  ): Promise<{ status: number; body: string; cors: unknown }> {
+    return new Promise((resolve, reject) => {
+      const u = new URL(url);
+      const req = httpRequest(
+        { host: u.hostname, port: u.port, path: "/h", headers: host === undefined ? {} : { host } },
+        (res) => {
+          let body = "";
+          res.on("data", (c) => {
+            body += c;
+          });
+          res.on("end", () =>
+            resolve({
+              status: res.statusCode ?? 0,
+              body,
+              cors: res.headers["access-control-allow-origin"],
+            }),
+          );
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  }
+
+  it("ループバック bind では 127.0.0.1 / localhost / [::1] の実ポートだけを許可し、リバインディング風の Host は 403(--cors でも緩めない)", async () => {
+    await record("GET", "http://h/h", "private");
+    const mock = await start({ cors: true });
+    const port = new URL(mock.url).port;
+
+    for (const host of [
+      `127.0.0.1:${port}`,
+      `localhost:${port}`,
+      `[::1]:${port}`,
+      `LOCALHOST:${port}`,
+    ]) {
+      const ok = await requestWithHost(mock.url, host);
+      expect(ok.status, host).toBe(200);
+      expect(ok.body).toBe("private");
+    }
+    for (const host of [`evil.example:${port}`, "127.0.0.1:1", "127.0.0.1", "evil.example"]) {
+      const denied = await requestWithHost(mock.url, host);
+      expect(denied.status, host).toBe(403);
+      expect(denied.body).not.toContain("private");
+      expect(denied.cors).toBeUndefined();
+    }
+  });
+
+  it("--allow-host で追加したホスト名は(実ポート付きで)許可され、他は引き続き 403", async () => {
+    await record("GET", "http://h/h", "private");
+    const mock = await start({ allowHost: ["Mock-Service"] });
+    const port = new URL(mock.url).port;
+
+    expect((await requestWithHost(mock.url, `mock-service:${port}`)).status).toBe(200);
+    expect((await requestWithHost(mock.url, "mock-service:1")).status).toBe(403);
+    expect((await requestWithHost(mock.url, `evil.example:${port}`)).status).toBe(403);
+  });
+
+  it("isHostHeaderAllowed: ループバック以外への bind ではポート一致のみ確認する", () => {
+    expect(isHostHeaderAllowed("mock.internal:4885", 4885, "0.0.0.0")).toBe(true);
+    expect(isHostHeaderAllowed("192.168.1.5:4885", 4885, "0.0.0.0")).toBe(true);
+    expect(isHostHeaderAllowed("mock.internal:9999", 4885, "0.0.0.0")).toBe(false);
+    expect(isHostHeaderAllowed(undefined, 4885, "0.0.0.0")).toBe(false);
+    expect(isHostHeaderAllowed("mock.internal:4885", 4885, "127.0.0.1")).toBe(false);
+  });
+
   it("registerMockCommand はオプションを解釈し、不正な --port を拒否する", async () => {
     const program = new Command().exitOverride();
     registerMockCommand(program);
@@ -280,6 +349,7 @@ describe("klaus mock", () => {
         "--ignore-query",
         "--sequence",
         "--origin",
+        "--allow-host",
         "--json",
       ]),
     );
@@ -295,5 +365,8 @@ describe("klaus mock", () => {
     await expect(
       program.parseAsync(["node", "klaus", "mock", dir, "--origin", "not a url"]),
     ).rejects.toThrow(/invalid --origin value/);
+    await expect(
+      program.parseAsync(["node", "klaus", "mock", dir, "--allow-host", "evil.example:80"]),
+    ).rejects.toThrow(/invalid --allow-host value/);
   });
 });
