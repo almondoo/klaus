@@ -1,0 +1,22 @@
+# ビルドに不要なものはコンテキストへ送らない(特に node_modules / dist はホストのものを持ち込まない)
+.git
+.github
+.claude
+.playwright-mcp
+.klaus
+.vite
+node_modules
+**/node_modules
+dist
+tmp
+coverage
+docs
+tests
+examples
+verify
+specs
+CLAUDE-SECURITY-*
+*.log
+.DS_Store
+Dockerfile
+.dockerignore

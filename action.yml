@@ -1,0 +1,231 @@
+name: "klaus run"
+description: "Install klaus from npm and run YAML request flows. Writes a result table to the job summary and exits with klaus's exit code."
+author: "almondoo"
+
+branding:
+  icon: "check-circle"
+  color: "green"
+
+inputs:
+  files:
+    description: "Flow definition YAML files to run (whitespace or newline separated). Globs are not expanded by the action; list the files explicitly or pass a directory-expanded list."
+    required: true
+  version:
+    description: "klaus version to install from npm (an exact version such as 0.16.0, or a dist-tag such as latest)."
+    required: false
+    default: "latest"
+  env:
+    description: "Environment name (klaus run --env). Cannot be combined with env-file."
+    required: false
+    default: ""
+  env-file:
+    description: "Path to an environment YAML file (klaus run --env-file). Cannot be combined with env."
+    required: false
+    default: ""
+  tags:
+    description: "Comma-separated tags (klaus run --tags): only flows carrying at least one of them run."
+    required: false
+    default: ""
+  jobs:
+    description: "Number of flows to run in parallel (klaus run --jobs, 1-32)."
+    required: false
+    default: ""
+  report:
+    description: "Additional report formats, comma-separated: junit, tap (klaus run --report). Empty disables."
+    required: false
+    default: "junit"
+  report-file:
+    description: "Report output path(s), newline separated, one per format in the same order as report (klaus run --report-file). Empty uses klaus's default filenames (klaus-report.xml / klaus-report.tap) in working-directory."
+    required: false
+    default: ""
+  working-directory:
+    description: "Directory to run klaus in (flow files, environments/ and klaus.config.yaml are resolved from here)."
+    required: false
+    default: "."
+  args:
+    description: "Extra arguments appended to klaus run, whitespace separated (no shell quoting is interpreted, so values cannot contain spaces)."
+    required: false
+    default: ""
+
+outputs:
+  status:
+    description: "Overall run status: passed, failed or error."
+    value: ${{ steps.run.outputs.status }}
+  exit-code:
+    description: "klaus exit code: 0 passed, 4 assertion failure, 3 runtime error, 2 invalid definition, 1 unexpected error."
+    value: ${{ steps.run.outputs.exit-code }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install klaus
+      shell: bash
+      env:
+        KLAUS_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        version="${KLAUS_VERSION:-latest}"
+        # オプション注入を避けるため、npm のバージョン指定として妥当な文字だけを許可する
+        if [[ ! "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
+          echo "::error::invalid version input: $version"
+          exit 1
+        fi
+        install_dir="$RUNNER_TEMP/klaus-cli"
+        mkdir -p "$install_dir"
+        npm install --prefix "$install_dir" --no-audit --no-fund --loglevel=error "@almondoo/klaus@${version}"
+        echo "KLAUS_BIN=$install_dir/node_modules/.bin/klaus" >> "$GITHUB_ENV"
+
+    - name: Run klaus
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_FILES: ${{ inputs.files }}
+        INPUT_ENV: ${{ inputs.env }}
+        INPUT_ENV_FILE: ${{ inputs.env-file }}
+        INPUT_TAGS: ${{ inputs.tags }}
+        INPUT_JOBS: ${{ inputs.jobs }}
+        INPUT_REPORT: ${{ inputs.report }}
+        INPUT_REPORT_FILE: ${{ inputs.report-file }}
+        INPUT_ARGS: ${{ inputs.args }}
+      run: |
+        set -uo pipefail
+        # glob 展開を無効にし、入力値がファイル名展開やコマンドとして解釈されないようにする
+        set -f
+
+        args=(run --json)
+
+        if [ -n "$INPUT_ENV" ]; then args+=(--env "$INPUT_ENV"); fi
+        if [ -n "$INPUT_ENV_FILE" ]; then args+=(--env-file "$INPUT_ENV_FILE"); fi
+        if [ -n "$INPUT_TAGS" ]; then args+=(--tags "$INPUT_TAGS"); fi
+        if [ -n "$INPUT_JOBS" ]; then args+=(--jobs "$INPUT_JOBS"); fi
+        if [ -n "$INPUT_REPORT" ]; then args+=(--report "$INPUT_REPORT"); fi
+        if [ -n "$INPUT_REPORT_FILE" ]; then
+          while IFS= read -r line; do
+            line="${line%$'\r'}"
+            if [ -n "$line" ]; then
+              # klaus は出力先ディレクトリを作らない(ENOENT になる)ため先に作る
+              mkdir -p -- "$(dirname -- "$line")"
+              args+=(--report-file "$line")
+            fi
+          done <<< "$INPUT_REPORT_FILE"
+        fi
+
+        if [ -n "$INPUT_ARGS" ]; then
+          read -r -a extra <<< "$INPUT_ARGS"
+          args+=("${extra[@]}")
+        fi
+
+        # ファイル名が - で始まっても klaus のオプションとして解釈されないよう -- の後ろに置く
+        read -r -d '' -a files <<< "$INPUT_FILES" || true
+        if [ "${#files[@]}" -eq 0 ]; then
+          echo "::error::files input is empty"
+          echo "status=error" >> "$GITHUB_OUTPUT"
+          echo "exit-code=2" >> "$GITHUB_OUTPUT"
+          exit 2
+        fi
+        args+=(-- "${files[@]}")
+
+        result_file="$RUNNER_TEMP/klaus-result.json"
+        "$KLAUS_BIN" "${args[@]}" > "$result_file"
+        code=$?
+
+        echo "::group::klaus run --json output"
+        cat "$result_file"
+        echo
+        echo "::endgroup::"
+
+        # JSON から全体ステータスを取り出す(取れなければ exit code から推定する)
+        status="$(KLAUS_RESULT_FILE="$result_file" KLAUS_EXIT_CODE="$code" node -e '
+          const fs = require("node:fs");
+          let status;
+          try { status = JSON.parse(fs.readFileSync(process.env.KLAUS_RESULT_FILE, "utf8")).status; } catch {}
+          if (!["passed", "failed", "error"].includes(status)) {
+            const code = process.env.KLAUS_EXIT_CODE;
+            status = code === "0" ? "passed" : code === "4" ? "failed" : "error";
+          }
+          process.stdout.write(status);
+        ')"
+
+        echo "status=$status" >> "$GITHUB_OUTPUT"
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+
+        # ジョブサマリー(Markdown 表)を組み立てる。JSON はファイル経由、パスは env 経由で渡す
+        if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+          KLAUS_RESULT_FILE="$result_file" KLAUS_EXIT_CODE="$code" node - >> "$GITHUB_STEP_SUMMARY" <<'NODE'
+        const fs = require("node:fs");
+
+        const exitCode = process.env.KLAUS_EXIT_CODE;
+        const raw = fs.readFileSync(process.env.KLAUS_RESULT_FILE, "utf8");
+
+        // Markdown 表のセルとして安全にする(パイプ・改行・HTML を無害化し、長さを抑える)
+        const cell = (value, max = 200) => {
+          let text = String(value ?? "").replace(/\s+/g, " ").trim();
+          if (text.length > max) text = `${text.slice(0, max)}...`;
+          return text.replace(/\|/g, "\\|").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        };
+        const ms = (value) => (typeof value === "number" ? `${(value / 1000).toFixed(2)}s` : "");
+
+        let report;
+        try {
+          report = JSON.parse(raw);
+        } catch {
+          report = undefined;
+        }
+
+        const out = [];
+        if (!report || typeof report !== "object" || !report.summary || !Array.isArray(report.flows)) {
+          // JSON として読めない(引数エラー・定義エラーなど): 出力をそのまま添える
+          out.push("## klaus run", "");
+          out.push(`klaus exited with code ${exitCode} without a run report.`, "");
+          if (raw.trim()) {
+            out.push("```", raw.trim().slice(0, 2000).replace(/```/g, "'''"), "```");
+          }
+          console.log(out.join("\n"));
+          process.exit(0);
+        }
+
+        const s = report.summary;
+        out.push(`## klaus run: ${report.status}`, "");
+        out.push(
+          `${s.flows} flows, ${s.steps} steps: ${s.passed} passed, ${s.failed} failed, ${s.error} error, ${s.skipped} skipped (${ms(report.durationMs)}, exit code ${exitCode})`,
+          "",
+        );
+
+        out.push("| Flow | Status | Steps | Duration |", "| --- | --- | --- | --- |");
+        const MAX_FLOWS = 100;
+        for (const flow of report.flows.slice(0, MAX_FLOWS)) {
+          const total = flow.steps.length;
+          const passed = flow.steps.filter((step) => step.status === "passed").length;
+          const name = flow.iteration ? `${flow.name} (#${flow.iteration})` : flow.name;
+          out.push(`| ${cell(name)} | ${cell(flow.status)} | ${passed}/${total} | ${ms(flow.durationMs)} |`);
+        }
+        if (report.flows.length > MAX_FLOWS) {
+          out.push(`| ... ${report.flows.length - MAX_FLOWS} more flows | | | |`);
+        }
+
+        // 失敗・エラーのステップだけ原因を添える(passed / skipped は省略)
+        const problems = [];
+        for (const flow of report.flows) {
+          for (const step of flow.steps) {
+            if (step.status !== "failed" && step.status !== "error") continue;
+            const failedAssertions = (step.assertions ?? []).filter((a) => !a.ok).map((a) => a.message);
+            const reason = step.error ?? failedAssertions.join("; ");
+            problems.push(`| ${cell(flow.name)} | ${cell(step.name)} | ${cell(step.status)} | ${cell(reason, 300)} |`);
+          }
+        }
+        if (problems.length > 0) {
+          const MAX_PROBLEMS = 50;
+          out.push("", "### Failed steps", "");
+          out.push("| Flow | Step | Status | Reason |", "| --- | --- | --- | --- |");
+          out.push(...problems.slice(0, MAX_PROBLEMS));
+          if (problems.length > MAX_PROBLEMS) {
+            out.push(`| ... ${problems.length - MAX_PROBLEMS} more | | | |`);
+          }
+        }
+
+        console.log(out.join("\n"));
+        NODE
+        fi
+
+        exit "$code"
