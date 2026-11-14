@@ -1,6 +1,7 @@
 import { ArrowLeft, History, Menu, Pencil, Play, Send } from "lucide-react";
 import type { EnvironmentListEntry } from "@/api/client";
 import { LabeledSelect } from "@/components/LabeledSelect";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SelectItem } from "@/components/ui/select";
 
@@ -17,6 +18,8 @@ export interface TopBarProps {
   onShowRequest: () => void;
   onShowHistory: () => void;
   onBack: () => void;
+  /** 履歴画面以外で受けた、外部の実行による履歴更新の件数(0 なら表示しない) */
+  newRunCount: number;
   envEditorOpen: boolean;
   onToggleEnvEditor: () => void;
 }
@@ -35,6 +38,7 @@ export function TopBar({
   onShowRequest,
   onShowHistory,
   onBack,
+  newRunCount,
   envEditorOpen,
   onToggleEnvEditor,
 }: TopBarProps) {
@@ -122,9 +126,19 @@ export function TopBar({
         )}
 
         {mode !== "history" && (
-          <Button type="button" variant="outline" onClick={onShowHistory} aria-label="履歴を表示">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={onShowHistory}
+            aria-label={newRunCount > 0 ? `履歴を表示(新しい実行 ${newRunCount} 件)` : "履歴を表示"}
+          >
             <History className="size-4" />
             <span className="hidden sm:inline">履歴</span>
+            {newRunCount > 0 && (
+              <Badge variant="running" aria-hidden="true">
+                新着
+              </Badge>
+            )}
           </Button>
         )}
       </div>

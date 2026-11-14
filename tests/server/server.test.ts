@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { createParser } from "eventsource-parser";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { HistoryEntry } from "../../src/core/index.js";
-import { readAllHistoryEntries } from "../../src/core/index.js";
+import { appendHistory, readAllHistoryEntries } from "../../src/core/index.js";
 import { createApp } from "../../src/server/app.js";
 import type { StartServerResult } from "../../src/server/index.js";
 import { startServer } from "../../src/server/index.js";
@@ -1693,5 +1693,164 @@ describe("klaus server", () => {
       });
       expect(res.status).toBe(401);
     });
+  });
+});
+
+/** GET /api/history/events を購読し、イベントを待ち受けるテスト用クライアント */
+async function subscribeHistoryEvents(base: string, token: string) {
+  const controller = new AbortController();
+  const response = await fetch(`${base}/api/history/events`, {
+    headers: { "X-Klaus-Token": token },
+    signal: controller.signal,
+  });
+  const queue: Array<{ event: string; data: unknown }> = [];
+  const waiters: Array<() => void> = [];
+  const parser = createParser({
+    onEvent(event) {
+      if (!event.data) return;
+      queue.push({ event: event.event ?? "", data: JSON.parse(event.data) });
+      for (const w of waiters.splice(0)) w();
+    },
+  });
+  const reader = response.body?.getReader();
+  const pump = (async () => {
+    if (!reader) return;
+    const decoder = new TextDecoder();
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parser.feed(decoder.decode(value, { stream: true }));
+      }
+    } catch {
+      // abort による中断は想定どおり
+    }
+  })();
+
+  /** 指定イベントが届くまで待つ(固定 sleep ではなくイベント駆動。タイムアウトは寛容に取る) */
+  async function waitFor(eventName: string, timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const index = queue.findIndex((e) => e.event === eventName);
+      if (index >= 0) return queue.splice(index, 1)[0] as { event: string; data: unknown };
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) throw new Error(`event "${eventName}" did not arrive in ${timeoutMs}ms`);
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, remaining);
+        waiters.push(() => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+    }
+  }
+  return {
+    response,
+    waitFor,
+    ended: pump,
+    close: () => controller.abort(),
+  };
+}
+
+describe("GET /api/history/events", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let dir: string;
+  let klaus: StartServerResult;
+  let base: string;
+
+  function entry(runId: string, startedAt: string): HistoryEntry {
+    return {
+      v: 1,
+      runId,
+      flow: "events flow",
+      step: "s1",
+      startedAt,
+      durationMs: 1,
+      status: "passed",
+      assertions: [],
+    };
+  }
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    // .klaus/history が存在しない状態でサーバーを起動する
+    dir = await mkdtemp(join(tmpRoot, "klaus-events-it-"));
+    klaus = await startServer({ cwd: dir });
+    base = `http://127.0.0.1:${klaus.port}`;
+  });
+
+  afterAll(async () => {
+    await klaus.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("トークンが無ければ 401、不一致でも 401", async () => {
+    expect((await fetch(`${base}/api/history/events`)).status).toBe(401);
+    const bad = await fetch(`${base}/api/history/events`, { headers: { "X-Klaus-Token": "x" } });
+    expect(bad.status).toBe(401);
+  });
+
+  it("履歴ディレクトリが無い状態で購読でき、追記(新規日付ファイル作成)で history イベントが届く", async () => {
+    const sub = await subscribeHistoryEvents(base, klaus.token);
+    try {
+      expect(sub.response.status).toBe(200);
+      expect(sub.response.headers.get("content-type")).toContain("text/event-stream");
+      await sub.waitFor("ready");
+
+      await appendHistory(dir, entry("r1", "2026-03-01T00:00:00.000Z"));
+      const first = await sub.waitFor("history");
+      expect(first.data).toMatchObject({ dates: ["2026-03-01"] });
+      expect((first.data as { seq: number }).seq).toBeGreaterThanOrEqual(1);
+
+      // 通知は中身を含まず、取得は認証付きの GET /api/history 経由
+      const page = await fetch(`${base}/api/history`, {
+        headers: { "X-Klaus-Token": klaus.token },
+      });
+      const body = (await page.json()) as { entries: Array<{ runId: string }> };
+      expect(body.entries.map((e) => e.runId)).toEqual(["r1"]);
+    } finally {
+      sub.close();
+    }
+  });
+
+  it("ウォッチャーは購読者数の上限を超えると拒否し、解除後は再び購読できる", async () => {
+    const { createHistoryWatcher } = await import("../../src/server/history-watcher.js");
+    const watcher = createHistoryWatcher(dir, { maxSubscribers: 1 });
+    const noop = { onChange: () => {}, onClose: () => {} };
+    const first = await watcher.subscribe(noop);
+    expect(first).toBeTypeOf("function");
+    expect(await watcher.subscribe(noop)).toBeUndefined();
+    first?.();
+    const again = await watcher.subscribe(noop);
+    expect(again).toBeTypeOf("function");
+    again?.();
+    watcher.close();
+  });
+
+  it("サーバー停止でストリームが終了する", async () => {
+    const stopDir = await mkdtemp(join(tmpRoot, "klaus-events-stop-"));
+    const server = await startServer({ cwd: stopDir });
+    try {
+      const sub = await subscribeHistoryEvents(`http://127.0.0.1:${server.port}`, server.token);
+      await sub.waitFor("ready");
+      await server.close();
+      // close() が購読を終わらせるので、ストリームの読み取りが完了する
+      await sub.ended;
+    } finally {
+      await rm(stopDir, { recursive: true, force: true });
+    }
+  });
+
+  it("クライアント切断後も再購読できる", async () => {
+    const sub = await subscribeHistoryEvents(base, klaus.token);
+    await sub.waitFor("ready");
+    sub.close();
+    await sub.ended;
+    const again = await subscribeHistoryEvents(base, klaus.token);
+    try {
+      await again.waitFor("ready");
+    } finally {
+      again.close();
+    }
   });
 });

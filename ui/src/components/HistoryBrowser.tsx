@@ -1,6 +1,7 @@
 import { Fragment, useMemo, useState } from "react";
 import type { FlowListEntry } from "@/api/client";
 import { LabeledSelect } from "@/components/LabeledSelect";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SelectItem } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -16,6 +17,7 @@ import { useHistory } from "@/hooks/useHistory";
 import { cn } from "@/lib/utils";
 import { formatDateTime, formatDuration } from "@/utils/format";
 import { groupHistoryByRun, resolveStepStatus } from "@/utils/history";
+import { formatActor, pickAudit } from "@/utils/historyEvents";
 import { JsonBlock } from "./JsonBlock";
 import { Spinner } from "./Spinner";
 import { StatusBadge } from "./StatusBadge";
@@ -114,6 +116,8 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                   所要時間
                 </TableHead>
                 <TableHead>ステップ数</TableHead>
+                <TableHead>実行者</TableHead>
+                <TableHead>環境</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -123,6 +127,8 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                 // (iteration が無い通常実行では従来どおり runId のみと同じ挙動になる)
                 const groupKey = `${group.runId}:${group.iteration ?? 0}`;
                 const runExpanded = expandedRun === groupKey;
+                const audit = pickAudit(group.steps);
+                const actorLabel = formatActor(audit.actor);
                 return (
                   <Fragment key={groupKey}>
                     <TableRow
@@ -144,6 +150,19 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                       <TableCell className="font-mono text-muted-foreground">
                         {group.steps.length}
                       </TableCell>
+                      <TableCell className="font-mono">
+                        {actorLabel ? (
+                          // agent / ci を human と見分けやすいよう、human 以外は強調表示する
+                          <Badge variant={audit.actor?.kind === "human" ? "outline" : "running"}>
+                            {actorLabel}
+                          </Badge>
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="font-mono text-muted-foreground">
+                        {audit.env ?? "-"}
+                      </TableCell>
                     </TableRow>
 
                     {runExpanded &&
@@ -158,6 +177,11 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                         if (step.events) stepDetail.events = step.events;
                         // 安全柵に拒否された(error)エントリは拒否理由を詳細に出す
                         if (step.error) stepDetail.error = step.error;
+                        // 監査項目(誰が・どこで・どのコミットで実行したか)
+                        if (step.actor) stepDetail.actor = step.actor;
+                        if (step.env) stepDetail.env = step.env;
+                        if (step.file) stepDetail.file = step.file;
+                        if (step.git) stepDetail.git = step.git;
                         const hasStepDetail = Object.keys(stepDetail).length > 0;
                         return (
                           <Fragment key={stepKey}>
@@ -185,10 +209,12 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                                     ? "エラー"
                                     : "スキップ"}
                               </TableCell>
+                              <TableCell />
+                              <TableCell />
                             </TableRow>
                             {stepExpanded && (
                               <TableRow className="bg-popover hover:bg-popover">
-                                <TableCell colSpan={5} className="whitespace-normal py-3">
+                                <TableCell colSpan={7} className="whitespace-normal py-3">
                                   {hasStepDetail ? (
                                     <JsonBlock value={stepDetail} />
                                   ) : (

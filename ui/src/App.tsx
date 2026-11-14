@@ -11,6 +11,7 @@ import { TopBar } from "@/components/TopBar";
 import { useEnvironments } from "@/hooks/useEnvironments";
 import { useFlowDetail } from "@/hooks/useFlowDetail";
 import { useFlows } from "@/hooks/useFlows";
+import { useHistoryEvents } from "@/hooks/useHistoryEvents";
 import { useRun } from "@/hooks/useRun";
 import { useSingleRequest } from "@/hooks/useSingleRequest";
 
@@ -38,6 +39,11 @@ export function App() {
   } = useFlowDetail(selectedPath ?? undefined);
   const run = useRun(flowDetail);
   const singleRequest = useSingleRequest();
+  // 外部(ターミナルの CLI 等)での実行を検知して履歴を最新化する。認証失敗時は接続しても 401 で止まる
+  const { newRunCount } = useHistoryEvents({
+    viewingHistory: activeTab === "history",
+    localRunActive: run.running || singleRequest.loading,
+  });
 
   // selectedPath ごとに初期 env をすでに適用したかどうかを記録する(下記 effect 参照)
   const initializedEnvForPathRef = useRef<string | null>(null);
@@ -121,6 +127,7 @@ export function App() {
             setActiveTab("history");
           }}
           onBack={() => setActiveTab(returnTabRef.current)}
+          newRunCount={newRunCount}
           envEditorOpen={envEditorOpen}
           onToggleEnvEditor={() => setEnvEditorOpen((open) => !open)}
         />

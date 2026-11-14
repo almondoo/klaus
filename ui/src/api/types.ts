@@ -81,6 +81,18 @@ export interface SseEvent {
   data: string;
 }
 
+/** 履歴に記録される実行主体。src/core/history.ts の HistoryActor と同一契約 */
+export interface HistoryActor {
+  kind: "human" | "agent" | "ci";
+  name?: string;
+}
+
+/** 実行時点の git の状態。src/core/history.ts の HistoryGit と同一契約 */
+export interface HistoryGit {
+  commit: string;
+  dirty: boolean;
+}
+
 /** 履歴 JSONL 1行分(v1)。src/core/history.ts の HistoryEntry と同一契約 */
 export interface HistoryEntry {
   v: 1;
@@ -98,6 +110,11 @@ export interface HistoryEntry {
   status?: "passed" | "failed" | "skipped" | "error";
   /** status が "error"(安全柵による送信拒否)のエントリのみ入る拒否理由 */
   error?: string;
+  /** 監査項目(いずれも旧エントリには無い)。src/core/history.ts の同名フィールドと同一契約 */
+  env?: string;
+  file?: string;
+  actor?: HistoryActor;
+  git?: HistoryGit;
   /** skipped では省略 */
   request?: {
     method: string;

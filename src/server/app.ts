@@ -7,6 +7,7 @@ import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
 import { type GuardOptions, loadFlow, ParseError } from "../core/index.js";
+import { createHistoryWatcher, type HistoryWatcher } from "./history-watcher.js";
 import {
   handleGetEnvironmentDetail,
   handlePostEnvironmentCapture,
@@ -15,6 +16,7 @@ import {
 } from "./routes/environments.js";
 import { listFlows, summarizeStep } from "./routes/flows.js";
 import { getHistoryPage } from "./routes/history.js";
+import { handleHistoryEvents } from "./routes/history-events.js";
 import { handleSingleRequest } from "./routes/request.js";
 import { handleRunRequest } from "./routes/runs.js";
 import { createStaticHandler } from "./routes/static.js";
@@ -38,6 +40,8 @@ export interface CreateAppOptions {
   host?: string;
   /** 送信先ホストの許可リストなどの安全柵。POST /api/runs と POST /api/request の実行に渡す */
   guard?: GuardOptions | undefined;
+  /** 履歴変更通知(GET /api/history/events)用のウォッチャー。未指定なら createApp 内で生成する(サーバー停止時に close したい呼び出し元が渡す) */
+  historyWatcher?: HistoryWatcher | undefined;
 }
 
 /**
@@ -54,6 +58,7 @@ function timingSafeTokenEqual(a: string, b: string): boolean {
 
 export function createApp(options: CreateAppOptions): Hono {
   const { cwd, token, port, staticDir, host = "127.0.0.1", guard } = options;
+  const historyWatcher = options.historyWatcher ?? createHistoryWatcher(cwd);
   const app = new Hono();
 
   const expectedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
@@ -162,6 +167,9 @@ export function createApp(options: CreateAppOptions): Hono {
   app.post("/api/runs", (c) => handleRunRequest(c, cwd, guard));
 
   app.post("/api/request", (c) => handleSingleRequest(c, cwd, guard));
+
+  // /api/history より前に登録する(順序に依存しないが、意図を明確にするため)
+  app.get("/api/history/events", (c) => handleHistoryEvents(c, historyWatcher));
 
   app.get("/api/history", async (c) => {
     const flow = c.req.query("flow");

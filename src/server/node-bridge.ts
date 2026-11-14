@@ -51,6 +51,10 @@ async function writeWebResponse(res: ServerResponse, response: Response): Promis
   }
 
   const reader = response.body.getReader();
+  // クライアント切断を即座に上流へ伝える(書き込みが起きない無通信のストリームでも購読解除させるため)
+  res.once("close", () => {
+    reader.cancel(new Error("client disconnected")).catch(() => {});
+  });
   try {
     for (;;) {
       const { done, value } = await reader.read();

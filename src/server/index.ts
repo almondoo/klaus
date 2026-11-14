@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GuardOptions } from "../core/index.js";
 import { createApp } from "./app.js";
+import { createHistoryWatcher } from "./history-watcher.js";
 import { bridgeHonoApp } from "./node-bridge.js";
 
 export interface StartServerOptions {
@@ -81,7 +82,16 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
   }
   const port = address.port;
 
-  const app = createApp({ cwd, token, port, staticDir, host: bindHost, guard: options.guard });
+  const historyWatcher = createHistoryWatcher(cwd);
+  const app = createApp({
+    cwd,
+    token,
+    port,
+    staticDir,
+    host: bindHost,
+    guard: options.guard,
+    historyWatcher,
+  });
   currentHandler = bridgeHonoApp(app, `127.0.0.1:${port}`);
 
   // 表示・接続用 URL は 127.0.0.1 を使う("0.0.0.0" はワイルドカードバインドであり、
@@ -90,6 +100,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
   const url = `http://${displayHost}:${port}/?token=${token}`;
 
   const close = async (): Promise<void> => {
+    // 履歴変更通知の SSE を先に終わらせ、fs.watch・タイマーを解放する
+    historyWatcher.close();
     for (const socket of sockets) socket.destroy();
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));

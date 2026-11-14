@@ -18,7 +18,17 @@ klaus ui [-p <n>] [-H <host>] [--no-open]
 2. **Flow list (sidebar)**: Lists flow YAML files under the cwd. Files with parse errors are shown with an error icon and reason, and can't be run. Selecting a flow switches to the execution view. The environment selector at the top switches the equivalent of `--env`, and the run button starts execution
 3. **Execution view**: Steps transition live from running → pass/fail (delivered via SSE). Overall progress is shown as "Step n / m"; failed steps auto-expand to show request/response detail (JSON), while successful steps are collapsed by default. A summary is shown on completion
 4. **Environment editor**: Opened via the edit button next to the environment selector; lets you edit the selected environment's key-value pairs in a table. Saving writes back to the file while preserving existing YAML comments. Saving to a protected environment (`$protected: true` or `readonly`) is refused with 403; edit the file directly
-5. **History browser**: Displays `.klaus/history/*.jsonl` newest first. Grouped by run, with row clicks drilling down into step detail. Supports filtering by flow and "load more" paging
+5. **History browser**: Displays `.klaus/history/*.jsonl` newest first. Grouped by run, with row clicks drilling down into step detail. Supports filtering by flow and "load more" paging. The list shows who ran each run (`actor`, e.g. `agent:claude`; agent and CI runs are highlighted) and the environment (`env`); the audit fields are also in the step detail
+
+## Live updates
+
+Runs made outside the UI (for example an AI agent running `klaus run` or `klaus req` in a terminal) show up in the open UI without a reload.
+
+- The server watches `.klaus/history/` and pushes a notification over `GET /api/history/events` (SSE, same `X-Klaus-Token` auth as the other APIs). The notification carries only a sequence number and the changed dates; the UI then re-reads `GET /api/history`
+- The history list refreshes in place: the loaded entries, scroll position, and expanded rows are kept
+- While you are on another screen, the history button shows a "新着" badge. Runs started from the UI itself don't raise it
+- The connection is dropped while the browser tab is hidden and re-established (with one refresh) when you return. If it breaks, the UI reconnects with backoff
+- At most 16 browser connections can subscribe at once
 
 ## Protected environments and the host allowlist
 
