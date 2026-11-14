@@ -136,6 +136,22 @@ step "subscribe": SSE/WS steps are not supported in record/replay mode (HTTP onl
 
 **対処**: このフローは `--record`/`--replay` なしで実行するか、SSE/WS ステップを別のフローファイルに分けて通常どおり実行する。[SSE / WebSocket ステップは非対応](record-replay.md#sse-websocket-ステップは非対応) を参照。
 
+## `klaus req` のエラー
+
+### 「klaus: --body file resolves outside the current directory: "X"」
+
+**症状**
+
+```
+klaus: --body file resolves outside the current directory: "../payload.json"
+```
+
+exit code 2 で終了し、何も送信しない。
+
+**原因**: `--body @<file>` はカレントディレクトリの内側(シンボリックリンクを解決した後も)にあるファイルしか読まない。エージェントが任意のファイルを送信先ホストへ流せないようにするため。
+
+**対処**: ファイルをカレントディレクトリへコピーする(またはそのファイルを含むディレクトリから `klaus req` を実行する)か、`--body '<json>'` でボディを直接渡す。[klaus req](cli.md#リクエストボディ-body)を参照。
+
 ## `klaus ui` のエラー
 
 ### 「Forbidden: environment "X" is protected and cannot be edited via this API (edit the file directly)」

@@ -7,7 +7,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, InvalidArgumentError } from "commander";
 import { ParseError } from "../core/index.js";
-import { MAX_ACTOR_NAME_LENGTH } from "./audit.js";
 import {
   applyConfigToRunOptions,
   applyConfigToUiOptions,
@@ -23,6 +22,15 @@ import {
   historyShowCommand,
 } from "./history.js";
 import { initCommand } from "./init.js";
+import {
+  collectHeaderOption,
+  collectQueryOption,
+  collectVarOption,
+  parseActorOption,
+  parseMethodArgument,
+  parseTimeoutOption,
+} from "./option-parsers.js";
+import { type ReqCommandOptions, reqCommand } from "./req.js";
 import { type RunCommandOptions, runCommand } from "./run.js";
 import { schemaCommand } from "./schema.js";
 import { type UiCommandOptions, uiCommand } from "./ui.js";
@@ -139,18 +147,7 @@ program
   .option(
     "--var <key=value>",
     "set an ad-hoc template variable (repeatable; the value may itself contain '='). Overrides same-named keys loaded from the environment. NOT masked as a secret in output — use OS env + {{env.X}} for real secrets",
-    (value: string, previous: Record<string, string>) => {
-      const separatorIndex = value.indexOf("=");
-      if (separatorIndex <= 0) {
-        // separatorIndex === -1(区切りの "=" が無い)、0(キーが空)のいずれも不正値として拒否する。
-        // commander の _callParseArg は InvalidArgumentError のみ特別扱いする(--port と同じ理由)
-        throw new InvalidArgumentError(`invalid --var value (expected key=value): ${value}`);
-      }
-      // 値側に "=" を含められるよう、最初の "=" だけで分割する
-      const key = value.slice(0, separatorIndex);
-      const varValue = value.slice(separatorIndex + 1);
-      return { ...previous, [key]: varValue };
-    },
+    collectVarOption,
     {} as Record<string, string>,
   )
   .option("--json", "force JSON output (prints JSON even when running on a TTY)")
@@ -208,15 +205,7 @@ program
   .option(
     "--actor <name>",
     "name recorded as history actor.name for this run (the actor kind — human/agent/ci — is still detected from environment variables)",
-    (value: string) => {
-      const name = value.trim();
-      if (name === "" || name.length > MAX_ACTOR_NAME_LENGTH) {
-        throw new InvalidArgumentError(
-          `invalid --actor value (expected 1-${MAX_ACTOR_NAME_LENGTH} characters): ${value}`,
-        );
-      }
-      return name;
-    },
+    parseActorOption,
   )
   .addHelpText(
     "after",
@@ -254,6 +243,71 @@ ${exitCodesHelpLine}
         files,
         guard ? { ...mergedOptions, guard } : mergedOptions,
       );
+    });
+  });
+
+program
+  .command("req")
+  .description("send a single ad-hoc HTTP request (guarded, secret-masked, recorded in history)")
+  .argument("<method>", "HTTP method (e.g. GET, POST; case-insensitive)", parseMethodArgument)
+  .argument("<url>", "request URL (template placeholders such as {{baseUrl}} are expanded)")
+  .option(
+    "-H, --header <name:value>",
+    "request header (repeatable; split at the first ':'. A repeated name keeps the last value). Values are template-expanded",
+    collectHeaderOption,
+    {} as Record<string, string>,
+  )
+  .option(
+    "--query <key=value>",
+    "query string parameter merged into the URL (repeatable; the value may itself contain '='; overrides a same-named key already in the URL)",
+    collectQueryOption,
+    {} as Record<string, string>,
+  )
+  .option(
+    "--body <json>",
+    "request body: a JSON value, or @<file> to read it from a file under the current directory. Input that is not valid JSON is sent as a raw string",
+  )
+  .option(
+    "-e, --env <name>",
+    "environment name (references environments/<name>.yaml; cannot be combined with --env-file)",
+  )
+  .option(
+    "--env-file <path>",
+    "load environment variables from an arbitrary YAML file path (relative to cwd or absolute) instead of a named environment; cannot be combined with -e/--env",
+  )
+  .option(
+    "--var <key=value>",
+    "set an ad-hoc template variable (repeatable; the value may itself contain '='). Overrides same-named keys loaded from the environment. NOT masked as a secret in output — use OS env + {{env.X}} for real secrets",
+    collectVarOption,
+    {} as Record<string, string>,
+  )
+  .option("--timeout <ms>", "request timeout in milliseconds (default 30000)", parseTimeoutOption)
+  .option("--json", "force JSON output (prints JSON even when running on a TTY)")
+  .option("--text", "force text output (prints text even when stdout is not a TTY)")
+  .option("--no-history", "disable writing to the execution history (.klaus/history/*.jsonl)")
+  .option("--no-mask", "disable secret masking in stdout output (JSON/text)")
+  .option(
+    "--actor <name>",
+    "name recorded as history actor.name for this request (the actor kind — human/agent/ci — is still detected from environment variables)",
+    parseActorOption,
+  )
+  .addHelpText(
+    "after",
+    `
+${docsHelpLine}
+${exitCodesHelpLine}
+`,
+  )
+  .action(async (method: string, url: string, options: ReqCommandOptions) => {
+    await runAction(async () => {
+      // req は klaus.config.yaml から guard(送信先ホストの許可リスト)だけを読む。run の既定値
+      // (run.env / run.history / run.mask 等)は `klaus run` のオプション用であり、req には適用しない
+      const configResult = await loadConfigOrReport(process.cwd());
+      if (!configResult.ok) {
+        return;
+      }
+      const guard = resolveGuardOptions(configResult.config);
+      process.exitCode = await reqCommand(method, url, guard ? { ...options, guard } : options);
     });
   });
 
@@ -318,11 +372,11 @@ program
 program
   .command("schema")
   .description(
-    "print the JSON Schema for the flow definition YAML (or the run --json output, or klaus.config.yaml) to stdout",
+    "print the JSON Schema for the flow definition YAML (or the run --json output, the req --json output, or klaus.config.yaml) to stdout",
   )
   .option(
     "-t, --target <target>",
-    'schema to print: "flow" (default), "run-report", or "config"',
+    'schema to print: "flow" (default), "run-report", "req-report", or "config"',
     "flow",
   )
   .action(async (options: { target: string }) => {
@@ -330,10 +384,11 @@ program
     if (
       options.target !== "flow" &&
       options.target !== "run-report" &&
+      options.target !== "req-report" &&
       options.target !== "config"
     ) {
       process.stderr.write(
-        `klaus: invalid --target "${options.target}" (expected "flow", "run-report", or "config")\n`,
+        `klaus: invalid --target "${options.target}" (expected "flow", "run-report", "req-report", or "config")\n`,
       );
       process.exitCode = 1;
       return;

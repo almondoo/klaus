@@ -237,7 +237,10 @@ function truncateBody(body: unknown): string | undefined {
   return truncate(text);
 }
 
-function buildRequest(request: RequestSnapshot | undefined): JsonRequestSnapshot | undefined {
+/** request スナップショットを JSON 出力形(body は 500 文字で切り詰め)にする。req の出力でも再利用する */
+export function buildRequest(
+  request: RequestSnapshot | undefined,
+): JsonRequestSnapshot | undefined {
   if (!request) return undefined;
   return {
     method: request.method,
@@ -247,7 +250,10 @@ function buildRequest(request: RequestSnapshot | undefined): JsonRequestSnapshot
   };
 }
 
-function buildResponse(response: ResponseSnapshot | undefined): JsonResponseSnapshot | undefined {
+/** response スナップショットを JSON 出力形にする。req の出力でも再利用する */
+export function buildResponse(
+  response: ResponseSnapshot | undefined,
+): JsonResponseSnapshot | undefined {
   if (!response) return undefined;
   return {
     status: response.status,
@@ -256,7 +262,8 @@ function buildResponse(response: ResponseSnapshot | undefined): JsonResponseSnap
   };
 }
 
-function buildEvents(events: SseEvent[] | undefined): JsonSseEvent[] | undefined {
+/** SSE イベントを JSON 出力形にする。req の出力でも再利用する */
+export function buildEvents(events: SseEvent[] | undefined): JsonSseEvent[] | undefined {
   return events?.map((event) => ({ event: event.event, id: event.id, data: truncate(event.data) }));
 }
 

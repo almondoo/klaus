@@ -53,13 +53,13 @@ guard:
 | `ui.open` | `klaus ui --no-open`(`false` で無効化に相当) | boolean |
 | `guard.allowedHosts` | なし(config 専用。[送信先ホストの許可リスト](#送信先ホストの許可リスト-guard-allowedhosts)を参照) | 文字列の配列 |
 
-いずれのキーも省略可能。未知のキーを含む場合はスキーマ検証エラーになる([実行結果](#エラー時の扱い)を参照)。
+`run.*` のキーは `klaus run` にのみ適用される。`klaus req` がこのファイルから読むのは `guard` セクションだけ。いずれのキーも省略可能。未知のキーを含む場合はスキーマ検証エラーになる([実行結果](#エラー時の扱い)を参照)。
 
 `run.reportFile` は単一値のみ対応する(CLI の繰り返し指定可能な `--report-file` とは異なる)。`run.report` に複数フォーマット(例: `junit,tap`)を指定した状態で `run.reportFile` も設定した場合、それは「N フォーマットに対して `--report-file` を1個指定した」ことになり、CLI で `--report-file` の指定回数が足りないときと同じ個数不一致エラーになる([CLI リファレンス](cli.md#klaus-run)参照)。複数フォーマットの `run.report` に対してフォーマットごとの出力先を指定したい場合は、コマンドラインで `--report-file` を渡すこと(前述の優先順位のとおり CLI の値が `klaus.config.yaml` より常に優先される)。
 
 ## 送信先ホストの許可リスト (guard.allowedHosts)
 
-`guard.allowedHosts` は、リクエストの送信先として許可するホストを制限する。フロー(や `klaus ui` の単発リクエスト)が意図しないサーバーへ送信してしまう事故を防ぐガードレール。
+`guard.allowedHosts` は、リクエストの送信先として許可するホストを制限する。フロー(や `klaus req`・`klaus ui` の単発リクエスト)が意図しないサーバーへ送信してしまう事故を防ぐガードレール。
 
 ```yaml
 guard:
@@ -79,7 +79,7 @@ guard:
 - 大文字小文字は区別しない。
 - エントリは厳密に検証される。次は検証エラー(exit code 2)になる: `*.` の後ろが 2 ラベル未満(`*.com`、`*.localhost`)、空ラベル(`a..b`、末尾のドット)、パーセントエンコードされたホスト、通常のドット区切り IPv4 以外の数値ホスト(`0`、`2130706433`、`0x7f.1`、8進表記)。`127.0.0.1` のような通常の IPv4、角括弧つき IPv6、`localhost`、`backend` のような単一ラベルの内部名は有効。リクエスト側の URL は URL の正規化後に照合するため、`http://2130706433/` は `127.0.0.1` として扱われる。
 - `guard.allowedHosts` を書かなければ制限なし。空配列や書式不正のエントリは検証エラー(exit code 2、[エラー時の扱い](#エラー時の扱い)を参照)。
-- 送信直前に、テンプレート展開後の URL に対して判定する。対象は HTTP / SSE / WebSocket ステップと、`klaus ui` からの単発リクエスト。`--replay` では判定しない(実送信がないため)。`--record` では判定する。
+- 送信直前に、テンプレート展開後の URL に対して判定する。対象は HTTP / SSE / WebSocket ステップと、`klaus req` および `klaus ui` からの単発リクエスト。`--replay` では判定しない(実送信がないため)。`--record` では判定する。
 - 拒否されたステップは `error` になり、実行は exit code 3 で終わる。[トラブルシューティング](troubleshooting.md#「host-x-is-not-in-guard-allowedhosts-klaus-config-yaml-refusing-to-send-the-request-」)を参照。
 - CLI フラグで上書きする手段は意図的に設けていない。`klaus ui` は起動時に config を読むため、リストを変更したら再起動すること。
 

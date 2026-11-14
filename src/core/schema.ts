@@ -619,6 +619,8 @@ export const configSchema = z.strictObject({
         ),
     })
     .optional()
-    .describe("Safety fences applied to every request sent by `klaus run` and `klaus ui`."),
+    .describe(
+      "Safety fences applied to every request sent by `klaus run`, `klaus req`, and `klaus ui`.",
+    ),
 });
 export type CliConfig = z.infer<typeof configSchema>;

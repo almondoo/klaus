@@ -7,6 +7,7 @@
 import { z } from "zod";
 import { configSchema, flowSchema } from "../core/index.js";
 import { jsonReportSchema } from "./reporters/json.js";
+import { reqReportSchema } from "./reporters/req.js";
 
 /**
  * superRefine による制約(JSON Schema には変換されない)の注記先。
@@ -78,6 +79,14 @@ export function buildRunReportJsonSchema(): Record<string, unknown> {
 }
 
 /**
+ * reqReportSchema(`req --json` の出力形, src/cli/reporters/req.ts)の JSON Schema 表現を生成する。
+ * transform を含まないため flow 側と異なり io オプションは不要。
+ */
+export function buildReqReportJsonSchema(): Record<string, unknown> {
+  return z.toJSONSchema(reqReportSchema) as Record<string, unknown>;
+}
+
+/**
  * configSchema(klaus.config.yaml, src/core/schema.ts)の JSON Schema 表現を生成する。
  * transform を含まないため flow 側と異なり io オプションは不要。
  */
@@ -88,18 +97,21 @@ export function buildConfigJsonSchema(): Record<string, unknown> {
 /**
  * `klaus schema` が出力する対象。
  * "flow": フロー定義 YAML のスキーマ(既定)。"run-report": `klaus run --json` 出力のスキーマ。
+ * "req-report": `klaus req --json` 出力のスキーマ。
  * "config": klaus.config.yaml(CLI オプションの既定値ファイル)のスキーマ。
  */
-export type SchemaTarget = "flow" | "run-report" | "config";
+export type SchemaTarget = "flow" | "run-report" | "req-report" | "config";
 
 /** schema コマンド本体。JSON Schema を stdout に書き出すだけ。常に exit 0 */
 export async function schemaCommand(target: SchemaTarget = "flow"): Promise<number> {
   const json =
     target === "run-report"
       ? buildRunReportJsonSchema()
-      : target === "config"
-        ? buildConfigJsonSchema()
-        : buildFlowJsonSchema();
+      : target === "req-report"
+        ? buildReqReportJsonSchema()
+        : target === "config"
+          ? buildConfigJsonSchema()
+          : buildFlowJsonSchema();
   process.stdout.write(`${JSON.stringify(json, null, 2)}\n`);
   return 0;
 }

@@ -69,7 +69,7 @@ Four optional fields record where a run came from. They are additive, so `v` sta
 |---|---|
 | `env` | Environment name. With `--env-file`, the file's basename. Omitted when no environment is used |
 | `file` | Flow file path relative to the working directory (POSIX separators). Omitted for single requests |
-| `actor` | `{ kind, name? }`. `kind` is `human`, `agent`, or `ci`, detected from the environment: the agent markers `CLAUDECODE` / `AI_AGENT` first, then `CI`, otherwise `human`. `klaus run --actor <name>` sets `name` (the `kind` is still detected). Runs from `klaus ui` record `human` |
+| `actor` | `{ kind, name? }`. `kind` is `human`, `agent`, or `ci`, detected from the environment: the agent markers `CLAUDECODE` / `AI_AGENT` first, then `CI`, otherwise `human`. `klaus run --actor <name>` / `klaus req --actor <name>` sets `name` (the `kind` is still detected). Runs from `klaus ui` record `human` |
 | `git` | `{ commit, dirty }`: `HEAD` at run time, and whether tracked files have uncommitted changes (untracked files are ignored). Omitted when git is unavailable |
 
 View them with `klaus history --fields env,file,actor,git` or `klaus history show <runId>`.

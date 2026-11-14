@@ -1,6 +1,6 @@
 # CLI リファレンス
 
-klaus のコマンドは `run`(フロー実行)・`ui`(localhost Web UI 起動)・`validate`(スキーマ検証)・`schema`(JSON Schema 出力)・`generate`(OpenAPI 仕様からのフロー生成。[OpenAPI からのフロー生成](./generate.md)を参照)・`init`(雛形生成)・`history`(実行履歴の参照)の7つ。
+klaus のコマンドは `run`(フロー実行)・`req`(単発リクエストの送信)・`ui`(localhost Web UI 起動)・`validate`(スキーマ検証)・`schema`(JSON Schema 出力)・`generate`(OpenAPI 仕様からのフロー生成。[OpenAPI からのフロー生成](./generate.md)を参照)・`init`(雛形生成)・`history`(実行履歴の参照)の8つ。
 
 ## --help
 
@@ -195,6 +195,84 @@ request/response スナップショットや assertions などの詳細を持つ
 
 エージェント(Claude Code 等)は exit code だけで故障箇所を判別できる: 2 なら定義を直す、3 なら対象 API の起動状態を見る、4 ならアサーション内容とレスポンスを比較する。
 
+## klaus req
+
+```
+klaus req <method> <url> [options]
+```
+
+フロー定義ファイルを書かずに、HTTP リクエストを1件送る。`klaus ui` の単発リクエスト機能と同じ core の経路を通るため、リクエストには安全柵が効き(後述の「安全柵」を参照)、シークレットはマスクされ、履歴に残る。API を探索するときは `curl` の代わりにこれを使う。`<method>` は大文字小文字を区別しない。URL・ヘッダー値・クエリ値・ボディはフローと同じようにテンプレート展開される(<code v-pre>{{baseUrl}}</code>、<code v-pre>{{env.X}}</code>)。対応するのは HTTP のみで、`Accept: text/event-stream` を付けたリクエストは SSE として受信する。
+
+| オプション | 説明 | デフォルト |
+|---|---|---|
+| `-H`, `--header <name:value>` | リクエストヘッダー(複数指定可)。最初の `:` で分割する。同名(大文字小文字を区別しない)を繰り返した場合は最後の値を使う | — |
+| `--query <key=value>` | URL のクエリ文字列にマージするパラメータ(複数指定可。値に `=` を含められる)。URL に既にある同名キーは上書きする。同じキーを繰り返した場合は最後の値を使う | — |
+| `--body <json>` | リクエストボディ。JSON の値、または `@<file>` でファイルから読む(後述の「リクエストボディ」を参照) | — |
+| `-e`, `--env <name>` | `environments/<name>.yaml` を読み込む(`--env-file` とは併用不可) | 環境なし |
+| `--env-file <path>` | 名前付き環境の代わりに、任意パス(cwd 相対または絶対)の YAML ファイルから環境変数を読み込む。`-e`/`--env` とは併用不可 | — |
+| `--var <key=value>` | その場限りのテンプレート変数を設定する(複数指定可)。環境ファイルの同名の値を上書きする。`klaus run` と同じく、シークレットとしてはマスクされない | — |
+| `--timeout <ms>` | リクエストのタイムアウト(ミリ秒、正の整数) | 30000 |
+| `--json` | TTY でも JSON 出力を強制する | — |
+| `--text` | 非 TTY でも text 出力を強制する(`--json` とは併用不可) | — |
+| `--no-history` | 履歴 JSONL への書き込みを無効にする | 履歴は有効 |
+| `--no-mask` | stdout 出力(JSON/text)のシークレットマスキングを無効にする | マスク有効 |
+| `--actor <name>` | 履歴エントリの `actor.name` に記録する名前(1〜100文字) | — |
+
+`--allow-protected` は意図的に用意していない(`klaus ui` の単発リクエスト機能と同じ)。
+
+### リクエストボディ(--body)
+
+- `--body '<json>'` はパースした JSON の値を送る。オブジェクト・配列は JSON として送られ、`Content-Type` を指定していなければ `application/json` が補われる。
+- `--body @<file>` はファイルから値を読む。パスは cwd 相対(または絶対)で、シンボリックリンクを解決した後も cwd の中に収まる必要がある。それ以外は exit code 2 で拒否する。エージェントが任意のファイルを送信先へ流せないよう、読み取りを cwd 内に限っている。
+- JSON として不正な入力(直接指定もファイル内容も)は、フローの文字列 `body` と同じく生の文字列として送る。この場合 `Content-Type` は補われないため、API が必要とするなら `-H` で指定する。`'"text"'` のような JSON 文字列も、同様に生の文字列 `text` として送られる。
+- ボディ内の文字列値はテンプレート展開される。
+
+### 出力
+
+モードの決め方は `klaus run` と同じ: stdout が非 TTY なら JSON、TTY なら text、`--json` / `--text` で強制できる。結果データは stdout、診断メッセージは stderr に出る。
+
+JSON 出力は compact な1つのオブジェクト。フィールド名は [`run` の JSON 出力](#json-出力-機械向け)のステップと揃えてあるが、応答の確認がこのコマンドの目的なので `request` と `response` は常に含まれる。
+
+```jsonc
+{
+  "version": 1,               // この出力のスキーマバージョン
+  "status": "passed",         // "passed" = 応答を受信した(HTTP ステータスは問わない)、"error" = 送信できなかった・拒否された
+  "startedAt": "2026-11-15T…",
+  "durationMs": 12,
+  "request": { "method": "GET", "url": "…", "headers": {}, "body": "…" },
+  "response": { "status": 200, "headers": {}, "body": "…" },
+  "historyRef": { "date": "2026-11-15", "runId": "<uuid>", "step": "request" }
+}
+```
+
+- `status` が `"error"` のとき `error` に失敗理由(接続不能・タイムアウト・未解決のテンプレート変数・安全柵による拒否)が入り、`response` は無い。`Accept: text/event-stream` のリクエストでは、受信した SSE イベントが `events` に入る。
+- **切り詰め**: request / response の `body` と SSE の `data` は約500文字で切り詰める。全文は `historyRef` から取得できる。
+- **historyRef**: 履歴エントリが実際に書き込まれた場合のみ付く(履歴が有効で、リクエストが応答を得たか安全柵に拒否された場合。接続不能・タイムアウトは履歴に残らない)。`klaus history show <runId> --step request` で全文を取得する。エントリは `flow: "(single)"`・`source: "single"` になり、ほかのエントリと同じく監査項目(`env`、`actor`、`git`)を持つ。[実行履歴](history.md)を参照。
+- <code v-pre>{{env.X}}</code> 由来のシークレットは、`klaus run` と同じく出力で既定でマスクされる。`-H` や `--body` に直接書いたトークンはシークレットとして扱われずマスクされない。本物のシークレットは <code v-pre>{{env.X}}</code> 経由で渡す。
+- JSON Schema は `klaus schema --target req-report` で取得できる([klaus schema](#klaus-schema)を参照)。
+
+text 出力は、1行目に `METHOD URL -> status (duration)`、続いて応答ヘッダーと応答ボディ(約500文字で切り詰め、制御文字は可視エスケープに変換)を出し、履歴エントリを書き込んだ場合は最後に `klaus history show` コマンドを示す `history:` 行を出す。送信しなかったリクエストは、代わりに `ERROR: <理由>` を出す。
+
+### 安全柵
+
+`klaus req` は `klaus run` と同じ安全柵を、送信直前にテンプレート展開後のリクエストへ適用する。
+
+- `klaus.config.yaml` の [`guard.allowedHosts`](config.md#送信先ホストの許可リスト-guard-allowedhosts)が送信先ホストを制限する。`klaus req` がこのファイルから読むのは `guard` セクションだけ。`run:` の既定値(`run.env`、`run.history`、`run.mask` など)は `klaus run` 用で、`klaus req` には適用しない。
+- `$protected: true` の環境ではすべてのリクエストを拒否する。`$protected: readonly` では `GET` / `HEAD` / `OPTIONS` だけを送り、メソッド上書きヘッダーつきのリクエストは拒否する。[保護環境](#保護環境-protected)を参照。
+
+拒否されたリクエストは `status: "error"`・exit code 3 で報告され、拒否は履歴にも記録される。
+
+### exit code
+
+| code | 意味 |
+|---|---|
+| 0 | 応答を受信した(HTTP ステータスは問わない。アサーションは無い) |
+| 1 | 予期しない例外、またはオプションパーサーが拒否した不正なオプション(例: `:` の無い `--header`) |
+| 2 | 入力が不正: `--json` と `--text` の併用、`-e` と `--env-file` の併用、存在しない・cwd の外にある `--body` ファイル、不正なリクエスト定義、不正な環境ファイルまたは `klaus.config.yaml` |
+| 3 | 実行時エラー: 接続不能・タイムアウト・未解決のテンプレート変数、`$protected` や `guard.allowedHosts` によって拒否されたリクエスト |
+
+exit code 4 は返さない。HTTP ステータスで失敗させたい場合は、`assert` を書いたフローを `klaus run` で実行する。
+
 ## klaus ui
 
 ```
@@ -291,13 +369,13 @@ klaus schema [-t <target>]
 
 | オプション | 説明 | デフォルト |
 |---|---|---|
-| `-t`, `--target <target>` | 出力するスキーマ。`flow`(フロー定義 YAML)、`run-report`(`run --json` の出力ペイロード)、`config`([klaus.config.yaml](config.md)) | `flow` |
+| `-t`, `--target <target>` | 出力するスキーマ。`flow`(フロー定義 YAML)、`run-report`(`run --json` の出力ペイロード)、`req-report`(`req --json` の出力ペイロード)、`config`([klaus.config.yaml](config.md)) | `flow` |
 
 JSON Schema(zod スキーマから生成、2スペース pretty print)を stdout に出力するだけで、ファイルへの書き出しはしない。
 
-各スキーマは静的ファイルとしても公開されている: `https://almondoo.github.io/klaus/schema/flow.schema.json` / `https://almondoo.github.io/klaus/schema/run-report.schema.json` / `https://almondoo.github.io/klaus/schema/klaus-config.schema.json`。npm パッケージにも `node_modules/@almondoo/klaus/dist/schema/*.json` として同梱される。
+各スキーマは静的ファイルとしても公開されている: `https://almondoo.github.io/klaus/schema/flow.schema.json` / `https://almondoo.github.io/klaus/schema/run-report.schema.json` / `https://almondoo.github.io/klaus/schema/req-report.schema.json` / `https://almondoo.github.io/klaus/schema/klaus-config.schema.json`。npm パッケージにも `node_modules/@almondoo/klaus/dist/schema/*.json` として同梱される。
 
-`run --json` の `version` フィールドは package.json のバージョンとは独立した単なるリテラル値(現在は `2`)。このスキーマの後方互換を壊す変更(フィールド削除・型変更・意味変更)をする場合のみ値を上げる(オプショナルフィールドの追加のような後方互換な変更では上げない)。利用側は現在の形が不変とは仮定せず、`version` を見て分岐すること。
+`run --json` の `version` フィールドは package.json のバージョンとは独立した単なるリテラル値(現在は `2`。`req --json` は `1`)。このスキーマの後方互換を壊す変更(フィールド削除・型変更・意味変更)をする場合のみ値を上げる(オプショナルフィールドの追加のような後方互換な変更では上げない)。利用側は現在の形が不変とは仮定せず、`version` を見て分岐すること。
 
 `request`/`ws` の排他・どちらか必須、`body`/`graphql` の排他、`graphql` 無しの `method` 必須、`ws.url` のスキーム制約、step 名の一意性は zod の `superRefine` によるカスタムバリデーションであり JSON Schema では表現できないため、該当箇所の `description` に注記を付与する形で補っている。常に exit 0。
 

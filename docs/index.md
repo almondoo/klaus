@@ -16,7 +16,7 @@ Documentation index for klaus, the API verification CLI.
 
 ## Reference
 
-- [CLI Reference](guide/cli.md) — all options for `klaus run` / `klaus ui`, the exit code scheme, and output modes
+- [CLI Reference](guide/cli.md) — all options for `klaus run` / `klaus req` / `klaus ui`, the exit code scheme, and output modes
 - [Flow Definition Reference](guide/flow-definition.md) — the complete YAML reference (request / GraphQL / WebSocket / SSE / templates / capture / assert)
 - [Default CLI options (klaus.config.yaml)](guide/config.md) — set project-wide defaults for CLI options
 - [Execution History](guide/history.md) — the schema and versioning contract for `.klaus/history/*.jsonl`

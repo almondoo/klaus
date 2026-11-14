@@ -1162,6 +1162,17 @@ export interface ExecuteSingleRequestOptions {
    * 呼び出し元(サーバー等)がリクエストボディ由来の値をそのまま渡すため、明示的な undefined を許容する
    */
   envName?: string | undefined;
+  /**
+   * envName の代わりに、任意パス(cwd 相対または絶対)の環境ファイルを直接読み込む場合のパス
+   * (RunFlowOptions.envFilePath と同じ意味)。envName との排他制御は呼び出し元(CLI の req コマンド)の責務で、
+   * ここでは envFilePath が優先される
+   */
+  envFilePath?: string | undefined;
+  /**
+   * テンプレートの env 名前空間へ上書きマージする追加変数(RunFlowOptions.variables と同じ意味。
+   * secrets には登録されずマスク対象外)
+   */
+  variables?: Record<string, string> | undefined;
   /** 履歴書き込みの有無。既定は true(executeFlow の DEFAULT_HISTORY と同じ) */
   history?: boolean;
   /** 送信先ホストの許可リストなどの安全柵。RunFlowOptions.guard と同じ意味・同じ判定を通る */
@@ -1180,6 +1191,13 @@ export interface ExecuteSingleRequestOptions {
 /** executeSingleRequest の結果 */
 export interface ExecuteSingleRequestResult {
   result: StepResult;
+  /** この実行の runId(履歴エントリの runId と一致する。`klaus history show <runId>` で参照できる) */
+  runId: string;
+  /**
+   * 履歴エントリを実際に書き込めたか。history が無効な場合、接続不能・タイムアウトなど履歴に残らない
+   * 実行時エラーの場合、書き込みに失敗した場合は false(この場合 runId で履歴を引いても見つからない)
+   */
+  historyRecorded: boolean;
 }
 
 /**
@@ -1193,18 +1211,25 @@ export async function executeSingleRequest(
 ): Promise<ExecuteSingleRequestResult> {
   const cwd = options.cwd ?? process.cwd();
   const request = requestSchema.parse(options.request);
-  const environment = await loadEnvironment(cwd, undefined, options.envName);
+  const environment = await loadEnvironment(cwd, undefined, options.envName, options.envFilePath);
   // 単発実行は allowProtected を受け取らないため、$protected: true の環境は常に拒否される
-  // (v1 の意図的な挙動。--allow-protected は CLI の run コマンド専用)。
-  // $protected: "readonly" の環境は安全メソッド(GET / HEAD / OPTIONS)のみ許可する
-  const stepGuard = buildStepGuard(options.envName, environment, undefined, options.guard);
+  // (v1 の意図的な挙動。--allow-protected は CLI の run コマンド専用で、req コマンドにも設けない)。
+  // $protected: "readonly" の環境は安全メソッド(GET / HEAD / OPTIONS)のみ許可する。
+  // 保護環境チェックの表示名は executeFlow と同じく、--env-file 指定時はそのファイルパスを使う
+  const stepGuard = buildStepGuard(
+    options.envFilePath ?? options.envName,
+    environment,
+    undefined,
+    options.guard,
+  );
   const runId = randomUUID();
   const flowName = "(single)";
   const captures: Record<string, unknown> = {};
   const secrets = new Set<string>();
   const templateContext: TemplateContext = {
     captures,
-    env: toTemplateVariables(environment),
+    // 追加変数(--var)は環境ファイルの値を上書きする(executeFlow と同じ優先順位)
+    env: { ...toTemplateVariables(environment), ...options.variables },
     secrets,
   };
   const step: Step = { name: "request", request };
@@ -1213,12 +1238,13 @@ export async function executeSingleRequest(
   const outcome = await executeStep(step, templateContext, runId, flowName, undefined, stepGuard);
 
   const shouldWriteHistory = options.history ?? DEFAULT_HISTORY;
+  let historyRecorded = false;
   if (shouldWriteHistory && outcome.historyEntry) {
     const auditFields = buildAuditFields(
       cwd,
       undefined,
       options.envName,
-      undefined,
+      options.envFilePath,
       options.actor,
       options.git,
     );
@@ -1228,6 +1254,7 @@ export async function executeSingleRequest(
     );
     try {
       await appendHistory(cwd, maskedEntry);
+      historyRecorded = true;
     } catch {
       // 単発実行には executeFlow の onWarning のような通知先が無いため、
       // 履歴書き込み失敗はステップ結果に影響させず無視する(executeFlow の警告握りつぶし方針と同じ考え方)
@@ -1237,5 +1264,5 @@ export async function executeSingleRequest(
   // 実行完了時点で収集済みの secrets を呼び出し元へ渡す(履歴とは別経路のマスク用)
   options.onSecrets?.([...secrets]);
 
-  return { result: outcome.result };
+  return { result: outcome.result, runId, historyRecorded };
 }

@@ -1,6 +1,6 @@
 # Agent Skill (Claude Code / Codex)
 
-klaus ships an [Agent Skill](https://code.claude.com/docs/en/skills) (`SKILL.md`) inside the repository (`skills/klaus/SKILL.md`). Placing it where Claude Code or the OpenAI Codex CLI look for skills lets the agent learn how to write flow YAML, the `validate` → `run` → `history` command workflow, and what each exit code means — without reading the source code or this site.
+klaus ships an [Agent Skill](https://code.claude.com/docs/en/skills) (`SKILL.md`) inside the repository (`skills/klaus/SKILL.md`). Placing it where Claude Code or the OpenAI Codex CLI look for skills lets the agent learn how to write flow YAML, the `validate` → `run` → `history` command workflow, using `klaus req` instead of `curl` for ad-hoc requests, and what each exit code means — without reading the source code or this site.
 
 This is independent from the `AGENTS.md` that `klaus init` generates (a project-root summary file); this one is registered with the tool's own skill-discovery mechanism. It's fine to have both.
 

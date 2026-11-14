@@ -105,6 +105,16 @@ describe("initCommand", () => {
     expect(agentsContent).toContain("no CLI flag to bypass");
   });
 
+  it("生成される AGENTS.md には curl の代わりに klaus req を使う旨と、シークレットを {{env.X}} で渡す旨が含まれる", async () => {
+    await initCommand(workDir);
+
+    const agentsContent = await readFile(join(workDir, "AGENTS.md"), "utf-8");
+    expect(agentsContent).toContain("`klaus req <method> <url>`");
+    expect(agentsContent).toContain("instead of `curl`");
+    expect(agentsContent).toContain("send requests with `klaus req` rather than `curl`/`wget`");
+    expect(agentsContent).toContain("Authorization: Bearer {{env.TOKEN}}");
+  });
+
   it("生成した api/example.yaml は klaus のローダー(loadFlow)を通る", async () => {
     await initCommand(workDir);
 

@@ -135,7 +135,7 @@ testEmail: test@example.com
 
 ## 次に読むべきページ
 
-- [cli](cli.md) — `klaus run` / `klaus ui` の全オプションと exit code 体系
+- [cli](cli.md) — `klaus run` / `klaus req` / `klaus ui` の全オプションと exit code 体系
 - [flow-definition](flow-definition.md) — フロー定義 YAML の全フィールド(SSE / WebSocket / GraphQL / アサーション種別を含む)リファレンス
 - [history](history.md) — 実行履歴 JSONL のスキーマ
 - [ui](ui.md) — `klaus ui` で起動する localhost Web UI

@@ -50,6 +50,10 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
   - \`--no-history\`: disable writing to the execution history (.klaus/history/*.jsonl)
   - \`--allow-protected\`: required to run against an environment marked \`$protected: true\`, and to send anything other than GET/HEAD/OPTIONS to one marked \`$protected: readonly\` (otherwise refused with exit code 3)
   - \`--record <dir>\` / \`--replay <dir>\`: record real HTTP request/response pairs to a cassette in \`<dir>\`, or replay them offline instead of hitting the network (mutually exclusive; \`--record\` cannot combine with \`--jobs\` > 1)
+- \`klaus req <method> <url>\`: send one ad-hoc HTTP request without a flow file; use this instead of \`curl\` when exploring an API, because it is guarded (\`guard.allowedHosts\`, \`$protected\`), secret-masked, and leaves a history entry that \`klaus history show\` can read
+  - \`-H, --header <name:value>\` / \`--query <key=value>\` (both repeatable) / \`--body <json>\` or \`--body @<file>\` (the file must be inside the cwd; input that is not valid JSON is sent as a raw string)
+  - \`-e, --env <name>\` / \`--env-file <path>\` / \`--var <key=value>\` / \`--timeout <ms>\` / \`--no-history\` / \`--no-mask\` / \`--json\` / \`--text\` / \`--actor <name>\`
+  - Exit 0 whenever a response arrives (any HTTP status; there are no assertions), 3 on a send error or a guard refusal, 2 on invalid input. There is no \`--allow-protected\`
 - \`klaus validate [files...]\`: schema-validate flow YAML without executing (with no arguments, discovers and validates all flows; errors carry a fix-example hint)
 - \`klaus schema\`: print the flow YAML's JSON Schema to stdout (useful for editor completion and improving flow generation accuracy)
 - \`klaus history\`: list execution history (\`--flow <name>\` / \`--failed\` / \`--last <n>\` / \`--fields <csv>\`; the default output is a summary without bodies)
@@ -77,6 +81,7 @@ Non-TTY output (pipes, CI, agent execution, etc.) is automatically JSON. Result 
 
 ## Notes for agent environments
 
+- When exploring an API, send requests with \`klaus req\` rather than \`curl\`/\`wget\`: those bypass \`guard.allowedHosts\`, \`$protected\`, secret masking, and the history. Pass secrets as \`{{env.X}}\` (for example \`-H "Authorization: Bearer {{env.TOKEN}}"\`), never as literals, so they are masked.
 - \`klaus ui\` starts a server and then waits forever; agents should not launch it by default. If you do launch it, run it in the background with an explicit timeout.
 - OpenAI Codex CLI disables sandbox network access by default, which makes \`klaus run\`'s HTTP requests fail. Set \`network_access = true\` under \`[sandbox_workspace_write]\` in \`~/.codex/config.toml\` to allow them.
 - Mark environment files you don't want an agent to run against by default (e.g. production) with \`$protected\` in the environment YAML. With \`$protected: true\`, \`klaus run\` refuses to run against that environment at all (exit code 3) unless \`--allow-protected\` is explicitly passed. With \`$protected: readonly\`, GET/HEAD/OPTIONS are allowed without the flag, while other methods and WebSocket steps are refused (exit code 3); a GET carrying a method-override header (\`X-HTTP-Method-Override\` etc.) is refused too. \`klaus ui\` / the server API never pass \`--allow-protected\`: single requests are allowed only for safe methods on \`readonly\` environments (and refused on \`true\`), and saving to a protected environment from the UI returns 403.

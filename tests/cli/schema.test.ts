@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildConfigJsonSchema,
   buildFlowJsonSchema,
+  buildReqReportJsonSchema,
   buildRunReportJsonSchema,
   schemaCommand,
 } from "../../src/cli/schema.js";
@@ -93,6 +94,19 @@ describe("buildRunReportJsonSchema", () => {
   });
 });
 
+describe("buildReqReportJsonSchema", () => {
+  it("version/status/request/response/historyRef など req --json(v1)の主要プロパティを含む", () => {
+    const json = buildReqReportJsonSchema() as {
+      type: string;
+      properties: Record<string, unknown>;
+    };
+    expect(json.type).toBe("object");
+    for (const key of ["version", "status", "request", "response", "error", "historyRef"]) {
+      expect(json.properties[key], key).toBeDefined();
+    }
+  });
+});
+
 describe("buildConfigJsonSchema", () => {
   it("JSON として parse できる JSON Schema を返す", () => {
     const json = buildConfigJsonSchema();
@@ -147,6 +161,13 @@ describe("schemaCommand / target", () => {
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdoutSpy.join(""));
     expect(parsed.properties.summary).toBeDefined();
+  });
+
+  it('target: "req-report" 指定時は req --json スキーマを出力する', async () => {
+    const exitCode = await schemaCommand("req-report");
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdoutSpy.join(""));
+    expect(parsed.properties.historyRef).toBeDefined();
   });
 
   it('target: "config" 指定時は klaus.config.yaml のスキーマを出力する', async () => {

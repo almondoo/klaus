@@ -1,6 +1,6 @@
 # Agent Skill(Claude Code / Codex)
 
-klaus はリポジトリ内に [Agent Skill](https://code.claude.com/docs/en/skills)(`SKILL.md`)形式のドキュメントを同梱している(`skills/klaus/SKILL.md`)。Claude Code や OpenAI Codex CLI に配置しておくと、フロー YAML の書き方・`validate` → `run` → `history` のコマンドワークフロー・exit code の意味などを、エージェントがソースコードや本サイトを読みに行かずに把握できる。
+klaus はリポジトリ内に [Agent Skill](https://code.claude.com/docs/en/skills)(`SKILL.md`)形式のドキュメントを同梱している(`skills/klaus/SKILL.md`)。Claude Code や OpenAI Codex CLI に配置しておくと、フロー YAML の書き方・`validate` → `run` → `history` のコマンドワークフロー・単発のリクエストに `curl` ではなく `klaus req` を使うこと・exit code の意味などを、エージェントがソースコードや本サイトを読みに行かずに把握できる。
 
 `klaus init` が生成する `AGENTS.md`(プロジェクト直下に置く要点まとめ)とは独立した仕組みで、こちらはツール側(Claude Code / Codex)のスキル検索機構に登録する形式。両方配置しても問題はない。
 

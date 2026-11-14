@@ -21,6 +21,11 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
   - `--jobs <n>`: run up to `n` execution units (flow, or flow x data-row when `--data` is set) in parallel, 1-32, default 1; steps within one flow stay sequential; cannot combine with `--record`
   - `--record <dir>`: record real HTTP request/response pairs (masked) to a cassette in `<dir>` while still hitting the network
   - `--replay <dir>`: replay HTTP responses from the cassette in `<dir>` instead of the network, for deterministic offline runs; unrecorded requests fail with exit code 3; mutually exclusive with `--record`
+- `klaus req <method> <url>`: send one ad-hoc HTTP request without a flow file — use this instead of `curl` when exploring an API, because it is guarded (`guard.allowedHosts`, `$protected`), secret-masked, and leaves a history entry that `klaus history show` can read
+  - `-H, --header <name:value>` / `--query <key=value>` (both repeatable) / `--body <json>` or `--body @<file>` (file must be inside the cwd; input that is not valid JSON is sent as a raw string)
+  - `-e, --env <name>` / `--env-file <path>` / `--var <key=value>` / `--timeout <ms>` / `--no-history` / `--no-mask` / `--json` / `--text` / `--actor <name>`; templates (`{{var}}`, `{{env.X}}`) work in the URL, headers, and body
+  - Exit 0 whenever a response arrives (any HTTP status; there are no assertions), 3 on a send error or a guard refusal, 2 on invalid input. There is no `--allow-protected`
+  - JSON output (non-TTY default) is `{version, status, startedAt, durationMs, request, response, historyRef?, ...}` with bodies truncated to 500 characters; fetch the full text with `klaus history show <historyRef.runId> --step request`
 - `klaus validate [files...]`: schema-validate flow YAML without executing (with no arguments, discovers and validates all flows; errors carry a fix-example hint)
 - `klaus schema`: print the flow YAML's JSON Schema to stdout (useful for editor completion and improving flow generation accuracy); a project-level `klaus.config.yaml` can set per-project defaults for `run`/`ui` options (schema via `klaus schema --target config`)
 - `klaus history`: list execution history (`--flow <name>` / `--failed` / `--last <n>` / `--fields <csv>`; the default output is a summary without bodies)
@@ -96,7 +101,8 @@ Place `baseUrl: https://example.com` in `environments/local.yaml`, then run with
 - OpenAI Codex CLI disables sandbox network access by default, which makes `klaus run`'s HTTP requests fail. Set `network_access = true` under `[sandbox_workspace_write]` in `~/.codex/config.toml` to allow them.
 - Mark production-like environments with `$protected: true` in the environment YAML; `klaus run` then refuses to execute against them (exit code 3) unless `--allow-protected` is explicitly passed. `$protected: readonly` is milder: GET / HEAD / OPTIONS run, every other method (and WebSocket) is refused without the flag.
 - `guard.allowedHosts` in `klaus.config.yaml` restricts the hosts requests may be sent to (a refusal is exit code 3: `host "X" is not in guard.allowedHosts`). There is no CLI flag to bypass it; do not edit the list or pass `--allow-protected` just to get past a refusal, ask the user instead.
-- `klaus ui` cannot write protected environments (403); history entries record `env` / `file` / `actor` / `git`, and `klaus run --actor <name>` names the actor.
+- When exploring an API, send requests with `klaus req` rather than `curl`/`wget`: those bypass `guard.allowedHosts`, `$protected`, secret masking, and the history. Pass secrets as `{{env.X}}` (for example `-H "Authorization: Bearer {{env.TOKEN}}"`), never as literals, so they are masked.
+- `klaus ui` cannot write protected environments (403); history entries record `env` / `file` / `actor` / `git`, and `klaus run --actor <name>` / `klaus req --actor <name>` names the actor.
 - Only values referenced via `{{env.X}}` are treated as secrets and masked as "***" in history; captured values and `--env-file` values are recorded unmasked (see SECURITY.md) — never print raw secret values yourself regardless.
 
 ## Division of labor with Claude Code hooks

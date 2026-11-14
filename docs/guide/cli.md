@@ -1,6 +1,6 @@
 # CLI Reference
 
-klaus has seven commands: `run` (executes flows), `ui` (launches the localhost web UI), `validate` (schema-validates flows), `schema` (prints a JSON Schema), `generate` (generates flows from an OpenAPI spec; see [Generating Flows from OpenAPI](./generate.md)), `init` (scaffolds a starting point), and `history` (inspects execution history).
+klaus has eight commands: `run` (executes flows), `req` (sends a single ad-hoc request), `ui` (launches the localhost web UI), `validate` (schema-validates flows), `schema` (prints a JSON Schema), `generate` (generates flows from an OpenAPI spec; see [Generating Flows from OpenAPI](./generate.md)), `init` (scaffolds a starting point), and `history` (inspects execution history).
 
 ## --help
 
@@ -195,6 +195,84 @@ Details of the decision rules:
 
 An agent (such as Claude Code) can identify where things went wrong from the exit code alone: 2 means fix the definition, 3 means check whether the target API is up, and 4 means compare the assertion against the response.
 
+## klaus req
+
+```
+klaus req <method> <url> [options]
+```
+
+Sends one ad-hoc HTTP request without writing a flow file. It runs through the same core path as the single-request feature of `klaus ui`, so the request is guarded (see "Guardrails" below), secret-masked, and recorded in the history. Use it instead of `curl` when exploring an API. `<method>` is case-insensitive. The URL, header values, query values, and the body are template-expanded exactly as in flows (<code v-pre>{{baseUrl}}</code>, <code v-pre>{{env.X}}</code>). Only HTTP is supported; a request that carries `Accept: text/event-stream` is received as SSE.
+
+| Option | Description | Default |
+|---|---|---|
+| `-H`, `--header <name:value>` | Request header (repeatable). Split at the first `:`; a repeated name (case-insensitive) keeps the last value | — |
+| `--query <key=value>` | Query string parameter merged into the URL (repeatable; the value may itself contain `=`). Overrides a same-named key already in the URL; a repeated key keeps the last value | — |
+| `--body <json>` | Request body: a JSON value, or `@<file>` to read it from a file (see "Request body" below) | — |
+| `-e`, `--env <name>` | Loads `environments/<name>.yaml` (cannot be combined with `--env-file`) | no environment |
+| `--env-file <path>` | Loads environment variables from an arbitrary YAML file path (relative to cwd or absolute). Cannot be combined with `-e`/`--env` | — |
+| `--var <key=value>` | Sets an ad-hoc template variable (repeatable), overriding same-named environment values. Not masked as a secret, same as for `klaus run` | — |
+| `--timeout <ms>` | Request timeout in milliseconds (positive integer) | 30000 |
+| `--json` | Forces JSON output even on a TTY | — |
+| `--text` | Forces text output even when not a TTY (cannot be combined with `--json`) | — |
+| `--no-history` | Disables writing to the history JSONL | history enabled |
+| `--no-mask` | Disables secret masking in stdout output (JSON/text) | masking enabled |
+| `--actor <name>` | Name recorded as `actor.name` in the history entry (1-100 characters) | — |
+
+There is deliberately no `--allow-protected`, the same as for the single-request feature of `klaus ui`.
+
+### Request body (`--body`)
+
+- `--body '<json>'` sends the parsed JSON value. Objects and arrays are sent as JSON with `Content-Type: application/json` added when you did not set one.
+- `--body @<file>` reads the value from a file. The path is relative to the cwd (or absolute) and must resolve inside the cwd, symbolic links included; anything else is refused with exit code 2. Reading is limited to the cwd so an agent cannot send arbitrary files to the target.
+- Input that is not valid JSON (inline or from a file) is sent as a raw string, the same as a string `body` in a flow. No `Content-Type` is added in that case, so set one with `-H` when the API needs it. A JSON string such as `'"text"'` is likewise sent as the raw string `text`.
+- String values inside the body are template-expanded.
+
+### Output
+
+The mode is chosen like `klaus run`: JSON when stdout is not a TTY, text on a TTY, forced with `--json` / `--text`. Result data goes to stdout; diagnostics go to stderr.
+
+The JSON output is one compact object. Its field names match the step objects of the [`run` JSON output](#json-output-for-machines), but `request` and `response` are always included because inspecting the response is the point of the command:
+
+```jsonc
+{
+  "version": 1,               // schema version of this output
+  "status": "passed",         // "passed" = a response was received (any HTTP status), "error" = not sent or refused
+  "startedAt": "2026-11-15T…",
+  "durationMs": 12,
+  "request": { "method": "GET", "url": "…", "headers": {}, "body": "…" },
+  "response": { "status": 200, "headers": {}, "body": "…" },
+  "historyRef": { "date": "2026-11-15", "runId": "<uuid>", "step": "request" }
+}
+```
+
+- `error` carries the failure reason when `status` is `"error"` (connection failure, timeout, unresolved template variable, guard refusal); `response` is then absent. `events` lists the received SSE events for an `Accept: text/event-stream` request.
+- **Truncation**: request and response `body` and SSE `data` are truncated to about 500 characters. The full text is available through `historyRef`.
+- **historyRef**: present only when a history entry was actually written (history enabled, and the request either got a response or was refused by a guard; connection failures and timeouts are not recorded). Fetch the full record with `klaus history show <runId> --step request`. The entry has `flow: "(single)"` and `source: "single"`, and carries the audit fields (`env`, `actor`, `git`) like any other entry; see [Execution History](history.md).
+- Secrets from <code v-pre>{{env.X}}</code> are masked in the output by default, as for `klaus run`. Literal tokens typed into `-H` or `--body` are not secrets and are not masked; pass real secrets through <code v-pre>{{env.X}}</code>.
+- The JSON Schema is available through `klaus schema --target req-report` (see [klaus schema](#klaus-schema)).
+
+The text output starts with a `METHOD URL -> status (duration)` line, then the response headers and the response body (truncated to about 500 characters, control characters shown as visible escapes), and a `history:` line with the `klaus history show` command when a history entry was written. A request that was not sent prints `ERROR: <reason>` instead.
+
+### Guardrails
+
+`klaus req` applies the same guards as `klaus run`, evaluated right before sending on the template-expanded request:
+
+- [`guard.allowedHosts`](config.md#host-allowlist-guard-allowedhosts) in `klaus.config.yaml` restricts the target host. `klaus req` reads only the `guard` section of that file. The `run:` defaults (`run.env`, `run.history`, `run.mask`, ...) are for `klaus run` and are not applied to `klaus req`.
+- An environment with `$protected: true` refuses every request. With `$protected: readonly`, only `GET` / `HEAD` / `OPTIONS` are sent, and a request carrying a method-override header is refused. See [Protected environments](#protected-environments-protected).
+
+A refused request is reported as `status: "error"` with exit code 3, and the refusal is recorded in the history.
+
+### Exit codes
+
+| code | Meaning |
+|---|---|
+| 0 | A response was received (any HTTP status code; there are no assertions) |
+| 1 | Unexpected exception, or a malformed option rejected by the option parser (for example `--header` without a `:`) |
+| 2 | Invalid input: `--json` with `--text`, `-e` with `--env-file`, a `--body` file that is missing or outside the cwd, an invalid request definition, or an invalid environment file or `klaus.config.yaml` |
+| 3 | Runtime error: connection failure, timeout, unresolved template variable, or a request refused by `$protected` or `guard.allowedHosts` |
+
+Exit code 4 is never returned. To fail on an HTTP status, write a flow with an `assert` and use `klaus run`.
+
 ## klaus ui
 
 ```
@@ -291,13 +369,13 @@ klaus schema [-t <target>]
 
 | Option | Description | Default |
 |---|---|---|
-| `-t`, `--target <target>` | The schema to print: `flow` (the flow definition YAML), `run-report` (the `run --json` output payload), or `config` ([klaus.config.yaml](config.md)) | `flow` |
+| `-t`, `--target <target>` | The schema to print: `flow` (the flow definition YAML), `run-report` (the `run --json` output payload), `req-report` (the `req --json` output payload), or `config` ([klaus.config.yaml](config.md)) | `flow` |
 
 Prints the JSON Schema (generated from the zod schema, 2-space pretty-printed) to stdout only — nothing is written to disk.
 
-Each schema is also published as a static file: `https://almondoo.github.io/klaus/schema/flow.schema.json`, `https://almondoo.github.io/klaus/schema/run-report.schema.json`, and `https://almondoo.github.io/klaus/schema/klaus-config.schema.json`, and bundled in the npm package at `node_modules/@almondoo/klaus/dist/schema/*.json`.
+Each schema is also published as a static file: `https://almondoo.github.io/klaus/schema/flow.schema.json`, `https://almondoo.github.io/klaus/schema/run-report.schema.json`, `https://almondoo.github.io/klaus/schema/req-report.schema.json`, and `https://almondoo.github.io/klaus/schema/klaus-config.schema.json`, and bundled in the npm package at `node_modules/@almondoo/klaus/dist/schema/*.json`.
 
-The `version` field of the `run --json` payload is a plain literal (currently `2`), independent of the package version. It is bumped only when a change to this schema would break existing consumers (a field is removed, a field's type changes, or its meaning changes) — purely additive changes such as a new optional field do not bump it. Consumers should branch on `version` rather than assume the current shape is permanent.
+The `version` field of the `run --json` payload is a plain literal (currently `2`; `1` for `req --json`), independent of the package version. It is bumped only when a change to this schema would break existing consumers (a field is removed, a field's type changes, or its meaning changes) — purely additive changes such as a new optional field do not bump it. Consumers should branch on `version` rather than assume the current shape is permanent.
 
 The `request`/`ws` exclusivity and requiredness, the `body`/`graphql` exclusivity, `method` being required unless `graphql` is set, the `ws.url` scheme constraint, and step name uniqueness are all custom validations expressed via zod's `superRefine` and can't be represented in JSON Schema, so they're instead noted in the `description` of the relevant subschema. Always exits 0.
 

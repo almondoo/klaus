@@ -23,6 +23,23 @@ async function startFixtureServer() {
       res.end(JSON.stringify({ url: req.url }));
       return;
     }
+    // req コマンド用: 受け取ったメソッド・URL・ヘッダー・ボディをそのままエコーする(任意メソッド)
+    if (req.url?.startsWith("/req-echo")) {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            method: req.method,
+            url: req.url,
+            headers: req.headers,
+            body: Buffer.concat(chunks).toString("utf-8"),
+          }),
+        );
+      });
+      return;
+    }
     res.writeHead(404, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ error: "not found" }));
   });
@@ -890,5 +907,145 @@ describe("cli integration", () => {
     const showParsed = JSON.parse(showResult.stdout) as Array<Record<string, unknown>>;
     expect(showParsed).toHaveLength(1);
     expect(showParsed[0]?.step).toBe("ok");
+  });
+
+  it("(req-1) req GET: exit 0 + version 1 の JSON(request / response)。HTTP 404 でも応答を受信したので exit 0", async () => {
+    const ok = await runCli(["req", "GET", `${fixture.baseUrl}/ok`, "--no-history"], workDir);
+
+    expect(ok.status).toBe(0);
+    const report = JSON.parse(ok.stdout);
+    expect(report.version).toBe(1);
+    expect(report.status).toBe("passed");
+    expect(report.request.method).toBe("GET");
+    expect(report.response.status).toBe(200);
+    expect(report).not.toHaveProperty("historyRef");
+
+    const notFound = await runCli(
+      ["req", "GET", `${fixture.baseUrl}/missing`, "--no-history"],
+      workDir,
+    );
+    expect(notFound.status).toBe(0);
+    expect(JSON.parse(notFound.stdout).response.status).toBe(404);
+  });
+
+  it("(req-2) req POST: -H / --query / --body を送信し、historyRef の runId で history show から全文を取得できる", async () => {
+    const reqWorkDir = join(workDir, "req-scenario");
+    await mkdir(reqWorkDir, { recursive: true });
+
+    const result = await runCli(
+      [
+        "req",
+        "post",
+        `${fixture.baseUrl}/req-echo`,
+        "-H",
+        "X-Trace: abc",
+        "--query",
+        "q=klaus",
+        "--body",
+        '{"name":"a"}',
+        "--actor",
+        "it-agent",
+      ],
+      reqWorkDir,
+    );
+
+    expect(result.status).toBe(0);
+    const report = JSON.parse(result.stdout);
+    const echo = JSON.parse(report.response.body);
+    expect(echo.method).toBe("POST");
+    expect(echo.url).toBe("/req-echo?q=klaus");
+    expect(echo.headers["x-trace"]).toBe("abc");
+    expect(JSON.parse(echo.body)).toEqual({ name: "a" });
+    expect(report.historyRef).toMatchObject({ step: "request" });
+
+    const show = await runCli(
+      ["history", "show", report.historyRef.runId, "--step", "request"],
+      reqWorkDir,
+    );
+    expect(show.status).toBe(0);
+    const entries = JSON.parse(show.stdout) as Array<Record<string, unknown>>;
+    expect(entries[0]).toMatchObject({
+      source: "single",
+      actor: { name: "it-agent" },
+      request: { method: "POST" },
+    });
+  });
+
+  it("(req-3) req: 接続不能は exit 3(status: error)", async () => {
+    const closedPort = await reserveClosedPort();
+
+    const result = await runCli(
+      ["req", "GET", `http://127.0.0.1:${closedPort}/`, "--no-history"],
+      workDir,
+    );
+
+    expect(result.status).toBe(3);
+    expect(JSON.parse(result.stdout).status).toBe("error");
+  });
+
+  it("(req-4) req: guard.allowedHosts は exit 3 で拒否し、$protected: readonly は GET のみ許可する", async () => {
+    const guardWorkDir = join(workDir, "req-guard-scenario");
+    await mkdir(join(guardWorkDir, "environments"), { recursive: true });
+    await writeFile(
+      join(guardWorkDir, "environments", "stg.yaml"),
+      `$protected: readonly\nbaseUrl: ${fixture.baseUrl}\n`,
+      "utf-8",
+    );
+
+    const get = await runCli(
+      ["req", "GET", "{{baseUrl}}/req-echo", "-e", "stg", "--no-history"],
+      guardWorkDir,
+    );
+    const post = await runCli(
+      ["req", "POST", "{{baseUrl}}/req-echo", "-e", "stg", "--no-history"],
+      guardWorkDir,
+    );
+    expect(get.status).toBe(0);
+    expect(post.status).toBe(3);
+    expect(JSON.parse(post.stdout).error).toContain("refusing POST");
+
+    await writeFile(
+      join(guardWorkDir, "klaus.config.yaml"),
+      "guard:\n  allowedHosts:\n    - api.example.com\n",
+      "utf-8",
+    );
+    const denied = await runCli(
+      ["req", "GET", `${fixture.baseUrl}/req-echo`, "--no-history"],
+      guardWorkDir,
+    );
+    expect(denied.status).toBe(3);
+    expect(JSON.parse(denied.stdout).error).toContain("guard.allowedHosts");
+  });
+
+  it("(req-5) req: 不正な引数は exit 0 以外(--header の形式不正は commander、--json と --text の併用・cwd 外の --body ファイルは exit 2)で、何も送信しない", async () => {
+    const badHeader = await runCli(
+      ["req", "GET", `${fixture.baseUrl}/ok`, "-H", "novalue", "--no-history"],
+      workDir,
+    );
+    expect(badHeader.status).not.toBe(0);
+    expect(badHeader.stderr).toContain("invalid --header value");
+    expect(badHeader.stderr).not.toMatch(/^\s+at\s/m);
+    expect(badHeader.stdout).toBe("");
+
+    const both = await runCli(
+      ["req", "GET", `${fixture.baseUrl}/ok`, "--json", "--text", "--no-history"],
+      workDir,
+    );
+    expect(both.status).toBe(2);
+    expect(both.stdout).toBe("");
+
+    const outside = await runCli(
+      ["req", "POST", `${fixture.baseUrl}/ok`, "--body", "@../outside.json", "--no-history"],
+      workDir,
+    );
+    expect(outside.status).toBe(2);
+    expect(outside.stderr).toContain("outside the current directory");
+  });
+
+  it("(req-6) schema -t req-report: req --json の JSON Schema を出力し exit 0 になる", async () => {
+    const result = await runCli(["schema", "-t", "req-report"], workDir);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).properties.historyRef).toBeDefined();
   });
 });

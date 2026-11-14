@@ -53,13 +53,13 @@ guard:
 | `ui.open` | `klaus ui --no-open` (equivalent to disabling with `false`) | boolean |
 | `guard.allowedHosts` | none (config only; see [Host allowlist](#host-allowlist-guard-allowedhosts)) | array of strings |
 
-All keys are optional. Unknown keys cause a schema validation error (see [Error handling](#error-handling) below).
+The `run.*` keys apply to `klaus run` only; `klaus req` reads just the `guard` section of this file. All keys are optional. Unknown keys cause a schema validation error (see [Error handling](#error-handling) below).
 
 `run.reportFile` only supports a single value (unlike the CLI's repeatable `--report-file`). If `run.report` lists more than one format (e.g. `junit,tap`) and `run.reportFile` is also set, that counts as one `--report-file` for N formats — the same count-mismatch error as passing too few `--report-file` flags on the CLI (see [CLI Reference](cli.md#klaus-run)). To set per-format paths for a multi-format `run.report`, pass `--report-file` on the command line instead (CLI values always take precedence over `klaus.config.yaml`, per the priority rule above).
 
 ## Host allowlist (guard.allowedHosts)
 
-`guard.allowedHosts` restricts which hosts requests may be sent to. It is a guardrail against a flow (or a single request from `klaus ui`) hitting an unintended server.
+`guard.allowedHosts` restricts which hosts requests may be sent to. It is a guardrail against a flow (or a single request from `klaus req` or `klaus ui`) hitting an unintended server.
 
 ```yaml
 guard:
@@ -79,7 +79,7 @@ guard:
 - Matching is case-insensitive.
 - Entries are validated strictly. Rejected (validation error, exit code 2): `*.` followed by fewer than two labels (`*.com`, `*.localhost`), empty labels (`a..b`, a trailing dot), percent-encoded hosts, and numeric hosts other than plain dotted-quad IPv4 (`0`, `2130706433`, `0x7f.1`, octal forms). Plain IPv4 such as `127.0.0.1`, bracketed IPv6, `localhost`, and single-label internal names such as `backend` are valid. Request URLs are compared after URL normalization, so `http://2130706433/` is treated as `127.0.0.1`.
 - If `guard.allowedHosts` is unset, there is no restriction. An empty array or a malformed entry is a validation error (exit code 2, see [Error handling](#error-handling)).
-- The check runs right before sending, on the template-resolved URL, for HTTP, SSE, and WebSocket steps and for single requests from `klaus ui`. It is not applied with `--replay` (nothing is sent), and is applied with `--record`.
+- The check runs right before sending, on the template-resolved URL, for HTTP, SSE, and WebSocket steps and for single requests from `klaus req` and `klaus ui`. It is not applied with `--replay` (nothing is sent), and is applied with `--record`.
 - A refused step ends as `error` and the run exits with code 3. See [Troubleshooting](troubleshooting.md#host-x-is-not-in-guard-allowedhosts-klaus-config-yaml-refusing-to-send-the-request).
 - There is deliberately no CLI flag to override it. `klaus ui` reads the config at startup, so restart it after changing the list.
 

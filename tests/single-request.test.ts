@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { historyFilePath } from "../src/core/history.js";
 import { executeSingleRequest } from "../src/core/runner.js";
-import { closeServer, listenEphemeral } from "./support/net.js";
+import { closeServer, listenEphemeral, reserveClosedPort } from "./support/net.js";
 
 async function startEchoServer() {
   const server = createServer((req, res) => {
@@ -258,6 +258,116 @@ describe("executeSingleRequest", () => {
     const receivedUrl = new URL(body.url, "http://127.0.0.1");
     expect(receivedUrl.searchParams.get("page")).toBe("2");
     expect(receivedUrl.searchParams.get("q")).toBe("klaus");
+  });
+
+  it("envFilePath で指定した任意パスの環境ファイルがテンプレート変数として解決され、履歴の env にはファイル名だけが残る", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+    await writeFile(join(cwd, "custom-env.yaml"), `baseUrl: ${ctx.baseUrl}\n`, "utf-8");
+
+    const { result } = await executeSingleRequest({
+      request: { method: "GET", url: "{{baseUrl}}/ping" },
+      cwd,
+      envFilePath: "custom-env.yaml",
+    });
+
+    expect(result.status).toBe("passed");
+    expect(result.request?.url).toBe(`${ctx.baseUrl}/ping`);
+    const entry = JSON.parse((await readFile(historyFilePath(cwd), "utf-8")).trim());
+    expect(entry.env).toBe("custom-env.yaml");
+  });
+
+  it("$protected: true の環境ファイルを envFilePath で指定しても拒否される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+    await writeFile(
+      join(cwd, "prod-env.yaml"),
+      `$protected: true\nbaseUrl: ${ctx.baseUrl}\n`,
+      "utf-8",
+    );
+
+    const { result } = await executeSingleRequest({
+      request: { method: "GET", url: "{{baseUrl}}/ping" },
+      cwd,
+      envFilePath: "prod-env.yaml",
+      history: false,
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("prod-env.yaml");
+  });
+
+  it("variables は環境ファイルの同名の値を上書きしてテンプレートに渡る", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+    await mkdir(join(cwd, "environments"), { recursive: true });
+    await writeFile(
+      join(cwd, "environments", "local.yaml"),
+      `baseUrl: http://unused.invalid\nid: from-env\n`,
+      "utf-8",
+    );
+
+    const { result } = await executeSingleRequest({
+      request: { method: "GET", url: "{{baseUrl}}/items/{{id}}" },
+      cwd,
+      envName: "local",
+      variables: { baseUrl: ctx.baseUrl, id: "from-var" },
+      history: false,
+    });
+
+    expect(result.status).toBe("passed");
+    expect(result.request?.url).toBe(`${ctx.baseUrl}/items/from-var`);
+  });
+
+  describe("runId と historyRecorded", () => {
+    it("履歴を書き込んだ場合は historyRecorded: true で、runId が履歴エントリの runId と一致する", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+
+      const { runId, historyRecorded } = await executeSingleRequest({
+        request: { method: "GET", url: `${ctx.baseUrl}/ping` },
+        cwd,
+      });
+
+      expect(historyRecorded).toBe(true);
+      const entry = JSON.parse((await readFile(historyFilePath(cwd), "utf-8")).trim());
+      expect(entry.runId).toBe(runId);
+    });
+
+    it("安全柵による拒否も履歴に書かれるため historyRecorded: true", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+
+      const { result, historyRecorded } = await executeSingleRequest({
+        request: { method: "GET", url: `${ctx.baseUrl}/ping` },
+        cwd,
+        guard: { allowedHosts: ["api.example.com"] },
+      });
+
+      expect(result.status).toBe("error");
+      expect(historyRecorded).toBe(true);
+    });
+
+    it("history: false の場合は historyRecorded: false", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+
+      const { historyRecorded } = await executeSingleRequest({
+        request: { method: "GET", url: `${ctx.baseUrl}/ping` },
+        cwd,
+        history: false,
+      });
+
+      expect(historyRecorded).toBe(false);
+    });
+
+    it("接続不能など履歴に残らない実行時エラーでは、history が有効でも historyRecorded: false", async () => {
+      cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+      const closedPort = await reserveClosedPort();
+
+      const { result, historyRecorded } = await executeSingleRequest({
+        request: { method: "GET", url: `http://127.0.0.1:${closedPort}/` },
+        cwd,
+      });
+
+      expect(result.status).toBe("error");
+      expect(historyRecorded).toBe(false);
+      await expect(readFile(historyFilePath(cwd), "utf-8")).rejects.toThrow();
+    });
   });
 
   describe("履歴のシークレットマスク", () => {
