@@ -106,6 +106,30 @@ host "api.other.com" is not in guard.allowedHosts (klaus.config.yaml); refusing 
 
 **対処**: そのホストが意図したものなら、`klaus.config.yaml` の `guard.allowedHosts` に追加する(`klaus ui` を起動中なら再起動する)。そうでなければ URL を直す。判定を回避する CLI フラグはない。[送信先ホストの許可リスト](config.md#送信先ホストの許可リスト-guard-allowedhosts)を参照。
 
+### 「redirect hop N (after STATUS) refused: ...」
+
+**症状**
+
+```
+redirect hop 1 (after 302) refused: host "other.example.com" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request.
+```
+
+**原因**: `http.followRedirects` が有効で、リダイレクト先が安全柵に拒否されるホストを指している。各ホップは通常のリクエストと同じ判定を通るため、リダイレクトで `guard.allowedHosts` の外へは出られない。
+
+**対処**: 宛先が意図したものなら `guard.allowedHosts` に追加する。そうでなければサーバー側か URL を直す。[HTTP クライアント](config.md#http-クライアント-http)を参照。
+
+### 「http.proxy and http.tls can only be set in klaus.config.yaml, not in a flow file ...」
+
+**症状**
+
+```
+http.proxy and http.tls can only be set in klaus.config.yaml, not in a flow file (they decide where traffic goes and whom it trusts)
+```
+
+**原因**: フローファイルに `http.proxy` または `http.tls` がある。これらは通信の行き先と信頼先を決めるため、(エージェントが書き得る)フローからは設定できない。
+
+**対処**: 設定を `klaus.config.yaml` の `http` セクションへ移す。[HTTP クライアント](config.md#http-クライアント-http)を参照。
+
 ## `--record` / `--replay` のエラー(exit code 3)
 
 ### 「no recorded response for "METHOD url" in replay mode. ...」/「failed to read cassette file ... for replay mode: ...」

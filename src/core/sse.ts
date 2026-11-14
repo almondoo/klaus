@@ -1,6 +1,6 @@
 import { createParser } from "eventsource-parser";
 import { RuntimeError } from "./errors.js";
-import { type HttpRequestOptions, sendRawRequest } from "./http.js";
+import { type HttpRequestOptions, type RawHttpResponse, sendRawRequest } from "./http.js";
 import type { SseOptions } from "./schema.js";
 import type { SseEvent } from "./types.js";
 
@@ -9,7 +9,12 @@ export interface SseResult {
   headers: Record<string, string>;
   events: SseEvent[];
   durationMs: number;
+  /** リダイレクトを追った場合の経由 URL(runner が設定する)。追わなかった場合は省略 */
+  redirects?: string[];
 }
+
+/** SSE 接続(ヘッダー受信まで)を行う関数。既定は sendRawRequest。runner がリダイレクト・cookie・proxy 対応の送信を渡す */
+export type SseConnector = (options: HttpRequestOptions) => Promise<RawHttpResponse>;
 
 const DEFAULT_MAX_EVENTS = 100;
 const DEFAULT_MAX_DURATION_MS = 10000;
@@ -22,6 +27,7 @@ const DEFAULT_MAX_DURATION_MS = 10000;
 export async function receiveSse(
   requestOptions: HttpRequestOptions,
   sseOptions: Partial<SseOptions> = {},
+  connect: SseConnector = sendRawRequest,
 ): Promise<SseResult> {
   const maxEvents = sseOptions.maxEvents ?? DEFAULT_MAX_EVENTS;
   const maxDurationMs = sseOptions.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
@@ -34,7 +40,7 @@ export async function receiveSse(
     ...requestOptions.headers,
   };
 
-  const raw = await sendRawRequest({ ...requestOptions, headers });
+  const raw = await connect({ ...requestOptions, headers });
 
   const events: SseEvent[] = [];
   const decoder = new TextDecoder();

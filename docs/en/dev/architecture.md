@@ -19,7 +19,7 @@ ui/         # Vite + React SPA (private workspace). No runtime dependency on cor
 - All execution, assertion, and history logic lives in `src/core`. cli / server only call into it — **never reimplement it**
 - core must not bring in CLI-ish concerns such as commander, process exit, or stdout
 - ui (the browser) never runtime-imports core. It only goes through the server's HTTP API. Type sharing is a **type-only import** from `src/core/types.ts` (erased at build time)
-- The HTTP / WebSocket layer is delegated to undici. Do not hand-roll retry / redirect handling
+- HTTP / WebSocket connections are delegated to undici. Redirects are handled one hop at a time in core (`http-session.ts`) because the guards must be re-checked on every hop. Proxy and TLS are set only from the options built from the config file (never from a flow)
 
 ## Internal structure of src/core
 
@@ -30,6 +30,7 @@ ui/         # Vite + React SPA (private workspace). No runtime dependency on cor
 | `env.ts` | Resolving `environments/<name>.yaml` | I/O |
 | `template.ts` | <code v-pre>{{...}}</code> expansion and template functions | Pure |
 | `http.ts` | undici wrapper (timing, JSON detection, timeout) | I/O |
+| `http-session.ts` / `cookie-jar.ts` | Per-run HTTP client (proxy, TLS, per-hop redirects, cookie jar) | I/O |
 | `sse.ts` | SSE reception with a hard cutoff (eventsource-parser) | I/O |
 | `ws.ts` | WebSocket connect / send / receive with a hard cutoff (undici WebSocket) | I/O |
 | `assert.ts` | Evaluates all assertions (never throws) | Pure |

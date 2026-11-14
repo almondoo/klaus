@@ -69,6 +69,11 @@ export interface StepResult {
   error?: string;
   /** retry 設定がある場合のみ設定。実際に実行された試行回数(1 以上) */
   attempts?: number;
+  /**
+   * リダイレクトを追った場合のみ設定。初回リクエストの後に辿った URL の一覧(最後が最終応答の URL)。
+   * http.followRedirects を使わない通常の実行では省略する
+   */
+  redirects?: string[];
 }
 
 /** 1フロー(YAML 1ファイル)の実行結果 */

@@ -38,6 +38,12 @@ guard:
     - api.example.com
     - "*.example.com"
     - localhost:3000
+http:
+  followRedirects: true
+  cookies: true
+  proxy: "{{env.KLAUS_PROXY}}"
+  tls:
+    ca: certs/internal-ca.pem
 ```
 
 | キー | 対応する CLI オプション | 型 |
@@ -53,7 +59,7 @@ guard:
 | `ui.open` | `klaus ui --no-open`(`false` で無効化に相当) | boolean |
 | `guard.allowedHosts` | なし(config 専用。[送信先ホストの許可リスト](#送信先ホストの許可リスト-guard-allowedhosts)を参照) | 文字列の配列 |
 
-`run.*` のキーは `klaus run` にのみ適用される。`klaus req` がこのファイルから読むのは `guard` セクションだけ。いずれのキーも省略可能。未知のキーを含む場合はスキーマ検証エラーになる([実行結果](#エラー時の扱い)を参照)。
+`run.*` のキーは `klaus run` にのみ適用される。`klaus req` がこのファイルから読むのは `guard` と `http` のセクションだけ。いずれのキーも省略可能。未知のキーを含む場合はスキーマ検証エラーになる([実行結果](#エラー時の扱い)を参照)。
 
 `run.reportFile` は単一値のみ対応する(CLI の繰り返し指定可能な `--report-file` とは異なる)。`run.report` に複数フォーマット(例: `junit,tap`)を指定した状態で `run.reportFile` も設定した場合、それは「N フォーマットに対して `--report-file` を1個指定した」ことになり、CLI で `--report-file` の指定回数が足りないときと同じ個数不一致エラーになる([CLI リファレンス](cli.md#klaus-run)参照)。複数フォーマットの `run.report` に対してフォーマットごとの出力先を指定したい場合は、コマンドラインで `--report-file` を渡すこと(前述の優先順位のとおり CLI の値が `klaus.config.yaml` より常に優先される)。
 
@@ -82,6 +88,25 @@ guard:
 - 送信直前に、テンプレート展開後の URL に対して判定する。対象は HTTP / SSE / WebSocket ステップと、`klaus req` および `klaus ui` からの単発リクエスト。`--replay` では判定しない(実送信がないため)。`--record` では判定する。
 - 拒否されたステップは `error` になり、実行は exit code 3 で終わる。[トラブルシューティング](troubleshooting.md#「host-x-is-not-in-guard-allowedhosts-klaus-config-yaml-refusing-to-send-the-request-」)を参照。
 - CLI フラグで上書きする手段は意図的に設けていない。`klaus ui` は起動時に config を読むため、リストを変更したら再起動すること。
+
+## HTTP クライアント (http)
+
+`http` は、実行単位(フロー 1 回の実行、または `klaus req` / `klaus ui` の単発リクエスト 1 回)の全ステップで共有する HTTP クライアントを設定する。何も指定しなければ従来どおり(リダイレクトを追わない、cookie を保持しない、proxy なし)。
+
+| キー | 意味 |
+|---|---|
+| `followRedirects` | `301` / `302` / `303` / `307` / `308` を 1 ホップずつ追う(既定 `false`)。各ホップは通常のリクエストと同じ `guard.allowedHosts` と `$protected` の判定を通り、拒否されたホップはステップを `error` にする。`POST` への `301` / `302` と `303` はボディなしの `GET` に変わり、`307` / `308` はメソッドとボディを保つ。別オリジンへ移るときは `Authorization`・`Cookie`・`Proxy-Authorization` を落とす。経由した URL は結果と履歴に `redirects` として残る |
+| `maxRedirects` | 最大ホップ数(既定 `10`)。超えると `error` |
+| `cookies` | `Set-Cookie` を実行中メモリ上に保持し、以降の条件に合うリクエストに付ける(既定 `false`)。保存はしない。cookie の値は秘密値として履歴・出力でマスクされる。`Secure` cookie は `http://` に送らず、`Domain` なしの cookie はホスト限定のままで、`Domain` 属性はリクエストホストと同じか、その親でドットを含むものだけ受け付ける(公開サフィックス一覧は持たない) |
+| `proxy` | HTTP(S) proxy の URL。userinfo は秘密値としてマスクされる。`HTTP_PROXY` などの環境変数は読まない |
+| `tls.ca` / `tls.cert` / `tls.key` | PEM ファイルのパス。この設定ファイルからの相対パスで解決する。`cert` と `key` は同時に指定する。内容は出力に出ない |
+| `tls.insecure` | `true` で証明書検証を無効にし、実行のたびに stderr へ `warning:` 行を出す |
+
+`proxy` と `tls` は通信の行き先と信頼先を決めるため、ここにだけ書ける。フローファイルに `http.proxy` や `http.tls` を書くと検証エラー(終了コード 2)になる。CLI フラグ、`klaus req` のオプション、UI のパラメーターからも設定できない。フローのトップレベル `http:` で指定できるのは `followRedirects`・`maxRedirects`・`cookies` だけで、このセクションをキー単位で上書きする([フロー定義リファレンス](flow-definition.md#http-http-クライアント設定)を参照)。
+
+- proxy の URL には <code v-pre>{{env.X}}</code>(OS 環境変数)をテンプレートとして使える。フローの変数や capture は参照できない。
+- proxy ホスト自体は信頼する設定として扱い、`guard.allowedHosts` では判定しない。リクエストの最終的な宛先(リダイレクトの各ホップを含む)は、proxy 経由の平文 HTTP でも `CONNECT` トンネルでも判定され、拒否されたリクエストは proxy に届かない。
+- `tls.insecure` の `warning:` 行は stderr に出るため、stdout の JSON は機械可読のまま保たれる。
 
 ## 意図的に設定不可なキー
 

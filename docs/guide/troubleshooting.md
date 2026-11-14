@@ -106,6 +106,30 @@ host "api.other.com" is not in guard.allowedHosts (klaus.config.yaml); refusing 
 
 **Fix**: if the host is intended, add it to `guard.allowedHosts` in `klaus.config.yaml` (restart `klaus ui` if it is running); otherwise fix the URL. There is no CLI flag to bypass the check. See [Host allowlist](config.md#host-allowlist-guard-allowedhosts).
 
+### "redirect hop N (after STATUS) refused: ..."
+
+**Symptom**
+
+```
+redirect hop 1 (after 302) refused: host "other.example.com" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request.
+```
+
+**Cause**: `http.followRedirects` is on, and a redirect points to a host that the guards refuse. Every hop is checked like a normal request, so a redirect cannot leave `guard.allowedHosts`.
+
+**Fix**: if the target is intended, add it to `guard.allowedHosts`; otherwise fix the server or the URL. See [HTTP client](config.md#http-client-http).
+
+### "http.proxy and http.tls can only be set in klaus.config.yaml, not in a flow file ..."
+
+**Symptom**
+
+```
+http.proxy and http.tls can only be set in klaus.config.yaml, not in a flow file (they decide where traffic goes and whom it trusts)
+```
+
+**Cause**: a flow file has `http.proxy` or `http.tls`. These keys decide where traffic goes and whom it trusts, so a flow (which an agent may have written) cannot set them.
+
+**Fix**: move the setting into the `http` section of `klaus.config.yaml`. See [HTTP client](config.md#http-client-http).
+
 ## `--record` / `--replay` errors (exit code 3)
 
 ### "no recorded response for \"METHOD url\" in replay mode. ..." / "failed to read cassette file ... for replay mode: ..."

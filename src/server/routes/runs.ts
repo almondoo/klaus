@@ -6,7 +6,7 @@
 import type { Context } from "hono";
 import type { SSEMessage, SSEStreamingApi } from "hono/streaming";
 import { streamSSE } from "hono/streaming";
-import type { FlowResult, GuardOptions } from "../../core/index.js";
+import type { FlowResult, GuardOptions, HttpConfig } from "../../core/index.js";
 import { executeFlow, loadFlow, ParseError } from "../../core/index.js";
 import { parseJsonBody } from "../json-body.js";
 import type {
@@ -62,6 +62,7 @@ export async function handleRunRequest(
   c: Context,
   cwd: string,
   guard?: GuardOptions,
+  http?: HttpConfig,
 ): Promise<Response> {
   const body = await parseJsonBody<RunRequestBody>(c);
   if (body === undefined) {
@@ -93,6 +94,7 @@ export async function handleRunRequest(
         // UI からの実行でも履歴書き込みは既定どおり有効にする(明示しておく)
         history: true,
         guard,
+        http,
         // UI 起点の実行は人間の操作として履歴に記録する
         actor: { kind: "human" },
         onStepStart: async (context) => {

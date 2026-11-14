@@ -37,6 +37,8 @@ export interface HistoryEntry {
   source?: "single";
   /** step.retry を設定した場合のみ設定。実際に実行された試行回数(1 以上) */
   attempts?: number;
+  /** リダイレクトを追った場合のみ設定する、経由 URL の一覧(追加のみの後方互換な変更のため v は 1 のまま) */
+  redirects?: string[];
   /**
    * status が "error" のエントリのみ設定する、ステップを error にした理由(安全柵による送信拒否)。
    * 接続不能・タイムアウトなど他の実行時エラーは履歴に書かれないため、現状は安全柵の拒否でのみ記録される。
@@ -224,6 +226,7 @@ export function maskHistoryEntry(entry: HistoryEntry, secrets: readonly string[]
   }));
 
   const assertions = maskAssertions(entry.assertions, variants);
+  const redirects = entry.redirects?.map((url) => maskString(url, variants));
 
   // 監査項目に秘密情報は入らない想定だが、他のフィールドと同じ規則で一貫してマスクする
   // (env 名・ファイルパス・--actor の任意文字列に秘密値が混入した場合に備える)
@@ -238,6 +241,7 @@ export function maskHistoryEntry(entry: HistoryEntry, secrets: readonly string[]
     ...(request ? { request } : {}),
     ...(response ? { response } : {}),
     ...(events ? { events } : {}),
+    ...(redirects ? { redirects } : {}),
   };
 }
 

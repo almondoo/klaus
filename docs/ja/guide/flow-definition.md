@@ -34,6 +34,23 @@ steps: [ ... ]
 - `klaus run --tags <list>` / `--exclude-tags <list>` によるフロー選択専用([CLI リファレンス](cli.md#タグによるフロー選択-tags-exclude-tags)参照)。タグ自体は実行に他の影響を与えない
 - `klaus ui` や server API には公開されない
 
+## http(HTTP クライアント設定)
+
+```yaml
+name: login flow
+http:
+  followRedirects: true   # 省略可: 3xx を 1 ホップずつ追う(既定 false)
+  maxRedirects: 5         # 省略可: 既定 10
+  cookies: true           # 省略可: この実行の間 Set-Cookie をメモリ上に保持する(既定 false)
+steps: [ ... ]
+```
+
+- フローの実行 1 回につき HTTP クライアントを 1 つ作り、全ステップ(HTTP・SSE・WebSocket)で共有する。実行終了時に閉じる。cookie は保存しない。
+- 各キーは `klaus.config.yaml` の `http` セクション([HTTP クライアント](config.md#http-クライアント-http))の同じキーを上書きする。何も指定しなければリダイレクトを追わず、cookie も保持しない。
+- リダイレクトの各ホップは通常のリクエストと同じく `guard.allowedHosts` と `$protected` の判定を通る。拒否されたホップはステップを `error`(終了コード 3)にし、履歴に残る。別オリジンへ移るときは `Authorization`・`Cookie`・`Proxy-Authorization` を落とす。経由した URL はステップ結果と履歴の `redirects` に入る。
+- cookie の値は秘密値として履歴・出力でマスクされる。cookie は各ホップと WebSocket のハンドシェイクのたびに jar から付け直す。
+- `proxy` と `tls` は**フローには書けない**(検証エラー、終了コード 2)。通信の行き先と信頼先を決めるため、`klaus.config.yaml` にだけ書ける。
+
 ## request(HTTP ステップ)
 
 ```yaml
@@ -49,7 +66,7 @@ request:
   timeoutMs: 30000              # 任意。デフォルト 30000。超過は RuntimeError(exit 3)
 ```
 
-レスポンスは Content-Type が JSON なら自動でパースされ、JSONPath アサーション / キャプチャの対象になる。それ以外はテキストとして保持され `bodyText` アサーションの対象になる。リダイレクト・TLS の挙動は undici のデフォルトに従う(klaus 側では制御しない)。
+レスポンスは Content-Type が JSON なら自動でパースされ、JSONPath アサーション / キャプチャの対象になる。それ以外はテキストとして保持され `bodyText` アサーションの対象になる。`http.followRedirects` を指定しない限りリダイレクトは追わない([http](#http-http-クライアント設定)を参照)。
 
 ## GraphQL
 

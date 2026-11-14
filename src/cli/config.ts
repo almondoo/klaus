@@ -16,7 +16,9 @@ import {
   type CliConfig,
   configSchema,
   type GuardOptions,
+  type HttpConfig,
   ParseError,
+  resolveHttpTlsPaths,
   toParseError,
 } from "../core/index.js";
 import type { RunCommandOptions } from "./run.js";
@@ -105,6 +107,20 @@ export type CliOptionSource = string | undefined;
 export function resolveGuardOptions(config: CliConfig | undefined): GuardOptions | undefined {
   const allowedHosts = config?.guard?.allowedHosts;
   return allowedHosts !== undefined ? { allowedHosts } : undefined;
+}
+
+/**
+ * klaus.config.yaml の `http` を core の HttpConfig へ変換する(`http` が無ければ undefined)。
+ * tls の ca / cert / key は設定ファイルのディレクトリ基準の絶対パスにする(core は設定ファイルの場所を知らないため)。
+ * index.ts を介さず run / req / ui が同じ既定値を得られるよう、設定ファイルの探索から行う。
+ * 設定ファイルの構文・検証エラーは loadCliConfig と同じく ParseError を投げる。
+ */
+export async function loadHttpOptions(cwd: string): Promise<HttpConfig | undefined> {
+  const config = await loadCliConfig(cwd);
+  if (config?.http === undefined) return undefined;
+  // loadCliConfig が成功した時点で設定ファイルは存在する
+  const path = resolveConfigPath(cwd) as string;
+  return resolveHttpTlsPaths(config.http, dirname(path));
 }
 
 export interface RunOptionSources {

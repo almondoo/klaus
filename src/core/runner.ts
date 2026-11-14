@@ -22,10 +22,11 @@ import {
 } from "./guard.js";
 import type { HistoryActor, HistoryEntry, HistoryGit } from "./history.js";
 import { appendHistory, maskHistoryEntry, toHistoryFilePath } from "./history.js";
-import type { HttpRequestOptions, HttpResponse } from "./http.js";
-import { sendRequest } from "./http.js";
+import type { HttpRequestOptions, HttpResponse, RawHttpResponse } from "./http.js";
+import { sendRawRequest, sendRequest } from "./http.js";
+import { HttpSession, mergeHttpConfig } from "./http-session.js";
 import { loadFlow } from "./loader.js";
-import type { Environment, Flow, RequestDef, Step } from "./schema.js";
+import type { Environment, Flow, HttpConfig, RequestDef, Step } from "./schema.js";
 import { requestSchema } from "./schema.js";
 import { receiveSse } from "./sse.js";
 import { renderDeep, renderHeaders, renderString, type TemplateContext } from "./template.js";
@@ -101,6 +102,15 @@ export interface RunFlowOptions {
    * 上書き手段は設けない。判定は送信直前のテンプレート展開後 URL に対して行う(--replay 時は送信しないため対象外)
    */
   guard?: GuardOptions | undefined;
+  /**
+   * 実行単位の HTTP クライアント設定(klaus.config.yaml の `http`)。呼び出し元(CLI・server)が設定ファイルから
+   * 組み立てて渡す(core は設定ファイルを読まない)。フローの `http` が上書きできるのは followRedirects /
+   * maxRedirects / cookies のみで、通信の行き先・信頼先を決める proxy と tls は、このオプション(= 所有者が
+   * 管理する設定ファイルの値)でしか指定できない。ライブラリとして直接呼ぶ場合、このオプションを渡す呼び出し元は
+   * 信頼された側として扱う(フロー内容からは設定できない)。tls の ca / cert / key は設定ファイル基準の
+   * 絶対パスにして渡すこと。未指定なら従来どおり(追従なし・cookie なし・proxy なし)
+   */
+  http?: HttpConfig | undefined;
   /** 履歴エントリの actor に記録する実行主体。core は推定せず、呼び出し元が渡した値をそのまま記録する */
   actor?: HistoryActor | undefined;
   /** 履歴エントリの git に記録する実行時点の git の状態。core は取得せず、呼び出し元が渡した値をそのまま記録する */
@@ -200,21 +210,33 @@ async function resolveHttpResponse(
   recording: ActiveRecording | undefined,
   requestOptions: HttpRequestOptions,
   secrets: Set<string> | undefined,
+  /**
+   * レスポンス受信直後(カセットへの書き込みより前)に呼ぶ。cookie jar が Set-Cookie の値を secrets に
+   * 登録するために使い、record 時にそのレスポンス自身の cookie 値もマスクされた状態でカセットに残す
+   */
+  onResponse?: (response: HttpResponse) => void,
 ): Promise<HttpResponse> {
   if (!recording) {
-    return sendRequest(requestOptions);
+    const response = await sendRequest(requestOptions);
+    onResponse?.(response);
+    return response;
   }
-  const secretList = secrets ? [...secrets] : [];
   if (recording.mode === "replay") {
+    const secretList = secrets ? [...secrets] : [];
     // カセットファイル自体の読み込みに失敗している場合は、ここで初めて RuntimeError を投げる
     // (executeStep の try/catch でステップ error になり、記録外リクエストと同じ経路で exit 3 になる)
     if (recording.replayLoadError) throw recording.replayLoadError;
     // 読み込み成功時は executeFlow が必ず replayIndex を設定済みにする
     const index = recording.replayIndex as Map<string, CassetteEntry>;
     const entry = findCassetteEntry(index, requestOptions.method, requestOptions.url, secretList);
-    return cassetteEntryToHttpResponse(entry);
+    const replayed = cassetteEntryToHttpResponse(entry);
+    onResponse?.(replayed);
+    return replayed;
   }
   const response = await sendRequest(requestOptions);
+  onResponse?.(response);
+  // onResponse で増えた secrets(cookie 値など)を含めるため、送信後に一覧を取る
+  const secretList = secrets ? [...secrets] : [];
   const entry = buildCassetteEntry(requestOptions.method, requestOptions.url, response, secretList);
   await appendCassetteEntry(recording.dir, entry);
   return response;
@@ -479,9 +501,11 @@ async function executeStep(
    * blockedError が指定されている場合、リクエスト送信前にこれを投げてステップを error にする
    * (record/replay モードで replayLoadError を遅延して投げるのと同じ考え方)。
    */
-  stepGuard?: StepGuard,
+  stepGuard: StepGuard | undefined,
   /** --data 実行時のみ設定する 1 始まりのイテレーション番号(historyEntry.iteration に伝播させる) */
-  iteration?: number,
+  iteration: number | undefined,
+  /** 実行単位の HTTP クライアント(proxy / TLS / cookie jar / リダイレクト)。ステップ間で共有する */
+  session: HttpSession,
 ): Promise<{
   result: StepResult;
   captured: Record<string, unknown>;
@@ -498,8 +522,8 @@ async function executeStep(
     durationMs: number,
     assertions: StepResult["assertions"],
     captured: Record<string, unknown>,
-    resultExtra: Pick<StepResult, "response" | "events" | "wsMessages">,
-    historyExtra: Pick<HistoryEntry, "response" | "events">,
+    resultExtra: Pick<StepResult, "response" | "events" | "wsMessages" | "redirects">,
+    historyExtra: Pick<HistoryEntry, "response" | "events" | "redirects">,
   ): { result: StepResult; captured: Record<string, unknown>; historyEntry: HistoryEntry } => {
     const status = assertions.every((a) => a.ok) ? "passed" : "failed";
     return {
@@ -540,10 +564,12 @@ async function executeStep(
 
       // 送信(接続)直前の判定。WebSocket は読み取り専用の保護環境でも常に拒否する(record/replay は WS 非対応)
       assertSendAllowed(stepGuard, "WS", url, headers, false);
+      const wsTarget = session.prepareWebSocket(url, headers, templateContext);
 
       const wsResult = await connectWebSocket({
         url,
-        headers,
+        headers: wsTarget.headers,
+        ...(wsTarget.dispatcher ? { dispatcher: wsTarget.dispatcher } : {}),
         send: sendItems,
         maxMessages: step.ws.maxMessages,
         maxDurationMs: step.ws.maxDurationMs,
@@ -590,10 +616,33 @@ async function executeStep(
 
     if (isSseStep(step)) {
       // SSE は HTTP メソッドに従う(record/replay は SSE 非対応のため、ここでは常に実送信になる)
-      assertSendAllowed(stepGuard, method, url, headers, false);
+      const sseFollow: { redirects: string[]; elapsedMs: number } = { redirects: [], elapsedMs: 0 };
       const sseResult = await receiveSse(
         { method, url, headers, body, timeoutMs: request.timeoutMs },
         step.sse,
+        async (connectOptions) => {
+          // 初回・リダイレクト先を含む各ホップで同じ安全柵の判定を通す
+          const followed = await session.send<RawHttpResponse>(
+            connectOptions,
+            templateContext,
+            (hopMethod, hopUrl, hopHeaders) =>
+              assertSendAllowed(stepGuard, hopMethod, hopUrl, hopHeaders, false),
+            async (hopOptions, onResponse) => {
+              const raw = await sendRawRequest(hopOptions);
+              onResponse(raw);
+              return raw;
+            },
+            (raw) => {
+              // 読み捨てるボディの破棄で出る AbortError を握りつぶす(リダイレクト先へ進むため)
+              raw.bodyStream.on("error", () => {});
+              raw.bodyStream.destroy();
+            },
+            false,
+          );
+          sseFollow.redirects = followed.redirects;
+          sseFollow.elapsedMs = followed.elapsedMs;
+          return followed.response;
+        },
       );
 
       const assertions = evaluateAssertions(assertDef, {
@@ -611,7 +660,11 @@ async function executeStep(
         headers: sseResult.headers,
         body: undefined,
       };
-      const extra = { response: responseSnapshot, events: sseResult.events };
+      const extra = {
+        response: responseSnapshot,
+        events: sseResult.events,
+        ...(sseFollow.redirects.length > 0 ? { redirects: sseFollow.redirects } : {}),
+      };
 
       // capture は JSON レスポンス(SSE 以外)にのみ適用する
       return finish(requestSnapshot, sseResult.durationMs, assertions, {}, extra, extra);
@@ -619,14 +672,24 @@ async function executeStep(
 
     // 送信直前の判定(テンプレート展開後のメソッド・URL に対して行う)。
     // replay では実送信がないため送信先ホストは判定しない(record は実際に送るため判定する)。
-    // 注意: 現在はリダイレクトを追従しないため再判定は不要。リダイレクト追従を導入する場合は、
-    // 追従先の URL に対しても同じ判定(assertSendAllowed)を必ず行うこと。
-    assertSendAllowed(stepGuard, method, url, headers, recording?.mode === "replay");
-    const response = await resolveHttpResponse(
-      recording,
+    // リダイレクトを追う場合は、各ホップでも同じ判定(assertSendAllowed)を session.send が再度行う
+    const replay = recording?.mode === "replay";
+    const followed = await session.send<HttpResponse>(
       { method, url, headers, body, timeoutMs: request.timeoutMs },
-      templateContext.secrets,
+      templateContext,
+      (hopMethod, hopUrl, hopHeaders) =>
+        assertSendAllowed(stepGuard, hopMethod, hopUrl, hopHeaders, replay),
+      (hopOptions, onResponse) =>
+        resolveHttpResponse(recording, hopOptions, templateContext.secrets, onResponse),
+      () => {},
+      replay,
     );
+    const { redirects } = followed;
+    // リダイレクトを追った場合は全ホップの合計を所要時間にする(追わなかった場合は従来どおりの値)
+    const response =
+      redirects.length > 0
+        ? { ...followed.response, durationMs: followed.elapsedMs }
+        : followed.response;
 
     const assertions = evaluateAssertions(assertDef, {
       status: response.status,
@@ -642,7 +705,10 @@ async function executeStep(
       headers: response.headers,
       body: response.body,
     };
-    const extra = { response: responseSnapshot };
+    const extra = {
+      response: responseSnapshot,
+      ...(redirects.length > 0 ? { redirects } : {}),
+    };
 
     return finish(requestSnapshot, response.durationMs, assertions, captured, extra, extra);
   } catch (error) {
@@ -861,6 +927,9 @@ export async function executeFlow(
   // onSecrets で既に通知済みの値(重複通知を避けるため、ステップをまたいで蓄積する)
   const notifiedSecrets = new Set<string>();
   const steps: StepResult[] = [];
+  // 実行単位(このフロー 1 回の実行)の HTTP クライアント。フローの http は設定ファイル側(options.http)を
+  // キー単位で上書きし、フロー側の tls パスはフロー定義ファイルのディレクトリ基準で解決する
+  const session = new HttpSession(mergeHttpConfig(options.http, flow.http), options.onWarning);
   // if 条件式が参照する「ここまでに完了したステップの status」(ステップ名 → status)。
   // continueOnError で継続したステップも実際の status(failed/error)をそのまま入れる
   // (「continueOnError で失敗した前段の実ステータスを条件が見られる」ことが本機能の狙いのため)。
@@ -868,141 +937,148 @@ export async function executeFlow(
   const flowStartedAt = performance.now();
   let skipRest = false;
 
-  for (const step of flow.steps) {
-    await options.onStepStart?.({
-      flow: flow.name,
-      file: filePath,
-      step: step.name,
-      ...unitContext,
-    });
+  try {
+    for (const step of flow.steps) {
+      await options.onStepStart?.({
+        flow: flow.name,
+        file: filePath,
+        step: step.name,
+        ...unitContext,
+      });
 
-    let result: StepResult;
-    let captured: Record<string, unknown> = {};
-    let historyEntry: HistoryEntry | undefined;
+      let result: StepResult;
+      let captured: Record<string, unknown> = {};
+      let historyEntry: HistoryEntry | undefined;
 
-    if (skipRest) {
-      ({ result, historyEntry } = buildSkipped(step, "skipped because a previous step failed"));
-    } else {
-      // skipRest によるスキップが優先されるため、条件式の評価はここに来た場合のみ行う。
-      // 評価結果は「true(実行する)」「false(条件不成立でスキップ)」「例外(不正な式・未知の名前)」の3通り。
-      let conditionMet = true;
-      let conditionError: RuntimeError | undefined;
-      if (step.if !== undefined) {
-        try {
-          conditionMet = evaluateCondition(step.if, { stepStatuses, captures });
-        } catch (error) {
-          conditionError = error instanceof RuntimeError ? error : new RuntimeError(String(error));
-        }
-      }
-
-      if (conditionError) {
-        // 不正な条件式(文法エラー・未知のステップ/capture 名)はリクエストを送らずステップを error にする。
-        // executeStep の catch 節(RuntimeError → ステップ error)と同じ扱いに揃え、historyEntry は書かない
-        // (executeStep の catch 節も historyEntry を返さないため、一貫性を優先しここでも undefined のままにする)。
-        const erroredAt = new Date().toISOString();
-        result = {
-          name: step.name,
-          status: "error",
-          startedAt: erroredAt,
-          durationMs: 0,
-          assertions: [],
-          error: conditionError.message,
-        };
-      } else if (!conditionMet) {
-        ({ result, historyEntry } = buildSkipped(
-          step,
-          `skipped because condition not met: ${step.if}`,
-        ));
+      if (skipRest) {
+        ({ result, historyEntry } = buildSkipped(step, "skipped because a previous step failed"));
       } else {
-        const templateContext: TemplateContext = {
-          captures,
-          // --var で渡した変数は環境ファイルの値を上書きする(env namespace 内での優先順位)
-          env: { ...toTemplateVariables(environment), ...options.variables },
-          secrets,
-        };
-        // step.retry がある場合、failed/error の間だけ再試行する(passed で即打ち切り)。
-        // 中間試行の結果は捨て、最終試行のみを記録する(履歴・onStepStart/onStepComplete も1回ずつ)。
-        const maxAttempts = step.retry ? step.retry.count + 1 : 1;
-        let attempt = 0;
-        let outcome: {
-          result: StepResult;
-          captured: Record<string, unknown>;
-          historyEntry?: HistoryEntry;
-        };
-        do {
-          attempt++;
-          if (attempt > 1 && step.retry) {
-            await sleep(step.retry.intervalMs);
-          }
-          outcome = await executeStep(
-            step,
-            templateContext,
-            runId,
-            flow.name,
-            activeRecording,
-            stepGuard,
-            options.iteration,
-          );
-        } while (
-          step.retry &&
-          attempt < maxAttempts &&
-          (outcome.result.status === "failed" || outcome.result.status === "error")
-        );
-
-        if (step.retry) {
-          outcome.result = { ...outcome.result, attempts: attempt };
-          if (outcome.historyEntry) {
-            outcome.historyEntry = { ...outcome.historyEntry, attempts: attempt };
+        // skipRest によるスキップが優先されるため、条件式の評価はここに来た場合のみ行う。
+        // 評価結果は「true(実行する)」「false(条件不成立でスキップ)」「例外(不正な式・未知の名前)」の3通り。
+        let conditionMet = true;
+        let conditionError: RuntimeError | undefined;
+        if (step.if !== undefined) {
+          try {
+            conditionMet = evaluateCondition(step.if, { stepStatuses, captures });
+          } catch (error) {
+            conditionError =
+              error instanceof RuntimeError ? error : new RuntimeError(String(error));
           }
         }
 
-        result = outcome.result;
-        captured = outcome.captured;
-        historyEntry = outcome.historyEntry;
+        if (conditionError) {
+          // 不正な条件式(文法エラー・未知のステップ/capture 名)はリクエストを送らずステップを error にする。
+          // executeStep の catch 節(RuntimeError → ステップ error)と同じ扱いに揃え、historyEntry は書かない
+          // (executeStep の catch 節も historyEntry を返さないため、一貫性を優先しここでも undefined のままにする)。
+          const erroredAt = new Date().toISOString();
+          result = {
+            name: step.name,
+            status: "error",
+            startedAt: erroredAt,
+            durationMs: 0,
+            assertions: [],
+            error: conditionError.message,
+          };
+        } else if (!conditionMet) {
+          ({ result, historyEntry } = buildSkipped(
+            step,
+            `skipped because condition not met: ${step.if}`,
+          ));
+        } else {
+          const templateContext: TemplateContext = {
+            captures,
+            // --var で渡した変数は環境ファイルの値を上書きする(env namespace 内での優先順位)
+            env: { ...toTemplateVariables(environment), ...options.variables },
+            secrets,
+          };
+          // step.retry がある場合、failed/error の間だけ再試行する(passed で即打ち切り)。
+          // 中間試行の結果は捨て、最終試行のみを記録する(履歴・onStepStart/onStepComplete も1回ずつ)。
+          const maxAttempts = step.retry ? step.retry.count + 1 : 1;
+          let attempt = 0;
+          let outcome: {
+            result: StepResult;
+            captured: Record<string, unknown>;
+            historyEntry?: HistoryEntry;
+          };
+          do {
+            attempt++;
+            if (attempt > 1 && step.retry) {
+              await sleep(step.retry.intervalMs);
+            }
+            outcome = await executeStep(
+              step,
+              templateContext,
+              runId,
+              flow.name,
+              activeRecording,
+              stepGuard,
+              options.iteration,
+              session,
+            );
+          } while (
+            step.retry &&
+            attempt < maxAttempts &&
+            (outcome.result.status === "failed" || outcome.result.status === "error")
+          );
+
+          if (step.retry) {
+            outcome.result = { ...outcome.result, attempts: attempt };
+            if (outcome.historyEntry) {
+              outcome.historyEntry = { ...outcome.historyEntry, attempts: attempt };
+            }
+          }
+
+          result = outcome.result;
+          captured = outcome.captured;
+          historyEntry = outcome.historyEntry;
+        }
       }
-    }
 
-    // 履歴書き込みはステップ結果確定後・主 try/catch の外で行う。
-    // 失敗してもステップの status は変えず、onWarning で通知するだけに留める。
-    if (historySink && historyEntry) {
-      // デフォルトシンク・カスタムシンクのいずれにも、必ずマスク済みのエントリを渡す
-      const maskedEntry = maskHistoryEntry({ ...historyEntry, ...auditFields }, [...secrets]);
-      try {
-        await historySink(maskedEntry);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        options.onWarning?.(
-          `failed to write history (flow "${flow.name}", step "${step.name}"): ${message}`,
-        );
+      // 履歴書き込みはステップ結果確定後・主 try/catch の外で行う。
+      // 失敗してもステップの status は変えず、onWarning で通知するだけに留める。
+      if (historySink && historyEntry) {
+        // デフォルトシンク・カスタムシンクのいずれにも、必ずマスク済みのエントリを渡す
+        const maskedEntry = maskHistoryEntry({ ...historyEntry, ...auditFields }, [...secrets]);
+        try {
+          await historySink(maskedEntry);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          options.onWarning?.(
+            `failed to write history (flow "${flow.name}", step "${step.name}"): ${message}`,
+          );
+        }
       }
-    }
 
-    // このステップが新たに解決した secrets を、onStepComplete(text 出力の契機)より前に通知する。
-    // 既に通知済みの値は除外し、CLI 側での重複マスク処理・二重カウントを避ける。
-    if (options.onSecrets) {
-      const newSecrets = [...secrets].filter((value) => !notifiedSecrets.has(value));
-      if (newSecrets.length > 0) {
-        for (const value of newSecrets) notifiedSecrets.add(value);
-        options.onSecrets(newSecrets);
+      // このステップが新たに解決した secrets を、onStepComplete(text 出力の契機)より前に通知する。
+      // 既に通知済みの値は除外し、CLI 側での重複マスク処理・二重カウントを避ける。
+      if (options.onSecrets) {
+        const newSecrets = [...secrets].filter((value) => !notifiedSecrets.has(value));
+        if (newSecrets.length > 0) {
+          for (const value of newSecrets) notifiedSecrets.add(value);
+          options.onSecrets(newSecrets);
+        }
       }
+
+      steps.push(result);
+      stepStatuses.set(step.name, result.status);
+      Object.assign(captures, captured);
+
+      // continueOnError が true の場合、retry を使い切った後の failed/error でも
+      // 以降のステップをスキップしない(このステップ自体の status は変えない)。
+      if ((result.status === "error" || result.status === "failed") && !step.continueOnError) {
+        skipRest = true;
+      }
+
+      await options.onStepComplete?.({
+        flow: flow.name,
+        file: filePath,
+        result,
+        ...unitContext,
+      });
     }
-
-    steps.push(result);
-    stepStatuses.set(step.name, result.status);
-    Object.assign(captures, captured);
-
-    // continueOnError が true の場合、retry を使い切った後の failed/error でも
-    // 以降のステップをスキップしない(このステップ自体の status は変えない)。
-    if ((result.status === "error" || result.status === "failed") && !step.continueOnError) {
-      skipRest = true;
-    }
-
-    await options.onStepComplete?.({
-      flow: flow.name,
-      file: filePath,
-      result,
-      ...unitContext,
-    });
+  } finally {
+    // 実行終了時にクライアント(接続・dispatcher)を閉じる。cookie jar と取得済みトークンもここで破棄される
+    await session.close();
   }
 
   const durationMs = performance.now() - flowStartedAt;
@@ -1213,6 +1289,10 @@ export interface ExecuteSingleRequestOptions {
   history?: boolean;
   /** 送信先ホストの許可リストなどの安全柵。RunFlowOptions.guard と同じ意味・同じ判定を通る */
   guard?: GuardOptions | undefined;
+  /** 実行単位の HTTP クライアント設定(RunFlowOptions.http と同じ意味。単発実行にはフローが無いためこれだけが効く) */
+  http?: HttpConfig | undefined;
+  /** ステップの成否に影響しない警告(tls.insecure の使用など)の通知先 */
+  onWarning?: (message: string) => void;
   /** 履歴エントリの actor に記録する実行主体(RunFlowOptions.actor と同じ) */
   actor?: HistoryActor | undefined;
   /** 履歴エントリの git に記録する実行時点の git の状態(RunFlowOptions.git と同じ) */
@@ -1271,7 +1351,22 @@ export async function executeSingleRequest(
   const step: Step = { name: "request", request };
 
   // 単発実行(UI からの単発リクエスト実行)は record/replay の対象外(フロー実行専用機能のため)
-  const outcome = await executeStep(step, templateContext, runId, flowName, undefined, stepGuard);
+  const session = new HttpSession(options.http, options.onWarning);
+  let outcome: Awaited<ReturnType<typeof executeStep>>;
+  try {
+    outcome = await executeStep(
+      step,
+      templateContext,
+      runId,
+      flowName,
+      undefined,
+      stepGuard,
+      undefined,
+      session,
+    );
+  } finally {
+    await session.close();
+  }
 
   const shouldWriteHistory = options.history ?? DEFAULT_HISTORY;
   let historyRecorded = false;

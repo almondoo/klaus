@@ -34,6 +34,23 @@ steps: [ ... ]
 - Used exclusively for flow selection via `klaus run --tags <list>` / `--exclude-tags <list>` (see [CLI Reference](cli.md#tag-based-flow-selection-tags-exclude-tags)); tags themselves have no other effect on execution
 - Not exposed in `klaus ui` or the server API
 
+## http (HTTP client settings)
+
+```yaml
+name: login flow
+http:
+  followRedirects: true   # Optional: follow 3xx one hop at a time (default false)
+  maxRedirects: 5         # Optional: default 10
+  cookies: true           # Optional: keep Set-Cookie in memory for this run (default false)
+steps: [ ... ]
+```
+
+- One HTTP client is created per run of the flow and shared by all steps (HTTP, SSE, and WebSocket). It is closed when the run ends; cookies are never persisted.
+- Each key overrides the same key in the `http` section of `klaus.config.yaml` ([HTTP client](config.md#http-client-http)). With nothing set, redirects are not followed and no cookies are kept.
+- Every redirect hop is checked against `guard.allowedHosts` and `$protected` like a normal request; a refused hop makes the step `error` (exit code 3) and is recorded in history. Moving to another origin drops `Authorization`, `Cookie`, and `Proxy-Authorization`. The visited URLs appear as `redirects` in the step result and history.
+- Cookie values are secrets: they are masked in history and output. Cookies are re-derived from the jar for every hop and for WebSocket handshakes.
+- `proxy` and `tls` are **not accepted in a flow** (validation error, exit code 2). They decide where traffic goes and whom it trusts, so they can only be set in `klaus.config.yaml`.
+
 ## request (HTTP step)
 
 ```yaml
@@ -49,7 +66,7 @@ request:
   timeoutMs: 30000              # Optional. Defaults to 30000. Exceeding it is a RuntimeError (exit 3)
 ```
 
-If the Content-Type is JSON, the response is automatically parsed and becomes the target of JSONPath assertions / captures. Otherwise it's kept as text and becomes the target of `bodyText` assertions. Redirect and TLS behavior follow undici's defaults (klaus does not control these).
+If the Content-Type is JSON, the response is automatically parsed and becomes the target of JSONPath assertions / captures. Otherwise it's kept as text and becomes the target of `bodyText` assertions. Redirects are not followed unless `http.followRedirects` is set (see [http](#http-http-client-settings)).
 
 ## GraphQL
 

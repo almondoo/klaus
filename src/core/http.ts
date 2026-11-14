@@ -8,6 +8,8 @@ export interface HttpRequestOptions {
   headers?: Record<string, string>;
   body?: unknown;
   timeoutMs?: number;
+  /** 実行単位の HTTP クライアント(proxy / TLS 設定つき)。未指定なら undici の既定 dispatcher を使う */
+  dispatcher?: Dispatcher;
 }
 
 /** 完全にボディを読み切ったレスポンス(通常の JSON / テキストリクエスト用) */
@@ -19,6 +21,8 @@ export interface HttpResponse {
   /** 常に取得できる生テキスト */
   bodyText: string;
   durationMs: number;
+  /** Set-Cookie の生の値(1 件ずつ)。cookie jar 用。cassette 経由の応答では未設定 */
+  setCookies?: string[];
 }
 
 /** ヘッダーだけ読み込み、ボディはストリームのまま返すレスポンス(SSE 用) */
@@ -27,6 +31,8 @@ export interface RawHttpResponse {
   headers: Record<string, string>;
   bodyStream: Dispatcher.ResponseData["body"];
   durationMs: number;
+  /** Set-Cookie の生の値(1 件ずつ)。cookie jar 用 */
+  setCookies?: string[];
 }
 
 export const DEFAULT_TIMEOUT_MS = 30000;
@@ -45,6 +51,13 @@ function prepareBody(
   const hasContentType = Object.keys(headers).some((key) => key.toLowerCase() === "content-type");
   const nextHeaders = hasContentType ? headers : { ...headers, "Content-Type": "application/json" };
   return { requestBody: JSON.stringify(body), headers: nextHeaders };
+}
+
+/** undici の生ヘッダーから Set-Cookie を 1 件ずつ取り出す(連結すると Expires のカンマと区別できないため) */
+function extractSetCookies(headers: Dispatcher.ResponseData["headers"]): string[] | undefined {
+  const value = headers["set-cookie"];
+  if (value === undefined) return undefined;
+  return Array.isArray(value) ? value : [value];
 }
 
 function normalizeHeaders(headers: Dispatcher.ResponseData["headers"]): Record<string, string> {
@@ -117,6 +130,7 @@ async function performRequest(options: HttpRequestOptions): Promise<{
       method: options.method as Dispatcher.HttpMethod,
       headers,
       signal: controller.signal,
+      ...(options.dispatcher ? { dispatcher: options.dispatcher } : {}),
       ...(requestBody !== undefined ? { body: requestBody } : {}),
     });
     return { response, startedAt, controller, timer, timeoutMs };
@@ -139,6 +153,7 @@ export async function sendRequest(options: HttpRequestOptions): Promise<HttpResp
     const headers = normalizeHeaders(response.headers);
     // JSON 判定は正規化前の生ヘッダー値で行う(重複 Content-Type ヘッダーは配列になり JSON とみなさない)
     const body = parseJsonBody(response.headers["content-type"], bodyText);
+    const setCookies = extractSetCookies(response.headers);
 
     return {
       status: response.statusCode,
@@ -146,6 +161,7 @@ export async function sendRequest(options: HttpRequestOptions): Promise<HttpResp
       body,
       bodyText,
       durationMs,
+      ...(setCookies ? { setCookies } : {}),
     };
   } catch (error) {
     throw toRuntimeError(error, controller.signal.aborted, timeoutMs, options.method, options.url);
@@ -164,12 +180,14 @@ export async function sendRawRequest(options: HttpRequestOptions): Promise<RawHt
   try {
     const durationMs = performance.now() - startedAt;
     clearTimeout(timer);
+    const setCookies = extractSetCookies(response.headers);
 
     return {
       status: response.statusCode,
       headers: normalizeHeaders(response.headers),
       bodyStream: response.body,
       durationMs,
+      ...(setCookies ? { setCookies } : {}),
     };
   } catch (error) {
     clearTimeout(timer);

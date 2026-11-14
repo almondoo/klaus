@@ -5,7 +5,12 @@
  * (ここでは再実装しない)。runs.ts と異なり同期 JSON レスポンスで返す(SSE は使わない)。
  */
 import type { Context } from "hono";
-import { executeSingleRequest, formatZodError, type GuardOptions } from "../../core/index.js";
+import {
+  executeSingleRequest,
+  formatZodError,
+  type GuardOptions,
+  type HttpConfig,
+} from "../../core/index.js";
 import { requestSchema } from "../../core/schema.js";
 import { parseJsonBody } from "../json-body.js";
 import type { SingleRequestRequestBody, SingleRequestResultPayload } from "../types.js";
@@ -16,6 +21,7 @@ export async function handleSingleRequest(
   c: Context,
   cwd: string,
   guard?: GuardOptions,
+  http?: HttpConfig,
 ): Promise<Response> {
   const body = await parseJsonBody<SingleRequestRequestBody>(c);
   if (body === undefined) {
@@ -41,6 +47,7 @@ export async function handleSingleRequest(
     envName: body.env,
     history: true,
     guard,
+    http,
     // UI 起点の実行は人間の操作として履歴に記録する
     actor: { kind: "human" },
   });

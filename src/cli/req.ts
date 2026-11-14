@@ -5,6 +5,7 @@ import {
   expandSecretVariants,
   formatZodError,
   type GuardOptions,
+  type HttpConfig,
   isPathWithinDir,
   isRealPathWithinDir,
   maskDeep,
@@ -13,6 +14,7 @@ import {
   type StepResult,
 } from "../core/index.js";
 import { detectActor, resolveGitState } from "./audit.js";
+import { loadHttpOptions } from "./config.js";
 import { buildReqReport, formatReqJson, formatReqText } from "./reporters/req.js";
 
 /** req コマンドのオプション(commander から渡される値を正規化した形) */
@@ -43,6 +45,8 @@ export interface ReqCommandOptions {
    * (エージェントが引数で安全柵を外せないようにするため)。index.ts が config から設定して渡す
    */
   guard?: GuardOptions;
+  /** klaus.config.yaml の `http`。未指定なら reqCommand が設定ファイルから読む(run と同じ既定値) */
+  http?: HttpConfig;
 }
 
 type ResolveBodyResult = { ok: true; body: unknown } | { ok: false; message: string };
@@ -154,7 +158,13 @@ export async function reqCommand(
 
   let outcome: { result: StepResult; runId: string; historyRecorded: boolean };
   try {
+    const http = options.http ?? (await loadHttpOptions(cwd));
     outcome = await executeSingleRequest({
+      http,
+      // tls.insecure などの警告は stdout の JSON / text を汚さないよう stderr に出す
+      onWarning: (message) => {
+        process.stderr.write(`klaus: warning: ${message}\n`);
+      },
       request,
       cwd,
       envName: options.env,

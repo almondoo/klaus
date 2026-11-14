@@ -278,6 +278,101 @@ export const requestSchema = z
   });
 export type RequestDef = z.infer<typeof requestSchema>;
 
+/**
+ * TLS 設定。klaus.config.yaml の `http.tls` でのみ指定できる(フローには書けない)。
+ * ca / cert / key はファイルパスで、設定ファイルのディレクトリからの相対パスとして解決する
+ * (cwd 配下の制限は受けない。送信内容ではなくローカルの認証情報のため)。
+ */
+export const httpTlsSchema = z
+  .strictObject({
+    ca: z
+      .string()
+      .optional()
+      .describe(
+        "Path to a PEM file with additional CA certificate(s) to trust. Resolved relative to klaus.config.yaml.",
+      ),
+    cert: z
+      .string()
+      .optional()
+      .describe(
+        "Path to a PEM client certificate (mutual TLS). Must be set together with `key`. Resolved relative to klaus.config.yaml.",
+      ),
+    key: z
+      .string()
+      .optional()
+      .describe(
+        "Path to the PEM private key for `cert`. Must be set together with `cert`. Resolved relative to klaus.config.yaml. Never printed or recorded.",
+      ),
+    insecure: z
+      .boolean()
+      .optional()
+      .describe(
+        "If true, certificate verification is disabled and a warning is shown in the run output. Use only against throwaway environments.",
+      ),
+  })
+  .superRefine((tls, ctx) => {
+    if ((tls.cert === undefined) !== (tls.key === undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "tls.cert and tls.key must be set together",
+        path: [tls.cert === undefined ? "cert" : "key"],
+      });
+    }
+  });
+export type HttpTlsConfig = z.infer<typeof httpTlsSchema>;
+
+/** フローの動作に関わる HTTP クライアント設定(フローと klaus.config.yaml の両方に書ける項目) */
+const httpFlowFields = {
+  followRedirects: z
+    .boolean()
+    .optional()
+    .describe(
+      "Follow 3xx redirects one hop at a time, re-checking guard.allowedHosts and $protected on every hop. Defaults to false.",
+    ),
+  maxRedirects: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe("Maximum number of redirect hops to follow. Defaults to 10."),
+  cookies: z
+    .boolean()
+    .optional()
+    .describe(
+      "Keep Set-Cookie values received during the run in memory and send them on later matching requests. Never persisted across runs. Defaults to false.",
+    ),
+};
+
+/**
+ * フローのトップレベル `http:`。通信の行き先・信頼先を変える `proxy` と `tls` は、エージェントが書き得る
+ * フローには置けない(guard.allowedHosts の迂回や通信の傍受に使えるため)。klaus.config.yaml にのみ書ける。
+ */
+export const flowHttpSchema = z.strictObject(httpFlowFields, {
+  error: (issue) =>
+    issue.code === "unrecognized_keys" && issue.keys.some((key) => key === "proxy" || key === "tls")
+      ? "http.proxy and http.tls can only be set in klaus.config.yaml, not in a flow file (they decide where traffic goes and whom it trusts)"
+      : undefined,
+});
+export type FlowHttpConfig = z.infer<typeof flowHttpSchema>;
+
+/**
+ * klaus.config.yaml の `http:`(実行単位の HTTP クライアントの既定値)。フロー側の `http:` の項目に加えて、
+ * 通信の行き先・信頼先を決める `proxy` と `tls` を持つ。これらは所有者チェック済みの設定ファイルにだけ置ける。
+ * すべて未指定なら従来どおり(リダイレクトを追わない、cookie を保持しない、proxy なし)。
+ */
+export const httpConfigSchema = z.strictObject({
+  ...httpFlowFields,
+  proxy: z
+    .string()
+    .optional()
+    .describe(
+      "HTTP(S) proxy URL (e.g. http://user:pass@proxy:3128). Only {{env.X}} (OS environment variables) may be used as a template; the userinfo is masked in all output. HTTP_PROXY and similar variables are never read automatically. guard.allowedHosts is checked against the final destination of every request, not against the proxy host.",
+    ),
+  tls: httpTlsSchema.optional().describe("TLS settings (custom CA, client certificate, insecure)."),
+});
+export type HttpConfig = z.infer<typeof httpConfigSchema>;
+
 /** SSE 受信オプション */
 export const sseOptionsSchema = z.strictObject({
   maxEvents: z
@@ -462,6 +557,11 @@ export const flowSchema = z
       .array(stepSchema)
       .min(1)
       .describe("Ordered list of steps to execute. Must contain at least one step."),
+    http: flowHttpSchema
+      .optional()
+      .describe(
+        "HTTP client settings for this flow's run (redirects, cookie jar). Overrides the same keys in klaus.config.yaml `http`. `proxy` and `tls` are not accepted here; set them in klaus.config.yaml.",
+      ),
     tags: z
       .array(z.string().min(1))
       .optional()
@@ -603,6 +703,11 @@ export const configSchema = z.strictObject({
     })
     .optional()
     .describe("Default values for `klaus ui` options."),
+  http: httpConfigSchema
+    .optional()
+    .describe(
+      "Default HTTP client settings (redirects, cookie jar, proxy, TLS) for `klaus run`, `klaus req`, and `klaus ui`. A flow's own `http` overrides the redirect and cookie keys per key; proxy and tls can only be set here. tls file paths are resolved relative to this file.",
+    ),
   guard: z
     .strictObject({
       allowedHosts: z

@@ -38,6 +38,12 @@ guard:
     - api.example.com
     - "*.example.com"
     - localhost:3000
+http:
+  followRedirects: true
+  cookies: true
+  proxy: "{{env.KLAUS_PROXY}}"
+  tls:
+    ca: certs/internal-ca.pem
 ```
 
 | Key | Corresponding CLI option | Type |
@@ -52,8 +58,11 @@ guard:
 | `ui.host` | `klaus ui --host <host>` | string |
 | `ui.open` | `klaus ui --no-open` (equivalent to disabling with `false`) | boolean |
 | `guard.allowedHosts` | none (config only; see [Host allowlist](#host-allowlist-guard-allowedhosts)) | array of strings |
+| `http.followRedirects` / `http.maxRedirects` / `http.cookies` | none (a flow's top-level `http:` overrides them; see [HTTP client](#http-client-http)) | boolean / number (0-100) / boolean |
+| `http.proxy` | none (config only) | string (proxy URL) |
+| `http.tls.ca` / `http.tls.cert` / `http.tls.key` / `http.tls.insecure` | none (config only) | file paths / boolean |
 
-The `run.*` keys apply to `klaus run` only; `klaus req` reads just the `guard` section of this file. All keys are optional. Unknown keys cause a schema validation error (see [Error handling](#error-handling) below).
+The `run.*` keys apply to `klaus run` only; `klaus req` reads only the `guard` and `http` sections of this file. All keys are optional. Unknown keys cause a schema validation error (see [Error handling](#error-handling) below).
 
 `run.reportFile` only supports a single value (unlike the CLI's repeatable `--report-file`). If `run.report` lists more than one format (e.g. `junit,tap`) and `run.reportFile` is also set, that counts as one `--report-file` for N formats — the same count-mismatch error as passing too few `--report-file` flags on the CLI (see [CLI Reference](cli.md#klaus-run)). To set per-format paths for a multi-format `run.report`, pass `--report-file` on the command line instead (CLI values always take precedence over `klaus.config.yaml`, per the priority rule above).
 
@@ -82,6 +91,25 @@ guard:
 - The check runs right before sending, on the template-resolved URL, for HTTP, SSE, and WebSocket steps and for single requests from `klaus req` and `klaus ui`. It is not applied with `--replay` (nothing is sent), and is applied with `--record`.
 - A refused step ends as `error` and the run exits with code 3. See [Troubleshooting](troubleshooting.md#host-x-is-not-in-guard-allowedhosts-klaus-config-yaml-refusing-to-send-the-request).
 - There is deliberately no CLI flag to override it. `klaus ui` reads the config at startup, so restart it after changing the list.
+
+## HTTP client (http)
+
+`http` configures the per-run HTTP client shared by every step of a run (and by a single `klaus req` / `klaus ui` request). With nothing set, behavior is unchanged: redirects are not followed, no cookies are kept, and no proxy is used.
+
+| Key | Meaning |
+|---|---|
+| `followRedirects` | Follow `301` / `302` / `303` / `307` / `308` one hop at a time (default `false`). Every hop goes through the same `guard.allowedHosts` and `$protected` checks as a normal request, and a refused hop ends the step as `error`. `301` / `302` on `POST` and `303` become a body-less `GET`; `307` / `308` keep the method and body. Moving to another origin drops `Authorization`, `Cookie`, and `Proxy-Authorization`. The visited URLs are recorded in the result and history as `redirects` |
+| `maxRedirects` | Maximum hops (default `10`); exceeding it is an `error` |
+| `cookies` | Keep `Set-Cookie` values in memory for the run and send them on later matching requests (default `false`). Never persisted. Cookie values are secrets and masked in history and output. `Secure` cookies are never sent over `http://`, cookies without `Domain` stay host-only, and a `Domain` attribute is accepted only if it equals the request host or is a parent of it that contains a dot (there is no public suffix list) |
+| `proxy` | HTTP(S) proxy URL. The userinfo is a secret and masked. `HTTP_PROXY` and similar environment variables are never read |
+| `tls.ca` / `tls.cert` / `tls.key` | PEM file paths, resolved relative to this file. `cert` and `key` must be set together. Their contents are never printed |
+| `tls.insecure` | `true` disables certificate verification and prints a `warning:` line on stderr for every run |
+
+`proxy` and `tls` decide where traffic goes and whom it trusts, so they can only be set here. A flow file that contains `http.proxy` or `http.tls` fails validation (exit code 2). Likewise there is no CLI flag, `klaus req` option, or UI parameter for them. A flow's top-level `http:` may set only `followRedirects`, `maxRedirects`, and `cookies`, and overrides this section per key (see [Flow Definition Reference](flow-definition.md#http-http-client-settings)).
+
+- The proxy URL may use <code v-pre>{{env.X}}</code> (OS environment variables) as a template, but not flow variables or captures.
+- The proxy host itself is trusted configuration and is not checked against `guard.allowedHosts`. The final destination of every request (and every redirect hop) is still checked, both for plain HTTP through the proxy and for `CONNECT` tunnels, and a refused request never reaches the proxy.
+- The `warning:` line for `tls.insecure` is written to stderr, so the JSON on stdout stays machine-readable.
 
 ## Intentionally unconfigurable keys
 

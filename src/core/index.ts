@@ -25,6 +25,7 @@ export {
   findCassetteEntry,
   loadCassetteIndex,
 } from "./cassette.js";
+export { CookieJar, splitSetCookieHeader } from "./cookie-jar.js";
 export type { DataRow } from "./data.js";
 export { loadDataFile } from "./data.js";
 export {
@@ -74,6 +75,7 @@ export type { HttpRequestOptions, HttpResponse, RawHttpResponse } from "./http.j
  * ライブラリとして直接呼ぶ場合は、呼び出し側で送信先を検証すること。
  */
 export { DEFAULT_TIMEOUT_MS, sendRawRequest, sendRequest } from "./http.js";
+export { DEFAULT_MAX_REDIRECTS, mergeHttpConfig, resolveHttpTlsPaths } from "./http-session.js";
 export type { FlowIssue, FlowValidationResult } from "./loader.js";
 export {
   describeFlowSchemaIssues,
@@ -115,8 +117,11 @@ export type {
   EventAssertion,
   EventCountAssertion,
   Flow,
+  FlowHttpConfig,
   GraphqlRequestDef,
   HeaderAssertion,
+  HttpConfig,
+  HttpTlsConfig,
   MessageAssertion,
   MessageCountAssertion,
   ReportFormat,
@@ -135,9 +140,12 @@ export {
   environmentSchema,
   eventAssertionSchema,
   eventCountAssertionSchema,
+  flowHttpSchema,
   flowSchema,
   graphqlRequestSchema,
   headerAssertionSchema,
+  httpConfigSchema,
+  httpTlsSchema,
   messageAssertionSchema,
   messageCountAssertionSchema,
   parseReportFormatList,

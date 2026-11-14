@@ -19,7 +19,7 @@ ui/         # Vite + React SPA(private ワークスペース)。core への runt
 - 実行・アサーション・履歴の全ロジックは `src/core` に置く。cli / server はそれを呼ぶだけで、**再実装しない**
 - core は commander・プロセス終了・stdout など CLI 的関心を持ち込まない
 - ui(ブラウザ)は core を runtime import しない。server の HTTP API 経由のみ。型共有は `src/core/types.ts` からの **type-only import**(ビルド時に消える)
-- HTTP / WebSocket レイヤーは undici に委譲する。リトライ・リダイレクト制御を自前実装しない
+- HTTP / WebSocket の接続は undici に委譲する。リダイレクトは各ホップで安全柵を再判定する必要があるため core(`http-session.ts`)で 1 ホップずつ処理する。proxy・TLS は設定ファイル由来のオプションだけから設定する(フローからは設定できない)
 
 ## src/core の内部構成
 
@@ -30,6 +30,7 @@ ui/         # Vite + React SPA(private ワークスペース)。core への runt
 | `env.ts` | `environments/<name>.yaml` の解決 | I/O |
 | `template.ts` | <code v-pre>{{...}}</code> 展開・テンプレート関数 | 純粋 |
 | `http.ts` | undici ラッパー(計測・JSON 判定・タイムアウト) | I/O |
+| `http-session.ts` / `cookie-jar.ts` | 実行単位の HTTP クライアント(proxy・TLS・リダイレクトのホップ処理・cookie jar) | I/O |
 | `sse.ts` | SSE 受信と上限打ち切り(eventsource-parser) | I/O |
 | `ws.ts` | WebSocket 接続・送受信・上限打ち切り(undici WebSocket) | I/O |
 | `assert.ts` | 全アサーション評価(例外を投げない) | 純粋 |

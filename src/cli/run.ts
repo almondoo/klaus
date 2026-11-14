@@ -4,6 +4,7 @@ import {
   expandSecretVariants,
   type Flow,
   type GuardOptions,
+  type HttpConfig,
   type LoadedFlowEntry,
   loadDataFile,
   loadFlow,
@@ -20,6 +21,7 @@ import {
   type StepStartContext,
 } from "../core/index.js";
 import { detectActor, resolveGitState } from "./audit.js";
+import { loadHttpOptions } from "./config.js";
 import { executeDryRun } from "./dry-run.js";
 import { determineExitCode } from "./exit-code.js";
 import { formatJson } from "./reporters/json.js";
@@ -227,6 +229,11 @@ function filterFlowsByTags(
 /**
  * --jobs 2 以上の並列実行時、runLoadedFlows が展開する実行ユニット(行 × フローの組)ごとの
  * ステップ数を、buildRunUnits(runner.ts)と同じ入力順(行(外側) × フロー(内側))で並べた配列を返す。
+  /**
+   * klaus.config.yaml の `http`(リダイレクト・proxy・TLS・cookie jar の既定値)。未指定なら runCommand が
+   * 設定ファイルから読む。フローの `http` が上書きする。CLI フラグは設けない
+   */
+  http?: HttpConfig;
  * createOrderedTextFlusher が「そのユニットの全ステップの onStepComplete が揃ったか」を判定するために使う
  * (フロー内の全ステップは skipped であっても必ず onStepStart/onStepComplete が1回ずつ呼ばれるため、
  * flow.steps.length がそのユニットで期待される onStepComplete 回数と一致する。runner.ts 側の実装参照)。
@@ -525,8 +532,20 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   try {
     runResult = await runLoadedFlows(filteredFlows, runOptions);
   } catch (error) {
+  // klaus.config.yaml の http(未指定の場合のみ設定ファイルから読む)
+  let http: HttpConfig | undefined;
+  try {
+    http = options.http ?? (await loadHttpOptions(process.cwd()));
+  } catch (error) {
+    if (error instanceof ParseError) {
+      process.stderr.write(`klaus: parse error: ${error.message}\n`);
+      return 2;
+    }
+    throw error;
+  }
     // environments/*.yaml のパース・検証失敗など、loadFlow 以外から来る ParseError もここで exit 2 に丸める
     if (error instanceof ParseError) {
+    http,
       process.stderr.write(`klaus: parse error: ${error.message}\n`);
       return 2;
     }
