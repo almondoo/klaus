@@ -33,6 +33,7 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 | `--tags <list>` | Comma-separated list of tags; only run flows whose `tags:` includes at least one of them (OR semantics; see "Tag-based flow selection" below) | — |
 | `--exclude-tags <list>` | Comma-separated list of tags; drop flows whose `tags:` includes any of them. Takes precedence over `--tags` | — |
 | `--jobs <n>` | Run this many execution units in parallel (integer 1-32; see "Parallel execution (`--jobs`)" below). Cannot be combined with `--record` | 1 (sequential) |
+| `--dry-run` | Send nothing: print each step's expanded request and whether the guards would refuse it (see "Dry run (`--dry-run`)" below). Cannot be combined with `--record`, `--replay`, or `--report` | — |
 
 `--report` takes a comma-separated list of formats (entries are trimmed; each must be `junit` or `tap`). Passing an unknown or empty format entry prints an error to stderr and exits with 1. `--report` also rejects a duplicated format (e.g. `--report junit,junit`) and rejects `--report-file` values that resolve to the same output path across formats, both with an error to stderr and exit 1, since either would make two writes race on one file. With N formats given to `--report`, `--report-file` must be passed either **exactly N times** (in the same order, pairing the 1st `--report-file` with the 1st format and so on) or **not at all** (in which case each format is written to its own default filename: `klaus-report.xml` for `junit`, `klaus-report.tap` for `tap`). Any other count — e.g. one `--report-file` for two formats — is rejected with an error and exits with 1 without writing any file. This generalizes the single-format behavior: `--report junit` alone still defaults to `klaus-report.xml`, unchanged from before. Passing `--json` and `--text` together, or `-e`/`--env` and `--env-file` together, also prints an error to stderr and exits with 1 (nothing is run). This `-e`/`--env` + `--env-file` conflict only fires for an `-e`/`--env` **typed on the command line**; a `run.env` default coming from `klaus.config.yaml` yields to an explicit `--env-file` instead of conflicting with it (see [Default CLI options](config.md)).
 
@@ -51,7 +52,7 @@ Passing `--allow-protected` lifts both. The refusal happens right before sending
 
 `--var` values are **not** registered as secrets and are **not** masked in output, unlike <code v-pre>{{env.X}}</code> (OS environment variable references). If a value is a real secret, pass it through an OS environment variable and reference it as <code v-pre>{{env.X}}</code> instead, so it benefits from the masking described in [Execution History](history.md).
 
-`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` / `--jobs` can have their defaults set via `klaus.config.yaml`. `--var`, `--env-file`, `--data`, `--tags`, and `--exclude-tags` cannot — see [Default CLI options](config.md).
+`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` / `--jobs` can have their defaults set via `klaus.config.yaml`. `--var`, `--env-file`, `--data`, `--tags`, `--exclude-tags`, and `--dry-run` cannot — see [Default CLI options](config.md).
 
 ### Tag-based flow selection (`--tags` / `--exclude-tags`)
 
@@ -86,6 +87,58 @@ Flow definitions may declare `tags: [smoke, auth]` at the top level (see [Flow D
 - **Text output ordering**: with `--jobs` 2 or higher, klaus buffers each unit's step-progress lines and flushes a unit's full block only once every earlier unit (in input order) has already flushed — so a human reading the text output still sees units in the same order as `--jobs 1`, never interleaved or out of order, even though the underlying requests ran concurrently. (Implementation note: klaus buffers each unit's output in full and releases it once it becomes the earliest not-yet-flushed unit, rather than live-streaming the currently-furthest-along unit.)
 - **Execution history ordering is not guaranteed**: each step still appends exactly one line to `.klaus/history/*.jsonl` (see [Execution History](history.md)), but with `--jobs` > 1, lines from concurrently-running units can interleave in the file in whatever order their writes land — unlike the in-memory `RunResult`, the JSONL file's *line order* does not reflect input order. Every entry still carries `runId`/`flow`/`step`/`startedAt` so a consumer can reconstruct grouping and ordering itself if needed. The writes themselves are not corrupted or torn (each line is one atomic `O_APPEND` write), only their relative order is unspecified.
 - **Cannot be combined with `--record`**: record mode appends every response to the same cassette file (`--record <dir>`) keyed by method+URL. With `--jobs` > 1, concurrent identical requests could get appended in a different relative order on every run, making the *replayed* response for a repeated method+URL pair (`findCassetteEntry` takes the first-recorded match) non-deterministic across recordings. `--record` combined with `--jobs` greater than 1 is therefore rejected with an error and exit code 1 before anything runs. `--replay` has no such restriction: each unit independently loads its own read-only copy of the cassette index before it starts sending requests (not a single index shared/hoisted across units) — since nothing writes to the cassette file during replay, those concurrent independent reads under `--jobs` > 1 are safe.
+
+### Dry run (`--dry-run`)
+
+`--dry-run` shows what `klaus run` would send, without sending it. For every step it prints the request after template expansion (method, URL with the query merged in, headers, body; for an SSE step the same, for a WebSocket step the URL, headers, and the messages that would be sent), together with the result of the same guard checks that run right before sending. Use it to check a flow against `guard.allowedHosts` and `$protected` environments before a real run.
+
+Nothing is sent and nothing is written: no history entries, no cassette reads or writes, no retries, no assertions, no `capture`. The flow files, `--data`, `--tags`, `--exclude-tags`, `--env`, `--env-file`, `--var`, and `--allow-protected` are interpreted exactly as for a normal run, and parse errors still exit with 2. `--jobs` is accepted, but nothing runs concurrently and the output order stays the same (rows outer, flows inner, as with `--data`). `--dry-run` cannot be combined with `--record`, `--replay`, or `--report`; that is an argument error and exits with 2 without running anything. A `run.report` default in `klaus.config.yaml` is ignored under `--dry-run`. It cannot be set from `klaus.config.yaml`.
+
+- **Variables that depend on a capture**: a variable that an earlier step of the same flow defines through `capture` has no value yet, so it stays as <code v-pre>{{name}}</code> in the output and is listed in the step's `unresolved` field. That is not an error. Such a name is treated as unresolved even if the environment defines the same name, because at run time a captured value takes precedence over the environment.
+- **Variables that cannot resolve at run time either**: a variable that is neither defined by an earlier step's `capture` nor in the environment, `--var`, or the data row, and an <code v-pre>{{env.X}}</code> whose OS environment variable is undefined, are reported in the step's `error` with the same message as at run time, and the step has no `request`.
+- **Generated values**: <code v-pre>{{newUuid}}</code>, <code v-pre>{{newDate}}</code>, and <code v-pre>{{newTimestamp}}</code> are expanded like at run time, so the values differ from the ones a real run generates.
+- **`if` conditions** depend on run-time statuses and captures, so they are not evaluated: the step is marked `conditional: true`, its `if` text is shown, and its request is still expanded.
+- **Guards**: `guard.status` is `allowed`, `refused` (with the same reason as the run-time refusal), or `undetermined` when `guard.allowedHosts` is set and the target host itself contains an unresolved variable (for example `url: "{{base}}/x"` where `base` is captured earlier). A refusal that does not depend on the host, such as a `POST` in a `$protected: readonly` environment, is still reported as `refused`. If only the path or query is unresolved, the host is known and the allowlist is checked. Each step is judged on its own: a refused step does not hide the steps after it, although a real run would skip them.
+
+JSON output (non-TTY, or `--json`) is one compact object with a top-level `"dryRun": true` marker. Its `flows[].steps[]` structure and field names follow the [`run` JSON output](#json-output-for-machines), but there is no `status` per step, no `assertions`, and no `historyRef`, and request bodies are not truncated (a dry run has no history to fetch the full text from). Secrets from <code v-pre>{{env.X}}</code> are masked as usual (`--no-mask` disables it).
+
+```jsonc
+{
+  "version": 1,
+  "dryRun": true,
+  "status": "ok",            // "error" (exit code 3) if any step is refused or fails to expand
+  "summary": { "flows": 1, "steps": 2, "refused": 0, "undetermined": 0, "unresolved": 1, "errors": 0 },
+  "flows": [
+    {
+      "name": "chain",
+      "file": "flows/chain.yaml",
+      "steps": [
+        {
+          "name": "login",
+          "kind": "http",               // "http" | "sse" | "ws"
+          "request": { "method": "POST", "url": "http://127.0.0.1:18766/login", "headers": { "X-Key": "***" }, "body": "{\"user\":\"alice\"}" },
+          "unresolved": [],
+          "conditional": false,
+          "guard": { "status": "allowed" }
+        },
+        {
+          "name": "me",
+          "kind": "http",
+          "request": { "method": "GET", "url": "http://127.0.0.1:18766/me?who=alice", "headers": { "Authorization": "Bearer {{token}}" } },
+          "unresolved": ["token"],
+          "conditional": true,
+          "if": "steps.login.status == \"passed\"",
+          "guard": { "status": "allowed" }
+        }
+      ]
+    }
+  ]
+}
+```
+
+The text output (TTY, or `--text`) prints the same information per step and ends with a one-line summary. The JSON Schema is available through `klaus schema --target dry-run-report` (see [klaus schema](#klaus-schema)).
+
+Exit code is **3** if any step would be refused by a guard, or fails to expand at run time (the `error` case above, which a real run would also end as a runtime error); otherwise **0**. Validation errors stay at 2. There is no exit code 4 because assertions are not evaluated.
 
 ## Output Modes
 
@@ -192,6 +245,7 @@ Details of the decision rules:
 2. A parse error in an environment file (`environments/*.yaml`) encountered during execution also results in exit 2
 3. After execution: if any flow contains a runtime error (status "error"), exit **3**; otherwise if there's an assertion failure (status "failed"), exit **4**; if everything passed, exit **0**. When both 3 and 4 apply, 3 takes priority
 4. A failure to write the history JSONL only produces a warning on stderr — it does not affect step results or the exit code
+5. With `--dry-run` nothing is sent, so only 0, 2, and 3 occur (see [Dry run](#dry-run-dry-run))
 
 An agent (such as Claude Code) can identify where things went wrong from the exit code alone: 2 means fix the definition, 3 means check whether the target API is up, and 4 means compare the assertion against the response.
 
@@ -369,13 +423,13 @@ klaus schema [-t <target>]
 
 | Option | Description | Default |
 |---|---|---|
-| `-t`, `--target <target>` | The schema to print: `flow` (the flow definition YAML), `run-report` (the `run --json` output payload), `req-report` (the `req --json` output payload), or `config` ([klaus.config.yaml](config.md)) | `flow` |
+| `-t`, `--target <target>` | The schema to print: `flow` (the flow definition YAML), `run-report` (the `run --json` output payload), `req-report` (the `req --json` output payload), `dry-run-report` (the `run --dry-run --json` output payload), or `config` ([klaus.config.yaml](config.md)) | `flow` |
 
 Prints the JSON Schema (generated from the zod schema, 2-space pretty-printed) to stdout only — nothing is written to disk.
 
-Each schema is also published as a static file: `https://almondoo.github.io/klaus/schema/flow.schema.json`, `https://almondoo.github.io/klaus/schema/run-report.schema.json`, `https://almondoo.github.io/klaus/schema/req-report.schema.json`, and `https://almondoo.github.io/klaus/schema/klaus-config.schema.json`, and bundled in the npm package at `node_modules/@almondoo/klaus/dist/schema/*.json`.
+Each schema is also published as a static file: `https://almondoo.github.io/klaus/schema/flow.schema.json`, `https://almondoo.github.io/klaus/schema/run-report.schema.json`, `https://almondoo.github.io/klaus/schema/req-report.schema.json`, `https://almondoo.github.io/klaus/schema/dry-run-report.schema.json`, and `https://almondoo.github.io/klaus/schema/klaus-config.schema.json`, and bundled in the npm package at `node_modules/@almondoo/klaus/dist/schema/*.json`.
 
-The `version` field of the `run --json` payload is a plain literal (currently `2`; `1` for `req --json`), independent of the package version. It is bumped only when a change to this schema would break existing consumers (a field is removed, a field's type changes, or its meaning changes) — purely additive changes such as a new optional field do not bump it. Consumers should branch on `version` rather than assume the current shape is permanent.
+The `version` field of the `run --json` payload is a plain literal (currently `2`; `1` for `req --json` and `run --dry-run --json`), independent of the package version. It is bumped only when a change to this schema would break existing consumers (a field is removed, a field's type changes, or its meaning changes) — purely additive changes such as a new optional field do not bump it. Consumers should branch on `version` rather than assume the current shape is permanent.
 
 The `request`/`ws` exclusivity and requiredness, the `body`/`graphql` exclusivity, `method` being required unless `graphql` is set, the `ws.url` scheme constraint, and step name uniqueness are all custom validations expressed via zod's `superRefine` and can't be represented in JSON Schema, so they're instead noted in the `description` of the relevant subschema. Always exits 0.
 

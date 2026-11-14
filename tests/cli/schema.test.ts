@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   buildConfigJsonSchema,
+  buildDryRunReportJsonSchema,
   buildFlowJsonSchema,
   buildReqReportJsonSchema,
   buildRunReportJsonSchema,
@@ -107,6 +108,36 @@ describe("buildReqReportJsonSchema", () => {
   });
 });
 
+describe("buildDryRunReportJsonSchema", () => {
+  it("version/dryRun/status/summary/flows など run --dry-run --json(v1)の主要プロパティを含む", () => {
+    const json = buildDryRunReportJsonSchema() as {
+      type: string;
+      properties: {
+        flows: {
+          items: { properties: { steps: { items: { properties: Record<string, unknown> } } } };
+        };
+      } & Record<string, unknown>;
+    };
+    expect(json.type).toBe("object");
+    for (const key of ["version", "dryRun", "status", "summary", "flows"]) {
+      expect(json.properties[key], key).toBeDefined();
+    }
+    const stepProps = json.properties.flows.items.properties.steps.items.properties;
+    for (const key of [
+      "name",
+      "kind",
+      "request",
+      "unresolved",
+      "conditional",
+      "if",
+      "guard",
+      "error",
+    ]) {
+      expect(stepProps[key], key).toBeDefined();
+    }
+  });
+});
+
 describe("buildConfigJsonSchema", () => {
   it("JSON として parse できる JSON Schema を返す", () => {
     const json = buildConfigJsonSchema();
@@ -168,6 +199,13 @@ describe("schemaCommand / target", () => {
     expect(exitCode).toBe(0);
     const parsed = JSON.parse(stdoutSpy.join(""));
     expect(parsed.properties.historyRef).toBeDefined();
+  });
+
+  it('target: "dry-run-report" 指定時は run --dry-run --json スキーマを出力する', async () => {
+    const exitCode = await schemaCommand("dry-run-report");
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdoutSpy.join(""));
+    expect(parsed.properties.dryRun).toBeDefined();
   });
 
   it('target: "config" 指定時は klaus.config.yaml のスキーマを出力する', async () => {

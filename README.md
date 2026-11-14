@@ -17,6 +17,7 @@ Documentation site: https://almondoo.github.io/klaus/
 - **Agent-friendly output**: Failures can be identified from exit code alone. JSON output is the default in non-TTY environments
 - **Host allowlist**: `guard.allowedHosts` in `klaus.config.yaml` restricts which hosts requests may be sent to (no CLI flag to override)
 - **Read-only protected environments**: `$protected: readonly` lets only GET / HEAD / OPTIONS run without `--allow-protected`
+- **Dry run**: `klaus run --dry-run` prints each step's expanded request and whether the guards would refuse it, without sending anything
 - **Ad-hoc requests**: `klaus req` sends a single request with the same guards and secret masking as `klaus run` and records it in the history, so agents can use it instead of `curl`
 - **Local-first**: Execution history is appended to `.klaus/history/*.jsonl`. No cloud sync or account mechanism
 

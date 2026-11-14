@@ -75,6 +75,12 @@ describe("loadCliConfig", () => {
     await expect(loadCliConfig(root)).rejects.toThrow(/klaus\.config\.yaml/);
   });
 
+  it("run.dryRun はスキーマに無いキーとして拒否する(--dry-run は呼び出しごとに明示させる)", async () => {
+    await writeFile(join(root, "klaus.config.yaml"), "run:\n  dryRun: true\n", "utf-8");
+
+    await expect(loadCliConfig(root)).rejects.toThrow(ParseError);
+  });
+
   it("run.report が junit/tap のいずれでもない場合はスキーマ違反として拒否する", async () => {
     await writeFile(join(root, "klaus.config.yaml"), "run:\n  report: xml\n", "utf-8");
 

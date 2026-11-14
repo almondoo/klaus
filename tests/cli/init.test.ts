@@ -115,6 +115,14 @@ describe("initCommand", () => {
     expect(agentsContent).toContain("Authorization: Bearer {{env.TOKEN}}");
   });
 
+  it("生成される AGENTS.md には run --dry-run(送信せずに展開と安全柵の判定だけを確認する)の説明が含まれる", async () => {
+    await initCommand(workDir);
+
+    const agentsContent = await readFile(join(workDir, "AGENTS.md"), "utf-8");
+    expect(agentsContent).toContain("`--dry-run`: send nothing");
+    expect(agentsContent).toContain("exits 3 if any step would be refused");
+  });
+
   it("生成した api/example.yaml は klaus のローダー(loadFlow)を通る", async () => {
     await initCommand(workDir);
 

@@ -203,6 +203,10 @@ program
     },
   )
   .option(
+    "--dry-run",
+    "send nothing: print each step's expanded request (template variables that depend on earlier captures stay as {{name}}) and whether the guards would refuse it; exits 3 if any step would be refused. Writes no history; cannot be combined with --record, --replay, or --report",
+  )
+  .option(
     "--actor <name>",
     "name recorded as history actor.name for this run (the actor kind — human/agent/ci — is still detected from environment variables)",
     parseActorOption,
@@ -239,10 +243,18 @@ ${exitCodesHelpLine}
       // が行う(--record/--replay 等の他の組み合わせ検査と同じ流儀で runCommand に集約している)。
       // guard(送信先ホストの許可リスト)は config からのみ設定できる(CLI フラグでの上書きは設けない)
       const guard = resolveGuardOptions(configResult.config);
-      process.exitCode = await runCommand(
-        files,
-        guard ? { ...mergedOptions, guard } : mergedOptions,
-      );
+      // --dry-run ではレポートファイルを書かないため、config の run.report / run.reportFile は適用しない
+      // (config に report を書いたプロジェクトでも --dry-run を使えるようにする。CLI で明示した --report は
+      // runCommand が引数エラーにする)
+      const { report: _configReport, ...mergedWithoutReport } = mergedOptions;
+      const finalOptions: RunCommandOptions = options.dryRun
+        ? {
+            ...mergedWithoutReport,
+            ...(options.report !== undefined ? { report: options.report } : {}),
+            reportFile: options.reportFile,
+          }
+        : mergedOptions;
+      process.exitCode = await runCommand(files, guard ? { ...finalOptions, guard } : finalOptions);
     });
   });
 
@@ -372,11 +384,11 @@ program
 program
   .command("schema")
   .description(
-    "print the JSON Schema for the flow definition YAML (or the run --json output, the req --json output, or klaus.config.yaml) to stdout",
+    "print the JSON Schema for the flow definition YAML (or the run --json output, the req --json output, the run --dry-run --json output, or klaus.config.yaml) to stdout",
   )
   .option(
     "-t, --target <target>",
-    'schema to print: "flow" (default), "run-report", "req-report", or "config"',
+    'schema to print: "flow" (default), "run-report", "req-report", "dry-run-report", or "config"',
     "flow",
   )
   .action(async (options: { target: string }) => {
@@ -385,10 +397,11 @@ program
       options.target !== "flow" &&
       options.target !== "run-report" &&
       options.target !== "req-report" &&
+      options.target !== "dry-run-report" &&
       options.target !== "config"
     ) {
       process.stderr.write(
-        `klaus: invalid --target "${options.target}" (expected "flow", "run-report", "req-report", or "config")\n`,
+        `klaus: invalid --target "${options.target}" (expected "flow", "run-report", "req-report", "dry-run-report", or "config")\n`,
       );
       process.exitCode = 1;
       return;

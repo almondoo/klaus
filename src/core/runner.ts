@@ -230,7 +230,7 @@ export function resolveRequestMethod(request: RequestDef): string {
 }
 
 /** Accept ヘッダーまたは sse ブロックの存在で SSE モードかどうかを判定する(ws ステップは対象外) */
-function isSseStep(step: Step): boolean {
+export function isSseStep(step: Step): boolean {
   if (!step.request) return false;
   if (step.sse) return true;
   const headers = step.request.headers ?? {};
@@ -269,6 +269,59 @@ function applyQueryParams(
     parsed.searchParams.set(key, renderString(value, templateContext));
   }
   return parsed.toString();
+}
+
+/** expandStepRequest が返す、テンプレート展開済みの送信内容 */
+export interface ExpandedStepRequest {
+  /** ステップの種別。ws は WebSocket、sse は Accept: text/event-stream または sse ブロックのある HTTP、それ以外は http */
+  kind: "http" | "sse" | "ws";
+  /**
+   * 展開後の送信内容。WS ステップは method が "WS" で、body は送信するメッセージ列(送信なしなら undefined)になる
+   */
+  snapshot: RequestSnapshot;
+}
+
+/**
+ * ステップの request / ws をテンプレート展開して、実際に送る内容(RequestSnapshot)にする。
+ * 実行時(executeStep)と dry-run(dry-run.ts)が同じ展開結果を得るための共通関数で、
+ * 未解決変数・OS 環境変数未定義は RuntimeError を投げる(dry-run は context.deferred で一部を例外にしない)。
+ */
+export function expandStepRequest(
+  step: Step,
+  templateContext: TemplateContext,
+): ExpandedStepRequest {
+  if (step.ws) {
+    const url = renderString(step.ws.url, templateContext);
+    const headers = renderHeaders(step.ws.headers, templateContext);
+    const sendItems = (step.ws.send ?? []).map((item) =>
+      typeof item === "string"
+        ? renderString(item, templateContext)
+        : renderDeep(item, templateContext),
+    );
+    return {
+      kind: "ws",
+      snapshot: {
+        method: "WS",
+        url,
+        headers,
+        body: sendItems.length > 0 ? sendItems : undefined,
+      },
+    };
+  }
+  if (!step.request) {
+    // schema 側の superRefine で request/ws のいずれか必須を検証済みのため、通常はここに来ない
+    throw new RuntimeError(`step "${step.name}" has neither request nor ws defined`);
+  }
+  const request = step.request;
+  const method = resolveRequestMethod(request);
+  const url = applyQueryParams(
+    renderString(request.url, templateContext),
+    request.query,
+    templateContext,
+  );
+  const headers = renderHeaders(request.headers, templateContext);
+  const body = buildRequestBody(request, templateContext);
+  return { kind: isSseStep(step) ? "sse" : "http", snapshot: { method, url, headers, body } };
 }
 
 /**
@@ -355,7 +408,7 @@ function buildStepResultBase(
 type HistorySink = (entry: HistoryEntry) => void | Promise<void>;
 
 /** executeStep が送信直前に参照する安全柵の状態(環境の保護モードと送信先の許可リスト) */
-interface StepGuard {
+export interface StepGuard {
   /** $protected: true の環境へ --allow-protected なしで実行しようとした場合の拒否エラー(全ステップを拒否する) */
   blockedError?: GuardRefusalError;
   /**
@@ -374,7 +427,7 @@ interface StepGuard {
  * method はテンプレート展開後の実際に送るメソッド(WS ステップは "WS")。
  * skipHostCheck は --replay 用(実送信がないため送信先ホストを判定しない)。
  */
-function assertSendAllowed(
+export function assertSendAllowed(
   stepGuard: StepGuard | undefined,
   method: string,
   url: string,
@@ -481,19 +534,9 @@ async function executeStep(
 
     if (step.ws) {
       // テンプレート展開(未解決変数・OS 環境変数未定義は RuntimeError として catch 節に落ちる)
-      const url = renderString(step.ws.url, templateContext);
-      const headers = renderHeaders(step.ws.headers, templateContext);
-      const sendItems = (step.ws.send ?? []).map((item) =>
-        typeof item === "string"
-          ? renderString(item, templateContext)
-          : renderDeep(item, templateContext),
-      );
-      requestSnapshot = {
-        method: "WS",
-        url,
-        headers,
-        body: sendItems.length > 0 ? sendItems : undefined,
-      };
+      requestSnapshot = expandStepRequest(step, templateContext).snapshot;
+      const { url, headers } = requestSnapshot;
+      const sendItems = (requestSnapshot.body ?? []) as unknown[];
 
       // 送信(接続)直前の判定。WebSocket は読み取り専用の保護環境でも常に拒否する(record/replay は WS 非対応)
       assertSendAllowed(stepGuard, "WS", url, headers, false);
@@ -542,15 +585,8 @@ async function executeStep(
 
     // テンプレート展開(未解決変数・OS 環境変数未定義は RuntimeError として catch 節に落ちる)
     // graphql 指定時のみ method 省略可であり、その場合は POST を既定にする
-    const method = resolveRequestMethod(request);
-    const url = applyQueryParams(
-      renderString(request.url, templateContext),
-      request.query,
-      templateContext,
-    );
-    const headers = renderHeaders(request.headers, templateContext);
-    const body = buildRequestBody(request, templateContext);
-    requestSnapshot = { method, url, headers, body };
+    requestSnapshot = expandStepRequest(step, templateContext).snapshot;
+    const { method, url, headers, body } = requestSnapshot;
 
     if (isSseStep(step)) {
       // SSE は HTTP メソッドに従う(record/replay は SSE 非対応のため、ここでは常に実送信になる)
@@ -686,7 +722,7 @@ function checkEnvironmentAllowed(
  * 環境の保護モード・許可リストから、executeStep に渡す安全柵の状態を組み立てる。
  * 何も制限がなければ undefined(従来どおりの経路)。
  */
-function buildStepGuard(
+export function buildStepGuard(
   envName: string | undefined,
   environment: Environment,
   allowProtected: boolean | undefined,
@@ -1031,7 +1067,7 @@ function stringifyDataRow(row: DataRow): Record<string, string> {
 }
 
 /** runLoadedFlows が展開する実行ユニット(行 × フローの組)1件分 */
-interface RunUnit {
+export interface RunUnit {
   filePath: string;
   flow: Flow;
   /** --data 実行時のみ設定する(stringifyDataRow 済みの行の値を options.variables に上書きマージ済み) */
@@ -1044,7 +1080,7 @@ interface RunUnit {
  * dataRows が未指定・空配列の場合は entries をそのまま1ユニットずつにする(iteration/variables なし)。
  * runLoadedFlows の逐次実行・並列実行はどちらもこの展開結果を入力順として使う。
  */
-function buildRunUnits(entries: LoadedFlowEntry[], options: RunFlowOptions): RunUnit[] {
+export function buildRunUnits(entries: LoadedFlowEntry[], options: RunFlowOptions): RunUnit[] {
   const units: RunUnit[] = [];
   if (options.dataRows && options.dataRows.length > 0) {
     let iteration = 0;

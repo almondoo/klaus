@@ -33,6 +33,14 @@ export {
   discoverFlowCandidatesWithRaw,
   isFlowCandidate,
 } from "./discovery.js";
+export type {
+  DryRunFlowResult,
+  DryRunGuardStatus,
+  DryRunOptions,
+  DryRunResult,
+  DryRunStepResult,
+} from "./dry-run.js";
+export { dryRunFlow, dryRunLoadedFlows } from "./dry-run.js";
 export {
   assertTrustedAncestorSource,
   EnvironmentNotFoundError,

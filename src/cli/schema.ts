@@ -6,6 +6,7 @@
  */
 import { z } from "zod";
 import { configSchema, flowSchema } from "../core/index.js";
+import { dryRunReportSchema } from "./reporters/dry-run.js";
 import { jsonReportSchema } from "./reporters/json.js";
 import { reqReportSchema } from "./reporters/req.js";
 
@@ -87,6 +88,14 @@ export function buildReqReportJsonSchema(): Record<string, unknown> {
 }
 
 /**
+ * dryRunReportSchema(`run --dry-run --json` の出力形, src/cli/reporters/dry-run.ts)の JSON Schema 表現を生成する。
+ * transform を含まないため flow 側と異なり io オプションは不要。
+ */
+export function buildDryRunReportJsonSchema(): Record<string, unknown> {
+  return z.toJSONSchema(dryRunReportSchema) as Record<string, unknown>;
+}
+
+/**
  * configSchema(klaus.config.yaml, src/core/schema.ts)の JSON Schema 表現を生成する。
  * transform を含まないため flow 側と異なり io オプションは不要。
  */
@@ -97,10 +106,10 @@ export function buildConfigJsonSchema(): Record<string, unknown> {
 /**
  * `klaus schema` が出力する対象。
  * "flow": フロー定義 YAML のスキーマ(既定)。"run-report": `klaus run --json` 出力のスキーマ。
- * "req-report": `klaus req --json` 出力のスキーマ。
+ * "req-report": `klaus req --json` 出力のスキーマ。"dry-run-report": `klaus run --dry-run --json` 出力のスキーマ。
  * "config": klaus.config.yaml(CLI オプションの既定値ファイル)のスキーマ。
  */
-export type SchemaTarget = "flow" | "run-report" | "req-report" | "config";
+export type SchemaTarget = "flow" | "run-report" | "req-report" | "dry-run-report" | "config";
 
 /** schema コマンド本体。JSON Schema を stdout に書き出すだけ。常に exit 0 */
 export async function schemaCommand(target: SchemaTarget = "flow"): Promise<number> {
@@ -109,9 +118,11 @@ export async function schemaCommand(target: SchemaTarget = "flow"): Promise<numb
       ? buildRunReportJsonSchema()
       : target === "req-report"
         ? buildReqReportJsonSchema()
-        : target === "config"
-          ? buildConfigJsonSchema()
-          : buildFlowJsonSchema();
+        : target === "dry-run-report"
+          ? buildDryRunReportJsonSchema()
+          : target === "config"
+            ? buildConfigJsonSchema()
+            : buildFlowJsonSchema();
   process.stdout.write(`${JSON.stringify(json, null, 2)}\n`);
   return 0;
 }

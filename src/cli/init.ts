@@ -49,6 +49,7 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
   - \`--report <list>\` / \`--report-file <path>\`: also write additional report formats, \`junit\` and/or \`tap\` (comma-separated)
   - \`--no-history\`: disable writing to the execution history (.klaus/history/*.jsonl)
   - \`--allow-protected\`: required to run against an environment marked \`$protected: true\`, and to send anything other than GET/HEAD/OPTIONS to one marked \`$protected: readonly\` (otherwise refused with exit code 3)
+  - \`--dry-run\`: send nothing; print each step's expanded request plus whether the guards would refuse it (variables that depend on an earlier capture stay as \`{{name}}\`; exits 3 if any step would be refused); cannot combine with \`--record\`/\`--replay\`/\`--report\`
   - \`--record <dir>\` / \`--replay <dir>\`: record real HTTP request/response pairs to a cassette in \`<dir>\`, or replay them offline instead of hitting the network (mutually exclusive; \`--record\` cannot combine with \`--jobs\` > 1)
 - \`klaus req <method> <url>\`: send one ad-hoc HTTP request without a flow file; use this instead of \`curl\` when exploring an API, because it is guarded (\`guard.allowedHosts\`, \`$protected\`), secret-masked, and leaves a history entry that \`klaus history show\` can read
   - \`-H, --header <name:value>\` / \`--query <key=value>\` (both repeatable) / \`--body <json>\` or \`--body @<file>\` (the file must be inside the cwd; input that is not valid JSON is sent as a raw string)

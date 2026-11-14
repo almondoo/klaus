@@ -121,7 +121,7 @@ export interface RunOptionSources {
  * 「CLI 明示(source === "cli") > config > 組み込み既定(options のまま)」の優先順位。
  * `--no-history` / `--no-mask` の負論理も source 判定で自然に扱える(未指定=default のときだけ
  * config の値で上書きし、明示指定(source "cli")なら常に CLI 側を優先する)。
- * `--allow-protected` / `--record` / `--replay` / `--json` / `--text` / `--var` / `--env-file` / `--data` /
+ * `--allow-protected` / `--record` / `--replay` / `--dry-run` / `--json` / `--text` / `--var` / `--env-file` / `--data` /
  * `--tags` / `--exclude-tags` は対象外(configSchema に定義がないため、options はそのまま素通りする。
  * `--var` / `--env-file` / `--data` はその場限り・呼び出しごとの指定であることが本質のため、恒久的な既定値を
  * 持つ config には馴染まない。`--tags` / `--exclude-tags` も同様に、その回の実行で何を対象にするかという

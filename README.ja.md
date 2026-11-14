@@ -17,6 +17,7 @@
 - **エージェント向け出力**: exit code だけで故障箇所を判別可能。非 TTY では JSON 出力がデフォルト
 - **送信先ホストの許可リスト**: `klaus.config.yaml` の `guard.allowedHosts` でリクエストの送信先を制限(上書きする CLI フラグはない)
 - **読み取り専用の保護環境**: `$protected: readonly` で、`--allow-protected` なしでも GET / HEAD / OPTIONS のみ実行可能
+- **ドライラン**: `klaus run --dry-run` は、何も送信せずに各ステップの展開後リクエストと、安全柵が拒否するかどうかを出力する
 - **単発リクエスト**: `klaus req` は `klaus run` と同じ安全柵・シークレットマスクのもとで1件のリクエストを送り、履歴に記録する。エージェントは `curl` の代わりに使える
 - **ローカルファースト**: 実行履歴は `.klaus/history/*.jsonl` に追記。クラウド同期・アカウント機構はない
 

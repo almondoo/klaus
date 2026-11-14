@@ -1048,4 +1048,95 @@ describe("cli integration", () => {
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout).properties.historyRef).toBeDefined();
   });
+
+  it("(dry-1) run --dry-run: capture 依存つきの 2 ステップを送信せずに展開し、dryRun: true の JSON と exit 0", async () => {
+    const dryWorkDir = join(workDir, "dry-run-scenario");
+    await mkdir(dryWorkDir, { recursive: true });
+    const flowPath = join(dryWorkDir, "chain.yaml");
+    await writeFile(
+      flowPath,
+      `name: chain\nsteps:\n  - name: login\n    request:\n      method: POST\n      url: "${fixture.baseUrl}/req-echo/login"\n      body: { user: a }\n    capture: { token: "$.body" }\n  - name: me\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/req-echo/me"\n      headers: { Authorization: "Bearer {{token}}" }\n`,
+      "utf-8",
+    );
+
+    const result = await runCli(["run", flowPath, "--dry-run"], dryWorkDir);
+
+    expect(result.status).toBe(0);
+    const report = JSON.parse(result.stdout);
+    expect(report).toMatchObject({ version: 1, dryRun: true, status: "ok" });
+    expect(report.flows[0].steps[1]).toMatchObject({
+      unresolved: ["token"],
+      request: { headers: { Authorization: "Bearer {{token}}" } },
+      guard: { status: "allowed" },
+    });
+    // 履歴は書かれない
+    await expect(access(join(dryWorkDir, ".klaus"))).rejects.toThrow();
+  });
+
+  it("(dry-2) run --dry-run: guard.allowedHosts で拒否されるステップがあれば exit 3、config の run.report があっても使える", async () => {
+    const dryWorkDir = join(workDir, "dry-run-guard-scenario");
+    await mkdir(dryWorkDir, { recursive: true });
+    const flowPath = join(dryWorkDir, "ok.yaml");
+    await writeFile(
+      flowPath,
+      `name: guard flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n`,
+      "utf-8",
+    );
+    await writeFile(
+      join(dryWorkDir, "klaus.config.yaml"),
+      "run:\n  report: junit\nguard:\n  allowedHosts:\n    - api.example.com\n",
+      "utf-8",
+    );
+
+    const result = await runCli(["run", flowPath, "--dry-run"], dryWorkDir);
+
+    expect(result.status).toBe(3);
+    const report = JSON.parse(result.stdout);
+    expect(report.status).toBe("error");
+    expect(report.flows[0].steps[0].guard.status).toBe("refused");
+    // config の run.report は --dry-run では適用されず、レポートファイルは書かれない
+    await expect(access(join(dryWorkDir, "klaus-report.xml"))).rejects.toThrow();
+  });
+
+  it("(dry-3) run --dry-run: --data で行ごとに展開され、--record / --replay / --report との併用は exit 2", async () => {
+    const dryWorkDir = join(workDir, "dry-run-data-scenario");
+    await mkdir(dryWorkDir, { recursive: true });
+    const flowPath = join(dryWorkDir, "item.yaml");
+    await writeFile(
+      flowPath,
+      `name: item\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/req-echo/{{id}}"\n`,
+      "utf-8",
+    );
+    const dataPath = join(dryWorkDir, "rows.json");
+    await writeFile(dataPath, '[{"id":"a"},{"id":"b"}]', "utf-8");
+
+    const data = await runCli(
+      ["run", flowPath, "--dry-run", "--data", dataPath, "--jobs", "2"],
+      dryWorkDir,
+    );
+    expect(data.status).toBe(0);
+    const urls = JSON.parse(data.stdout).flows.map(
+      (f: { iteration: number; steps: { request: { url: string } }[] }) =>
+        `${f.iteration}:${f.steps[0]?.request.url.replace(fixture.baseUrl, "")}`,
+    );
+    expect(urls).toEqual(["1:/req-echo/a", "2:/req-echo/b"]);
+
+    for (const extra of [
+      ["--record", "cas"],
+      ["--replay", "cas"],
+      ["--report", "junit"],
+    ]) {
+      const conflict = await runCli(["run", flowPath, "--dry-run", ...extra], dryWorkDir);
+      expect(conflict.status, extra.join(" ")).toBe(2);
+      expect(conflict.stdout).toBe("");
+      expect(conflict.stderr).toContain("--dry-run cannot be combined with");
+    }
+  });
+
+  it("(dry-4) schema -t dry-run-report: run --dry-run --json の JSON Schema を出力し exit 0 になる", async () => {
+    const result = await runCli(["schema", "-t", "dry-run-report"], workDir);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).properties.dryRun).toBeDefined();
+  });
 });

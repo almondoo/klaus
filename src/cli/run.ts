@@ -20,6 +20,7 @@ import {
   type StepStartContext,
 } from "../core/index.js";
 import { detectActor, resolveGitState } from "./audit.js";
+import { executeDryRun } from "./dry-run.js";
 import { determineExitCode } from "./exit-code.js";
 import { formatJson } from "./reporters/json.js";
 import { formatJUnit } from "./reporters/junit.js";
@@ -181,6 +182,12 @@ export interface RunCommandOptions {
    */
   actor?: string;
   /**
+   * --dry-run 指定時、リクエストを送らず、各ステップの展開後リクエストと安全柵の判定結果だけを出力する
+   * (履歴・カセットには書かない。--record / --replay / --report とは併用できない)。
+   * 呼び出しごとに明示させるため、klaus.config.yaml からは設定できない(--record と同じ扱い)
+   */
+  dryRun?: boolean;
+  /**
    * klaus.config.yaml の `guard`(送信先ホストの許可リスト等)。CLI フラグは設けない
    * (エージェントが引数で安全柵を外せないようにするため)。index.ts が config から設定して渡す
    */
@@ -310,7 +317,7 @@ function createOrderedTextFlusher(
 /**
  * run コマンド本体。
  * 0. --record と --replay、--record と --jobs>1、--json と --text、--report/--report-file の組み合わせを検査
- *    (いずれも stderr + exit 1、何も実行しない)
+ *    (いずれも stderr + exit 1、何も実行しない)。--dry-run と --record/--replay/--report の組み合わせは exit 2
  * 1. 全ファイルを loadFlow でパース検証(--data 指定時は loadDataFile も並行して読み込む。
  *    いずれか1件でも ParseError なら exit 2、何も実行しない)
  * 2. --tags / --exclude-tags でフローを絞り込む(filterFlowsByTags。--data によるイテレーション展開より前、
@@ -325,6 +332,19 @@ function createOrderedTextFlusher(
  * ParseError 以外の例外はそのまま呼び出し元へ投げる(呼び出し元で exit 1 に変換する契約)。
  */
 export async function runCommand(files: string[], options: RunCommandOptions): Promise<number> {
+  // --dry-run は何も送信・記録しないため、record/replay・レポートファイル出力とは意味が衝突する。
+  // 引数の誤りとして exit 2(何も実行しない)にする
+  if (options.dryRun === true) {
+    if (options.record !== undefined || options.replay !== undefined) {
+      process.stderr.write("klaus: --dry-run cannot be combined with --record or --replay\n");
+      return 2;
+    }
+    if (options.report !== undefined) {
+      process.stderr.write("klaus: --dry-run cannot be combined with --report\n");
+      return 2;
+    }
+  }
+
   // --record と --replay は同時指定不可(record-replay モードは片方のみ有効にする契約)
   if (options.record !== undefined && options.replay !== undefined) {
     process.stderr.write("klaus: --record and --replay cannot be used together\n");
@@ -429,6 +449,11 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   if (filteredFlows.length === 0) {
     process.stderr.write("klaus: no flows match the specified tags\n");
     return 1;
+  }
+
+  // --dry-run: ここまで(読み込み・検証・絞り込み)は通常の実行と同じで、以降は送信せずに展開・判定だけを行う
+  if (options.dryRun === true) {
+    return executeDryRun(filteredFlows, dataRows, options, useJson);
   }
 
   // 3. 実行(テキストモードは onStepStart/onStepComplete で逐次出力する)

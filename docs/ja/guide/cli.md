@@ -33,6 +33,7 @@ klaus run <files...> [options]
 | `--tags <list>` | カンマ区切りのタグ一覧。フローの `tags:` にいずれか1つでも含まれるものだけを実行する(OR 条件。詳細は後述の「タグによるフロー選択」を参照) | — |
 | `--exclude-tags <list>` | カンマ区切りのタグ一覧。フローの `tags:` にいずれか1つでも含まれるものを除外する。`--tags` より優先される | — |
 | `--jobs <n>` | 実行ユニットをこの数だけ並列実行する(1-32 の整数。詳細は後述の「並列実行(--jobs)」を参照)。`--record` とは併用不可 | 1(逐次実行) |
+| `--dry-run` | 何も送信せず、各ステップの展開後リクエストと、安全柵が拒否するかどうかを出力する(後述の「ドライラン(--dry-run)」を参照)。`--record`・`--replay`・`--report` とは併用不可 | — |
 
 `--report` はカンマ区切りのフォーマット一覧を受け取る(各要素は trim され、`junit` か `tap` のいずれかでなければならない)。未知のフォーマットや空要素を1つでも渡すと stderr にエラーを出して exit 1。`--report` はフォーマットの重複(例: `--report junit,junit`)や、`--report-file` の解決先パスがフォーマット間で同一になる場合も同様に stderr にエラーを出して exit 1 で拒否する(どちらも同一ファイルへの書き込みが競合するため)。`--report` に N 個のフォーマットを渡した場合、`--report-file` は**同じ順序でちょうど N 回**指定する(1個目の `--report-file` が1個目のフォーマットとペアになる)か、**一度も指定しない**(この場合フォーマットごとの既定ファイル名 — `junit` は `klaus-report.xml`、`tap` は `klaus-report.tap` — に書き出される)かのいずれかにする。それ以外の回数(例: 2フォーマットに対して `--report-file` を1回だけ)はエラーとして拒否され、exit 1 でどのファイルも書き出さない。これは単一フォーマットの従来挙動をそのまま一般化したものであり、`--report junit` 単体は変わらず `klaus-report.xml` が既定値になる。`--json` と `--text`、または `-e`/`--env` と `--env-file` を同時に指定した場合も同様に stderr にエラーを出して exit 1(何も実行しない)。この `-e`/`--env` と `--env-file` の併用エラーは、**コマンドラインで明示的に指定した** `-e`/`--env` に対してのみ発生する。`klaus.config.yaml` の `run.env` による既定値は、明示指定された `--env-file` と衝突せずそちらに道を譲る([CLI オプションの既定値](config.md)参照)。
 
@@ -51,7 +52,7 @@ klaus run <files...> [options]
 
 `--var` の値は <code v-pre>{{env.X}}</code>(OS 環境変数参照)と異なり、シークレットとして登録されず、出力でもマスクされない。真のシークレットを渡したい場合は OS 環境変数経由で <code v-pre>{{env.X}}</code> として参照し、[実行履歴](history.md)に記載のマスキングの恩恵を受けること。
 
-`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` / `--jobs` は `klaus.config.yaml` で既定値を設定できる。`--var`・`--env-file`・`--data`・`--tags`・`--exclude-tags` は設定できない。詳細は [CLI オプションの既定値](config.md) を参照。
+`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` / `--jobs` は `klaus.config.yaml` で既定値を設定できる。`--var`・`--env-file`・`--data`・`--tags`・`--exclude-tags`・`--dry-run` は設定できない。詳細は [CLI オプションの既定値](config.md) を参照。
 
 ### タグによるフロー選択(--tags / --exclude-tags)
 
@@ -86,6 +87,58 @@ klaus run <files...> [options]
 - **text 出力の順序**: `--jobs` を 2 以上にすると、klaus は各ユニットのステップ進捗行をバッファし、入力順で手前にある全ユニットが既に出力し終わってから、そのユニットの全ブロックをまとめて出力する — そのため実際のリクエストは並行して走っていても、text 出力を読む人間から見ると `--jobs 1` のときと同じ順序のまま、入れ替わりも混在も起きない(実装上の補足: 現在最も進んでいるユニットをライブストリーミングする方式ではなく、各ユニットの出力を完全にバッファし、入力順で次に出力可能になったユニットからまとめて解放する方式を採用している)。
 - **実行履歴の順序は保証されない**: 各ステップは従来どおり `.klaus/history/*.jsonl`([実行履歴](history.md)参照)に1行ずつ追記されるが、`--jobs` が 2 以上のとき、並行実行中の複数ユニットからの追記が書き込まれたタイミングの順にファイル中で混ざり得る — メモリ上の `RunResult` とは異なり、この JSONL ファイルの**行の順序**は入力順を反映しない。各エントリには `runId`/`flow`/`step`/`startedAt` が引き続き付くため、必要であれば読み出し側でグルーピング・順序の再構成ができる。書き込み自体が壊れたり途中で途切れたりすることはない(各行は1回の `O_APPEND` によるアトミックな書き込み)。相対的な順序のみが不定になる。
 - **`--record` とは併用不可**: record モードは同じカセットファイル(`--record <dir>`)へ、method+URL をキーとして全レスポンスを追記する。`--jobs` を 2 以上にすると、同一の method+URL への並行リクエストが実行のたびに異なる相対順序で追記され得るため、同じ method+URL への繰り返しリクエストを**再生**した際にどのレスポンスが返るか(`findCassetteEntry` は最初に記録された一致を採用する)が記録のたびに非決定的になってしまう。そのため `--record` と `--jobs` の 2 以上の組み合わせは、何も実行せずエラー・exit code 1 で拒否される。`--replay` にはこの制約は無い: 各ユニットはリクエスト送信を始める前に、それぞれ独立して自分用の読み取り専用カセット索引を読み込む(全ユニットで1つの索引を共有・事前に一括読み込みするわけではない) — replay 中はカセットファイルへの書き込みが一切発生しないため、この並行した独立読み込みは `--jobs` を 2 以上にしても安全である。
+
+### ドライラン(--dry-run)
+
+`--dry-run` は、`klaus run` が送信するはずの内容を、送信せずに表示する。各ステップについて、テンプレート展開後のリクエスト(メソッド、クエリをマージした URL、ヘッダー、ボディ。SSE ステップも同様で、WebSocket ステップは URL・ヘッダー・送信するメッセージ)と、送信直前に行われるのと同じ安全柵の判定結果を出力する。実際に実行する前に、フローが `guard.allowedHosts` や `$protected` の環境に引っかかるかを確認するために使う。
+
+何も送信せず、何も書き込まない: 履歴エントリ、カセットの読み書き、リトライ、アサーション、`capture` はいずれも行わない。フローファイル、`--data`、`--tags`、`--exclude-tags`、`--env`、`--env-file`、`--var`、`--allow-protected` は通常の実行とまったく同じように解釈され、パースエラーは引き続き exit 2 になる。`--jobs` は受け付けるが、並行して実行するものはなく、出力順は変わらない(`--data` と同じく行が外側、フローが内側)。`--dry-run` は `--record`・`--replay`・`--report` と併用できない。これは引数エラーで、何も実行せず exit 2 になる。`klaus.config.yaml` の `run.report` の既定値は `--dry-run` では無視される。`klaus.config.yaml` からは設定できない。
+
+- **capture に依存する変数**: 同じフローの前段のステップが `capture` で定義する変数はまだ値がないため、出力では <code v-pre>{{name}}</code> のまま残り、ステップの `unresolved` フィールドに列挙される。これはエラーではない。環境に同名の値があっても、その名前は未解決として扱う。実行時には capture した値が環境より優先されるため。
+- **実行時にも解決できない変数**: 前段の `capture` が定義するものでも、環境・`--var`・データ行にあるものでもない変数や、OS 環境変数が未定義の <code v-pre>{{env.X}}</code> は、実行時と同じメッセージでステップの `error` に報告され、そのステップに `request` は付かない。
+- **生成される値**: <code v-pre>{{newUuid}}</code>・<code v-pre>{{newDate}}</code>・<code v-pre>{{newTimestamp}}</code> は実行時と同じように展開されるため、実際の実行で生成される値とは異なる。
+- **`if` 条件**は実行時のステータスや capture に依存するため評価しない: ステップに `conditional: true` を付け、`if` のテキストを表示し、リクエストは引き続き展開する。
+- **安全柵**: `guard.status` は `allowed`、`refused`(実行時の拒否と同じ理由つき)、または `guard.allowedHosts` が設定されていて送信先ホストそのものに未解決の変数が含まれる場合(例: `base` が前段で capture される `url: "{{base}}/x"`)の `undetermined` のいずれか。`$protected: readonly` の環境での `POST` のように、ホストに依存しない拒否は引き続き `refused` と報告する。パスやクエリだけが未解決ならホストは確定しているので、許可リストを判定する。各ステップは個別に判定する: 拒否されたステップがあっても、その後のステップは隠れない(実際の実行では後続はスキップされる)。
+
+JSON 出力(非 TTY、または `--json`)は、最上位に `"dryRun": true` の印を持つ compact な1つのオブジェクト。`flows[].steps[]` の構造とフィールド名は [`run` の JSON 出力](#json-出力-機械向け)に揃えてあるが、ステップごとの `status`、`assertions`、`historyRef` は無く、リクエストボディは切り詰めない(ドライランには全文を引き直せる履歴が無いため)。<code v-pre>{{env.X}}</code> 由来のシークレットは通常どおりマスクされる(`--no-mask` で無効化)。
+
+```jsonc
+{
+  "version": 1,
+  "dryRun": true,
+  "status": "ok",            // 拒否されるステップや展開に失敗するステップがあれば "error"(exit code 3)
+  "summary": { "flows": 1, "steps": 2, "refused": 0, "undetermined": 0, "unresolved": 1, "errors": 0 },
+  "flows": [
+    {
+      "name": "chain",
+      "file": "flows/chain.yaml",
+      "steps": [
+        {
+          "name": "login",
+          "kind": "http",               // "http" | "sse" | "ws"
+          "request": { "method": "POST", "url": "http://127.0.0.1:18766/login", "headers": { "X-Key": "***" }, "body": "{\"user\":\"alice\"}" },
+          "unresolved": [],
+          "conditional": false,
+          "guard": { "status": "allowed" }
+        },
+        {
+          "name": "me",
+          "kind": "http",
+          "request": { "method": "GET", "url": "http://127.0.0.1:18766/me?who=alice", "headers": { "Authorization": "Bearer {{token}}" } },
+          "unresolved": ["token"],
+          "conditional": true,
+          "if": "steps.login.status == \"passed\"",
+          "guard": { "status": "allowed" }
+        }
+      ]
+    }
+  ]
+}
+```
+
+text 出力(TTY、または `--text`)は同じ情報をステップごとに出力し、最後に1行のサマリーを付ける。JSON Schema は `klaus schema --target dry-run-report` で取得できる([klaus schema](#klaus-schema)を参照)。
+
+exit code は、安全柵に拒否されるステップ、または実行時にも展開に失敗するステップ(上の `error` のケース。実際の実行でも実行時エラーになる)があれば **3**、なければ **0**。検証エラーは引き続き 2。アサーションは評価しないため exit code 4 は無い。
 
 ## 出力モード
 
@@ -192,6 +245,7 @@ request/response スナップショットや assertions などの詳細を持つ
 2. 実行中に環境ファイル(`environments/*.yaml`)のパースエラーが出た場合も exit 2
 3. 実行後、runtime エラー(status "error")を含むフローがあれば **3**、なければアサーション失敗(status "failed")があれば **4**、全成功で **0**。3 と 4 が混在する場合は 3 を優先
 4. 履歴 JSONL の書き込み失敗は stderr への警告のみで、ステップ結果・exit code には影響しない
+5. `--dry-run` では何も送信しないため、返るのは 0・2・3 のみ([ドライラン](#ドライラン-dry-run)を参照)
 
 エージェント(Claude Code 等)は exit code だけで故障箇所を判別できる: 2 なら定義を直す、3 なら対象 API の起動状態を見る、4 ならアサーション内容とレスポンスを比較する。
 
@@ -369,13 +423,13 @@ klaus schema [-t <target>]
 
 | オプション | 説明 | デフォルト |
 |---|---|---|
-| `-t`, `--target <target>` | 出力するスキーマ。`flow`(フロー定義 YAML)、`run-report`(`run --json` の出力ペイロード)、`req-report`(`req --json` の出力ペイロード)、`config`([klaus.config.yaml](config.md)) | `flow` |
+| `-t`, `--target <target>` | 出力するスキーマ。`flow`(フロー定義 YAML)、`run-report`(`run --json` の出力ペイロード)、`req-report`(`req --json` の出力ペイロード)、`dry-run-report`(`run --dry-run --json` の出力ペイロード)、`config`([klaus.config.yaml](config.md)) | `flow` |
 
 JSON Schema(zod スキーマから生成、2スペース pretty print)を stdout に出力するだけで、ファイルへの書き出しはしない。
 
-各スキーマは静的ファイルとしても公開されている: `https://almondoo.github.io/klaus/schema/flow.schema.json` / `https://almondoo.github.io/klaus/schema/run-report.schema.json` / `https://almondoo.github.io/klaus/schema/req-report.schema.json` / `https://almondoo.github.io/klaus/schema/klaus-config.schema.json`。npm パッケージにも `node_modules/@almondoo/klaus/dist/schema/*.json` として同梱される。
+各スキーマは静的ファイルとしても公開されている: `https://almondoo.github.io/klaus/schema/flow.schema.json` / `https://almondoo.github.io/klaus/schema/run-report.schema.json` / `https://almondoo.github.io/klaus/schema/req-report.schema.json` / `https://almondoo.github.io/klaus/schema/dry-run-report.schema.json` / `https://almondoo.github.io/klaus/schema/klaus-config.schema.json`。npm パッケージにも `node_modules/@almondoo/klaus/dist/schema/*.json` として同梱される。
 
-`run --json` の `version` フィールドは package.json のバージョンとは独立した単なるリテラル値(現在は `2`。`req --json` は `1`)。このスキーマの後方互換を壊す変更(フィールド削除・型変更・意味変更)をする場合のみ値を上げる(オプショナルフィールドの追加のような後方互換な変更では上げない)。利用側は現在の形が不変とは仮定せず、`version` を見て分岐すること。
+`run --json` の `version` フィールドは package.json のバージョンとは独立した単なるリテラル値(現在は `2`。`req --json` と `run --dry-run --json` は `1`)。このスキーマの後方互換を壊す変更(フィールド削除・型変更・意味変更)をする場合のみ値を上げる(オプショナルフィールドの追加のような後方互換な変更では上げない)。利用側は現在の形が不変とは仮定せず、`version` を見て分岐すること。
 
 `request`/`ws` の排他・どちらか必須、`body`/`graphql` の排他、`graphql` 無しの `method` 必須、`ws.url` のスキーム制約、step 名の一意性は zod の `superRefine` によるカスタムバリデーションであり JSON Schema では表現できないため、該当箇所の `description` に注記を付与する形で補っている。常に exit 0。
 

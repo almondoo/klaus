@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildConfigJsonSchema,
+  buildDryRunReportJsonSchema,
   buildFlowJsonSchema,
   buildReqReportJsonSchema,
   buildRunReportJsonSchema,
@@ -32,6 +33,7 @@ const SCHEMA_FILES: readonly SchemaFile[] = [
   { filename: "flow.schema.json", build: buildFlowJsonSchema },
   { filename: "run-report.schema.json", build: buildRunReportJsonSchema },
   { filename: "req-report.schema.json", build: buildReqReportJsonSchema },
+  { filename: "dry-run-report.schema.json", build: buildDryRunReportJsonSchema },
   { filename: "klaus-config.schema.json", build: buildConfigJsonSchema },
 ];
 

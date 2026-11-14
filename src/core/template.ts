@@ -18,6 +18,14 @@ export interface TemplateContext {
    * 未指定の場合は収集しない(単体テスト等で不要な場合に省略できる)。
    */
   secrets?: Set<string>;
+  /**
+   * dry-run 専用。前段のステップが capture で定義するはずの変数名。これらは実行時には capture の値が
+   * 環境ファイルの同名の値より優先されるため、dry-run では(環境に同名の値があっても)解決せず、
+   * 例外にもせず `{{name}}` のまま残す。未指定なら従来どおり(未解決は RuntimeError)
+   */
+  deferred?: ReadonlySet<string>;
+  /** dry-run 専用。deferred により未解決のまま残した変数名の収集先(出現順) */
+  unresolved?: Set<string>;
 }
 
 const TEMPLATE_PATTERN = /\{\{\s*([^}]+?)\s*\}\}/g;
@@ -61,6 +69,13 @@ function resolveVariable(name: string, context: TemplateContext): string {
 
   if (Object.hasOwn(context.captures, name)) {
     return stringifyValue(context.captures[name]);
+  }
+
+  // dry-run: 前段の capture に依存する変数は、実行時には capture が環境の値を上書きするため
+  // 環境を見る前にここで未解決として残す(解決順は実行時と同じ: 関数 → capture → 環境)
+  if (context.deferred?.has(name)) {
+    context.unresolved?.add(name);
+    return `{{${name}}}`;
   }
 
   if (Object.hasOwn(context.env, name)) {

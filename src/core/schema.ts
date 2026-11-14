@@ -539,7 +539,7 @@ export function parseReportFormatList(value: string): ReportFormat[] | undefined
  * `guard` は既定値ではなく安全柵(送信先ホストの許可リスト)で、CLI フラグでは上書きできない。
  * 意図的に含めないオプション:
  * - `--allow-protected`(config で既定 true にするとガードレールが形骸化するため)
- * - `--record` / `--replay`(実行モードは呼び出しごとに明示させる)
+ * - `--record` / `--replay` / `--dry-run`(実行モードは呼び出しごとに明示させる)
  * - `--json` / `--text`(出力モードも呼び出しごとに明示させる)
  * 除外理由の詳細は docs/guide/config.md を参照。
  */
