@@ -139,6 +139,25 @@ export const jsonStepReportSchema = z.strictObject({
     .describe(
       "Pointer into the JSONL history file for this step's full record. Present only when history recording was enabled for the run.",
     ),
+  redirects: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "URLs visited after the first request when `http.followRedirects` followed redirects (the last one is the final response's URL). Present only when the step was redirected, for any step status.",
+    ),
+  droppedHeaders: z
+    .array(
+      z.strictObject({
+        hop: z.number().describe("1-based redirect hop at which the headers were dropped."),
+        headers: z
+          .array(z.string())
+          .describe("Names (never values) of the request headers that were dropped."),
+      }),
+    )
+    .optional()
+    .describe(
+      "Request headers dropped on a cross-origin redirect (credentials and headers carrying a secret value). Present only when something was dropped.",
+    ),
   startedAt: z
     .string()
     .optional()
@@ -219,6 +238,12 @@ export const jsonReportSchema = z
       "Aggregate pass/fail/error/skipped counts across all flows.",
     ),
     flows: z.array(jsonFlowReportSchema).describe("Per-flow results, in execution order."),
+    warnings: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Warnings that do not change any step's outcome (e.g. certificate verification disabled by `http.tls.insecure`, a history write failure), without duplicates. Present only when there is at least one.",
+      ),
   })
   .describe(
     "klaus `run --json` output (v2). Failure-focused: passed steps are reduced to a one-line summary, while failed/error/skipped steps carry full request/response/assertion detail. Body and event/message payloads are truncated to 500 characters; use historyRef with `klaus history show` to retrieve full content when history recording is enabled.",
@@ -294,9 +319,14 @@ function buildStep(
 ): JsonStepReport {
   const durationMs = Math.round(step.durationMs);
   const historyRef = buildHistoryRef(step, runId, historyEnabled, iteration);
+  // リダイレクトの経路は、成否に関わらず(passed の1行要約でも)付ける
+  const redirectFields = {
+    ...(step.redirects !== undefined ? { redirects: step.redirects } : {}),
+    ...(step.droppedHeaders !== undefined ? { droppedHeaders: step.droppedHeaders } : {}),
+  };
 
   if (step.status === "passed") {
-    return { name: step.name, status: step.status, durationMs, historyRef };
+    return { name: step.name, status: step.status, durationMs, historyRef, ...redirectFields };
   }
 
   // failed / error / skipped は詳細を含める
@@ -305,6 +335,7 @@ function buildStep(
     status: step.status,
     durationMs,
     historyRef,
+    ...redirectFields,
     startedAt: step.startedAt,
     request: buildRequest(step.request),
     response: buildResponse(step.response),
@@ -350,6 +381,9 @@ export function formatJson(runResult: RunResult, options: FormatJsonOptions): st
     durationMs: Math.round(runResult.durationMs),
     summary: buildSummary(runResult),
     flows: runResult.flows.map((flow) => buildFlow(flow, runResult.runId, options.historyEnabled)),
+    ...(runResult.warnings !== undefined && runResult.warnings.length > 0
+      ? { warnings: runResult.warnings }
+      : {}),
   };
   return JSON.stringify(report);
 }

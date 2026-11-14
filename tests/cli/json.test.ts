@@ -219,4 +219,42 @@ describe("formatJson", () => {
 
     expect(() => jsonReportSchema.parse(parsed)).not.toThrow();
   });
+
+  it("redirects / droppedHeaders を持つステップは、成否に関わらず JSON に載せる(持たないステップには出さない)", () => {
+    const redirected = {
+      redirects: ["http://x/b", "http://x/c"],
+      droppedHeaders: [{ hop: 1, headers: ["authorization"] }],
+    };
+    const flow = buildFlow({
+      steps: [
+        buildStep({ name: "plain", status: "passed" }),
+        buildStep({ name: "moved", status: "passed", ...redirected }),
+        buildStep({ name: "bad", status: "failed", ...redirected }),
+      ],
+    });
+    const parsed = JSON.parse(formatJson(buildRunResult([flow]), { historyEnabled: false }));
+
+    expect(Object.hasOwn(parsed.flows[0].steps[0], "redirects")).toBe(false);
+    expect(Object.hasOwn(parsed.flows[0].steps[0], "droppedHeaders")).toBe(false);
+    for (const step of parsed.flows[0].steps.slice(1)) {
+      expect(step.redirects).toEqual(["http://x/b", "http://x/c"]);
+      expect(step.droppedHeaders).toEqual([{ hop: 1, headers: ["authorization"] }]);
+    }
+    expect(() => jsonReportSchema.parse(parsed)).not.toThrow();
+  });
+
+  it("warnings は 1 件以上あるときだけトップレベルに載せる", () => {
+    const flow = buildFlow({ steps: [buildStep({})] });
+    const without = JSON.parse(formatJson(buildRunResult([flow]), { historyEnabled: false }));
+    expect(Object.hasOwn(without, "warnings")).toBe(false);
+
+    const withWarnings = JSON.parse(
+      formatJson(
+        { ...buildRunResult([flow]), warnings: ["tls.insecure is enabled"] },
+        { historyEnabled: false },
+      ),
+    );
+    expect(withWarnings.warnings).toEqual(["tls.insecure is enabled"]);
+    expect(() => jsonReportSchema.parse(withWarnings)).not.toThrow();
+  });
 });

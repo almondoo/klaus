@@ -5,18 +5,17 @@ API の現在の仕様は各リファレンス([CLI](../ja/guide/cli.md) / [フ�
 
 0.2.0〜0.14.4 は git 履歴(`chore: vX.Y.Z` のバージョン更新コミットを境界に、直前の更新から当該コミットまでの変更をそのバージョンとして)から後追いで復元したもの。ユーザーに見える変更(feat / fix)だけを短くまとめ、内部リファクタ・テスト・依存更新の細部は省いている。
 
-## 未リリース
+## 0.26.0
 
-バージョンは未確定(統合時に付け替える)。実装済みでまだコミットされていない機能。
+実行レポートの追補(HTTP クライアント関連)。
 
-### `klaus mock <dir>`
+- ステップ結果の `redirects` と `droppedHeaders` を、JSON 出力のステップにも載せた(成否に関わらず、持つステップだけ)。text 出力では `FAIL` / `ERROR` の詳細行に、HTML レポートではステップの詳細(成功したステップは折りたたみ)に出す
+- JSON 出力のトップレベルに `warnings`(1 件以上あるときだけ)を追加した。`tls.insecure` の警告は従来 stderr にしか出ず、stdout の JSON だけを取り込む CI では見えなかったため。stderr への出力は変えず、text はサマリーの前の `warning:` 行、HTML は警告欄、GitHub サマリーは引用行として出す。警告は実行全体で重複を除く
+- `klaus schema` のフロー定義スキーマの注記で、リクエストボディの排他が `body` / `graphql` だけの記述になっていたのを `form` / `multipart` / `bodyFile` まで広げた(0.21.0 で排他の対象を増やした際の書き漏れ)
 
-`klaus run --record <dir>` で記録したカセットを返すだけのローカル HTTP サーバーを起動する。ネットワークへは一切転送せず、未マッチは 404(`closest` に近い記録済みパスを返すが、記録済みボディは含めない)。マッチングは **メソッド + パス + クエリ**(記録時のホストは捨てる。ホストまで見る replay とはここが違う)。既定の bind は `127.0.0.1`、ポートは UI(4884)と衝突しない 4885。`--cors` / `--delay` / `--ignore-query` / `--sequence` / `--origin` / `--json` を備える。カセットが無い・不正・空なら exit 2。記録時にマスクされたシークレットは `***` のまま返し、復元しない。
+## 0.25.0
 
-### `--report html` / `--report github`
-
-- `html`: 外部アセット・JavaScript を使わない自己完結の単一 HTML(既定 `klaus-report.html`)。失敗・エラーのステップは既定で展開する
-- `github`: GitHub Actions 向け。ジョブサマリー(Markdown)を `--report-file`、なければ `GITHUB_STEP_SUMMARY` への追記、なければ `klaus-report.md` に書き、`GITHUB_ACTIONS=true` のときは失敗ステップごとに `::error` アノテーションを出す。stdout にはサマリーを書かない(`--json` の機械可読出力を壊さないため)
+`klaus diff` と `klaus promote` を追加した。
 
 ### `klaus diff`
 
@@ -25,6 +24,56 @@ API の現在の仕様は各リファレンス([CLI](../ja/guide/cli.md) / [フ�
 ### `klaus promote`
 
 履歴の run から、観測したレスポンスをもとにアサーションを推論した再実行可能なフロー YAML を生成する(`--assert status|schema|values|all`、既定は `schema`)。マスク値は復元できないため `{{env.TODO_*}}` のプレースホルダーに置き換えて一覧で示し、生成物に `***` が残る場合は書き込まない。既存ファイルは `--force` なしでは上書きせず、出力先はカレントディレクトリ配下に限る。書き込み前に生成物をスキーマ検証する。前のレスポンスの特徴的な値が後のリクエストに現れるときは `capture` として連鎖させる(`--no-chain` で無効化)。
+
+## 0.24.0
+
+`--report html` と `--report github` を追加した。
+
+- `html`: 外部アセット・JavaScript を使わない自己完結の単一 HTML(既定 `klaus-report.html`)。失敗・エラーのステップは既定で展開する
+- `github`: GitHub Actions 向け。ジョブサマリー(Markdown)を `--report-file`、なければ `GITHUB_STEP_SUMMARY` への追記、なければ `klaus-report.md` に書き、`GITHUB_ACTIONS=true` のときは失敗ステップごとに `::error` アノテーションを出す。stdout にはサマリーを書かない(`--json` の機械可読出力を壊さないため)
+
+## 0.23.0
+
+`klaus mock <dir>` を追加した。
+
+`klaus run --record <dir>` で記録したカセットを返すだけのローカル HTTP サーバーを起動する。ネットワークへは一切転送せず、未マッチは 404(`closest` に近い記録済みパスを返すが、記録済みボディは含めない)。マッチングは **メソッド + パス + クエリ**(記録時のホストは捨てる。ホストまで見る replay とはここが違う)。既定の bind は `127.0.0.1`、ポートは UI(4884)と衝突しない 4885。`--cors` / `--delay` / `--ignore-query` / `--sequence` / `--origin` / `--json` を備える。カセットが無い・不正・空なら exit 2。記録時にマスクされたシークレットは `***` のまま返し、復元しない。
+
+## 0.22.0
+
+capture とアサーションを拡張した。
+
+- capture に `{header}`・`{cookie}`・`{regex, group?}`・`{status: true}` を追加した(文字列は従来どおり JSONPath)。cookie capture は最終ホップの URL で cookie jar から引き、jar が無い場合は案内つきの `error` にする。capture の `error` メッセージには取得した値や本文を含めない(秘密を含み得るため)
+- header と body のアサーションに `gt` / `gte` / `lt` / `lte` / `length` / `type` / `oneOf` を追加した
+- `assert.status` に数値の配列と `"2xx"` 形式を追加した
+
+## 0.21.0
+
+リクエストボディの形式を追加した。
+
+- `request.form`(`application/x-www-form-urlencoded`)、`request.multipart`(テキストとファイルのパート)、`request.bodyFile`(ファイルの内容をそのまま送る)
+- 入力ファイルは cwd 配下(シンボリックリンク解決後も)に限る。境界外は安全柵の拒否として履歴に残す。エージェントが書いたフローで任意のファイルを送らせないため
+- 履歴と dry-run にはファイルの内容を残さず、ファイル名とサイズだけを記録する
+- `body` / `graphql` / `form` / `multipart` / `bodyFile` は同時に指定できない
+
+## 0.20.0
+
+認証ヘルパーを追加した。
+
+- `request.auth` とフロー共通の `http.auth`(`klaus.config.yaml` の `http.auth` も可)。ステップ側が優先し、`auth: none` で無効化できる。`basic` / `bearer` / `oauth2`(client credentials)
+- OAuth2 のトークンは実行単位でキャッシュし、`expires_in` を過ぎたら取り直す。トークン取得も通常のリクエストと同じ安全柵・proxy・TLS・record/replay を通り、リダイレクトは追わない
+- パスワード・トークン・クライアントシークレット・取得したアクセストークン・Basic の base64 形を秘密値として登録し、履歴・出力・dry-run でマスクする。`--dry-run` は `Authorization` をマスクして表示し、トークンは取得しない
+- `Authorization` ヘッダーを自分で指定したステップとの併用はエラー
+
+## 0.19.1
+
+`klaus req` と `--dry-run` のレビュー指摘を修正した。
+
+- `--dry-run` が `query:` と前段 capture 由来のホストを併用するとクラッシュする問題を修正し、未解決の `{{name}}` をパーセントエンコードせず保つようにした。未解決変数のエラーは実行時と同じメッセージにし、`undetermined` はホスト名そのものが未解決のときだけにした
+- `query` のマージで、URL に書かれたクエリを組み直さず書かれたままの文字列で保つようにした(`&` `+` `=` `/` を含む秘密値が壊れ、マスクが部分的になる問題)
+- 保護環境の拒否メッセージの案内を入口で切り替え、`klaus req` と UI の単発リクエストでは `--allow-protected` を案内しない
+- 引数の組み合わせエラー(`--dry-run` と `--record` など、`req` の `--json` と `--text`)を `run` と同じ exit 1 に揃えた
+- リダイレクトで別オリジンへ移るとき、資格情報に加えて秘密値を含むヘッダーも落とし、落としたヘッダー名を結果と履歴に残すようにした
+- cookie の `Domain` 属性は常に host-only として保存し、サブドメイン間で共有しない
 
 ## 0.19.0
 

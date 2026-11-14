@@ -214,6 +214,8 @@ full detail (request/response snapshots, assertions, etc).
 - Control-character escaping (as done in text output and JUnit reports) is **not** applied here — values are printed as-is
 - **historyRef**: when history recording is enabled (i.e. `--no-history` was not passed), every step (including passed ones) gets a `historyRef: { date, runId, step }`. Fetch the full detail with `klaus history show <runId> --step <step>` (see [klaus history](#klaus-history) / [Execution History](history.md)). `historyRef.date` is the UTC date of the history file the step was written to (derived from the step's `startedAt`). `historyRef` is omitted entirely when run with `--no-history`
 - For SSE / WebSocket steps, `response.body` is absent; received data instead goes into the `events` (SSE) / `wsMessages` (WS) fields
+- **redirects / droppedHeaders**: a step that followed redirects (`http.followRedirects`) carries `redirects` (the URLs visited after the first request, the last being the final response) whatever its status, and `droppedHeaders` (`[{ "hop": 1, "headers": ["authorization"] }]`, header names only) when credentials were dropped on a cross-origin hop. URLs are masked like any other. `FAIL` and `ERROR` lines in text output show the same information in one or two compact lines
+- **warnings**: top-level `"warnings": ["..."]`, present only when there is at least one. It carries warnings that do not change a step's outcome, such as `http.tls.insecure is enabled: TLS certificate verification is DISABLED for this run` or a history write failure, without duplicates. The same warning still goes to stderr as a `klaus: warning:` line; text output prints it as a `warning:` line before the summary, and the HTML and GitHub reports show it too
 
 ### JUnit Report
 
@@ -231,7 +233,7 @@ Pass a comma-separated list to `--report` (e.g. `--report junit,tap`) to generat
 
 ### HTML Report
 
-With `--report html`, a single self-contained HTML file is written to `--report-file` (default `klaus-report.html`): inline CSS only, no external assets, and no JavaScript. It shows the run header (status, start time, duration, run ID, and the env, actor, and git commit when known), the summary counts, and one section per flow with one row per step (status, request line, response status, duration). `failed` and `error` steps are expanded by default (a `<details>` element) and list the failed assertions with expected/actual values plus the request and response, with bodies truncated to 500 characters as in the JSON output. The page follows the light/dark colour scheme of the browser and is printable. All dynamic text is HTML-escaped. Masking follows the same rules as the JUnit report (unaffected by `--no-mask`).
+With `--report html`, a single self-contained HTML file is written to `--report-file` (default `klaus-report.html`): inline CSS only, no external assets, and no JavaScript. It shows the run header (status, start time, duration, run ID, and the env, actor, and git commit when known), the summary counts, and one section per flow with one row per step (status, request line, response status, duration). `failed` and `error` steps are expanded by default (a `<details>` element) and list the failed assertions with expected/actual values plus the request and response, with bodies truncated to 500 characters as in the JSON output. The page follows the light/dark colour scheme of the browser and is printable. Steps that followed redirects show their route (and any dropped header names), and run warnings appear in a Warnings box under the counts. All dynamic text is HTML-escaped. Masking follows the same rules as the JUnit report (unaffected by `--no-mask`).
 
 ### GitHub Report
 
@@ -595,6 +597,7 @@ klaus mock <dir> [options]
 | `--ignore-query` | Match on method and path only | — |
 | `--sequence` | Serve repeated recordings of the same request in recorded order | — |
 | `--origin <url>` | Serve only entries recorded for this origin | — |
+| `--allow-host <host>` | Also accept this `Host` header name (repeatable; widens the DNS-rebinding check) | — |
 | `--json` | Startup line (stdout) and request logs (stderr) as JSON Lines | — |
 
 The server runs until SIGINT / SIGTERM, then exits 0. Exit codes: **2** when the cassette is missing, invalid, or empty, or `--origin` matches no recorded entry; **1** for invalid option values (such as `--port 99999` or a malformed `--origin`), for the port being in use, and for any other runtime failure.

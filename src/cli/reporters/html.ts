@@ -9,7 +9,7 @@ import {
   stringifyDetail,
 } from "./report-shared.js";
 import { sanitizeForXml } from "./sanitize.js";
-import { summarizeSteps } from "./text.js";
+import { summarizeSteps, truncate } from "./text.js";
 
 /** formatHtml のオプション */
 export interface FormatHtmlOptions extends MaskedReportOptions {
@@ -44,6 +44,9 @@ pre { background: var(--panel); border: 1px solid var(--border); border-radius: 
 .counts { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 24px; padding: 0; list-style: none; }
 .counts li { border: 1px solid var(--border); background: var(--panel); border-radius: 6px; padding: 6px 12px; }
 .counts b { font-size: 18px; margin-right: 4px; }
+.warnings { border: 1px solid var(--err); border-radius: 6px; padding: 8px 12px; margin: 0 0 16px; }
+.warnings h2 { font-size: 14px; color: var(--err); }
+.warnings ul { margin: 4px 0 0; padding-left: 20px; }
 .flow { border: 1px solid var(--border); border-radius: 6px; margin: 0 0 16px; }
 .flow > header { padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--border); border-radius: 6px 6px 0 0; }
 .flow > header p { margin: 0; color: var(--muted); }
@@ -86,6 +89,23 @@ function headerRow(step: StepResult): string {
   return parts.join("");
 }
 
+/** リダイレクトの経路と、別オリジンへの遷移で落としたヘッダー名(無ければ空文字列) */
+function redirectBlocks(step: StepResult): string {
+  const blocks: string[] = [];
+  if (step.redirects !== undefined && step.redirects.length > 0) {
+    blocks.push(
+      `<h3>Redirects</h3><pre>${escapeHtml(truncate(step.redirects.join("\n-> ")))}</pre>`,
+    );
+  }
+  if (step.droppedHeaders !== undefined && step.droppedHeaders.length > 0) {
+    const dropped = step.droppedHeaders
+      .map((entry) => `hop ${entry.hop}: ${entry.headers.join(", ")}`)
+      .join("\n");
+    blocks.push(`<h3>Headers dropped on redirect</h3><pre>${escapeHtml(truncate(dropped))}</pre>`);
+  }
+  return blocks.join("");
+}
+
 /** failed/error ステップの詳細(失敗アサーション + 切り詰め済みの request/response) */
 function stepDetail(step: StepResult): string {
   const blocks: string[] = [];
@@ -106,6 +126,7 @@ function stepDetail(step: StepResult): string {
   } else if (step.status === "failed") {
     blocks.push(`<h3>Failure</h3><pre>${escapeHtml(stepFailureMessages(step).join("\n"))}</pre>`);
   }
+  blocks.push(redirectBlocks(step));
   if (step.request) {
     const body = stringifyDetail(step.request.body);
     blocks.push(
@@ -128,6 +149,11 @@ function stepHtml(step: StepResult): string {
   }
   const reason =
     step.status === "skipped" && step.error ? ` <code>${escapeHtml(step.error)}</code>` : "";
+  // 成功したステップでも、リダイレクトを辿った場合は経路を折りたたんで見られるようにする
+  const redirects = redirectBlocks(step);
+  if (redirects !== "") {
+    return `<details class="step"><summary>${headerRow(step)}${reason}</summary><div class="detail">${redirects}</div></details>`;
+  }
   return `<div class="step"><div class="row">${headerRow(step)}${reason}</div></div>`;
 }
 
@@ -170,6 +196,10 @@ export function formatHtml(runResult: RunResult, options?: FormatHtmlOptions): s
   ]
     .map(([label, value, cls]) => `<li><b class="${cls}">${value}</b>${label}</li>`)
     .join("");
+  const warningsHtml =
+    result.warnings !== undefined && result.warnings.length > 0
+      ? `<div class="warnings"><h2>Warnings</h2><ul>${result.warnings.map((message) => `<li>${escapeHtml(message)}</li>`).join("")}</ul></div>\n`
+      : "";
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -182,7 +212,7 @@ export function formatHtml(runResult: RunResult, options?: FormatHtmlOptions): s
 <h1>klaus report ${badge(result.status)}</h1>
 <p class="meta">${metaItems}</p>
 <ul class="counts">${countItems}</ul>
-${result.flows.map(flowHtml).join("\n")}
+${warningsHtml}${result.flows.map(flowHtml).join("\n")}
 </body>
 </html>
 `;

@@ -104,13 +104,13 @@ guard:
 | `auth` | 全 HTTP / SSE ステップの既定の[認証ヘルパー](flow-definition.md#auth認証ヘルパー)。フローの `http.auth` やステップの `request.auth` が上書きする。秘密値には <code v-pre>{{env.X}}</code> を使う |
 | `proxy` | HTTP(S) proxy の URL。userinfo は秘密値としてマスクされる。`HTTP_PROXY` などの環境変数は読まない |
 | `tls.ca` / `tls.cert` / `tls.key` | PEM ファイルのパス。この設定ファイルからの相対パスで解決する。`cert` と `key` は同時に指定する。内容は出力に出ない |
-| `tls.insecure` | `true` で証明書検証を無効にし、実行のたびに stderr へ `warning:` 行を出す |
+| `tls.insecure` | `true` で証明書検証を無効にし、実行のたびに警告を出す(stderr と、JSON・text・HTML・GitHub レポートの `warnings`) |
 
 `proxy` と `tls` は通信の行き先と信頼先を決めるため、ここにだけ書ける。フローファイルに `http.proxy` や `http.tls` を書くと検証エラー(終了コード 2)になる。CLI フラグ、`klaus req` のオプション、UI のパラメーターからも設定できない。フローのトップレベル `http:` で指定できるのは `followRedirects`・`maxRedirects`・`cookies`・`auth` だけで、このセクションをキー単位で上書きする([フロー定義リファレンス](flow-definition.md#http-http-クライアント設定)を参照)。
 
 - proxy の URL には <code v-pre>{{env.X}}</code>(OS 環境変数)をテンプレートとして使える。フローの変数や capture は参照できない。
 - proxy ホスト自体は信頼する設定として扱い、`guard.allowedHosts` では判定しない。リクエストの最終的な宛先(リダイレクトの各ホップを含む)は、proxy 経由の平文 HTTP でも `CONNECT` トンネルでも判定され、拒否されたリクエストは proxy に届かない。
-- `tls.insecure` の `warning:` 行は stderr に出るため、stdout の JSON は機械可読のまま保たれる。
+- `tls.insecure` の警告は stderr に `klaus: warning:` 行として出るほか、[JSON 出力](cli.md#json-出力機械向け)のトップレベル `warnings` 配列にも載る。機械可読な出力は stderr を取得していなくても警告を受け取れる。
 
 ## 意図的に設定不可なキー
 

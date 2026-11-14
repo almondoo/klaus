@@ -214,6 +214,8 @@ request/response スナップショットや assertions などの詳細を持つ
 - 制御文字の可視エスケープ(text 出力や JUnit レポートで行われるもの)はここには適用されず、生の値のまま出力される
 - **historyRef**: 履歴記録が有効な実行(`--no-history` を付けていない)では、各ステップ(passed 含む)に `historyRef: { date, runId, step }` が付く。全文が必要な場合は `klaus history show <runId> --step <step>` で取得する(詳細は [klaus history](#klaus-history) / [実行履歴](history.md) を参照)。`historyRef.date` はそのステップが書き込まれた履歴ファイルの UTC 日付(ステップの `startedAt` から導出)。`--no-history` 実行時は `historyRef` を省略する
 - SSE / WebSocket ステップでは `response.body` は無く、受信データは `events`(SSE)/ `wsMessages`(WS)フィールドに入る
+- **redirects / droppedHeaders**: リダイレクトを追った(`http.followRedirects`)ステップには、ステータスに関わらず `redirects`(最初のリクエストの後に辿った URL。最後が最終応答)が付き、別オリジンへの遷移で資格情報を落とした場合は `droppedHeaders`(`[{ "hop": 1, "headers": ["authorization"] }]`。ヘッダー名のみ)も付く。URL は他の URL と同じくマスクされる。text 出力の `FAIL` / `ERROR` では同じ情報を 1〜2 行にまとめて表示する
+- **warnings**: トップレベルの `"warnings": ["..."]`。1 件以上あるときだけ付く。`http.tls.insecure is enabled: TLS certificate verification is DISABLED for this run` や履歴の書き込み失敗など、ステップの成否には影響しない警告を重複なく載せる。同じ警告は従来どおり stderr にも `klaus: warning:` 行で出る。text 出力ではサマリーの前に `warning:` 行として出し、HTML・GitHub レポートにも載せる
 
 ### JUnit レポート
 
@@ -231,7 +233,7 @@ request/response スナップショットや assertions などの詳細を持つ
 
 ### HTML レポート
 
-`--report html` で、自己完結した単一の HTML ファイルを `--report-file`(既定は `klaus-report.html`)に書き出す。CSS はインラインのみで、外部アセットも JavaScript も使わない。実行ヘッダー(ステータス、開始時刻、所要時間、run ID、判明していれば env・actor・git commit)、集計件数、フローごとのセクション(1ステップ1行: ステータス、リクエスト行、レスポンスステータス、所要時間)を表示する。`failed` と `error` のステップは既定で展開され(`<details>` 要素)、失敗したアサーションの期待値/実測値と、request/response(ボディは JSON 出力と同じく 500 文字で切り詰め)を表示する。ブラウザのライト/ダーク設定に追従し、印刷もできる。動的なテキストはすべて HTML エスケープされる。マスクは JUnit レポートと同じ規則(`--no-mask` の影響を受けない)。
+`--report html` で、自己完結した単一の HTML ファイルを `--report-file`(既定は `klaus-report.html`)に書き出す。CSS はインラインのみで、外部アセットも JavaScript も使わない。実行ヘッダー(ステータス、開始時刻、所要時間、run ID、判明していれば env・actor・git commit)、集計件数、フローごとのセクション(1ステップ1行: ステータス、リクエスト行、レスポンスステータス、所要時間)を表示する。`failed` と `error` のステップは既定で展開され(`<details>` 要素)、失敗したアサーションの期待値/実測値と、request/response(ボディは JSON 出力と同じく 500 文字で切り詰め)を表示する。ブラウザのライト/ダーク設定に追従し、印刷もできる。リダイレクトを追ったステップは経路(と落としたヘッダー名)を表示し、実行時の警告は件数の下の Warnings 欄に出す。動的なテキストはすべて HTML エスケープされる。マスクは JUnit レポートと同じ規則(`--no-mask` の影響を受けない)。
 
 ### GitHub レポート
 
@@ -595,6 +597,7 @@ klaus mock <dir> [options]
 | `--ignore-query` | メソッドとパスのみでマッチする | — |
 | `--sequence` | 同じリクエストの複数の記録を記録順に返す | — |
 | `--origin <url>` | このオリジンで記録されたエントリだけを返す | — |
+| `--allow-host <host>` | この `Host` ヘッダー名も許可する(複数指定可。DNS リバインディング対策の検証を緩める) | — |
 | `--json` | 起動行(stdout)とリクエストログ(stderr)を JSON Lines にする | — |
 
 サーバーは SIGINT / SIGTERM まで動き続け、停止すると exit 0 で終わる。終了コードは、カセットが無い・不正・空の場合、または `--origin` に該当する記録が無い場合が **2**。不正なオプション値(`--port 99999` や形式の誤った `--origin` など)、ポート使用中、その他の実行時エラーは **1**。

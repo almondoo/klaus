@@ -16,6 +16,12 @@ async function startFixtureServer() {
       res.end(JSON.stringify({ ok: true }));
       return;
     }
+    // リダイレクトを追うフローの検証用(/redirect-a → /ok)
+    if (req.url === "/redirect-a" && req.method === "GET") {
+      res.writeHead(302, { Location: "/ok" });
+      res.end();
+      return;
+    }
     // WHATWG URL 正規化形でリクエスト行に載ったままの req.url をそのままエコーする
     // (tests/cli/run.test.ts の同名エンドポイントと同じ用途: クエリ文字列の組み立て結果を検証する)
     if (req.url?.startsWith("/echo") && req.method === "GET") {
@@ -1283,4 +1289,28 @@ steps:
     const badPort = await runCli(["mock", mockDir, "--port", "99999"], workDir);
     expect(badPort.status).toBe(1);
   }, 30000);
+
+  it("(aa) run --json: リダイレクトの経路・落としたヘッダーと、tls.insecure の警告(トップレベル warnings)が JSON に載る", async () => {
+    const reportDir = join(workDir, "report-follow-ups");
+    await mkdir(reportDir, { recursive: true });
+    await writeFile(
+      join(reportDir, "moved.yaml"),
+      `name: moved flow\nhttp:\n  followRedirects: true\nsteps:\n  - name: moved\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/redirect-a"\n    assert:\n      status: 201\n`,
+      "utf-8",
+    );
+    await writeFile(
+      join(reportDir, "klaus.config.yaml"),
+      "http:\n  tls:\n    insecure: true\n",
+      "utf-8",
+    );
+
+    const result = await runCli(["run", "moved.yaml", "--no-history"], reportDir);
+
+    expect(result.status).toBe(4);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.flows[0].steps[0].redirects).toEqual([`${fixture.baseUrl}/ok`]);
+    expect(parsed.warnings).toEqual([expect.stringContaining("http.tls.insecure is enabled")]);
+    // stderr にも従来どおり出る
+    expect(result.stderr).toContain("http.tls.insecure is enabled");
+  });
 });

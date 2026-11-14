@@ -107,6 +107,13 @@ export function formatGithubSummary(runResult: RunResult, options?: MaskedReport
     `| Flows | Steps | Passed | Failed | Error | Skipped |\n| ---: | ---: | ---: | ---: | ---: | ---: |\n| ${result.flows.length} | ${steps.length} | ${counts.passed} | ${counts.failed} | ${counts.error} | ${counts.skipped} |\n`,
   );
 
+  // 警告(tls.insecure の使用など)。ステップの成否には影響しないが、レポートの読み手にも見えるようにする
+  if (result.warnings !== undefined && result.warnings.length > 0) {
+    parts.push(
+      `${result.warnings.map((m) => `> Warning: ${cell(m, MAX_MESSAGE_LENGTH)}`).join("\n")}\n`,
+    );
+  }
+
   // 失敗テーブル(最重要なので常に出す。件数が多い場合のみ行数を打ち切る)
   const failures = result.flows.flatMap((flow) =>
     flow.steps.filter((step) => FAILING_STATUSES.has(step.status)).map((step) => ({ flow, step })),

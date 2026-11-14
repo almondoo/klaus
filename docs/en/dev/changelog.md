@@ -5,18 +5,17 @@ The current spec lives in the respective references ([CLI](../../guide/cli.md) /
 
 0.2.0 through 0.14.4 were reconstructed after the fact from the git history (taking the `chore: vX.Y.Z` version-bump commits as boundaries: everything between the previous bump and a given bump belongs to that version). Only user-visible changes (feat / fix) are summarized, briefly; internal refactors, tests, and dependency-update details are left out.
 
-## Unreleased
+## 0.26.0
 
-No version assigned yet (to be renamed at integration time). Features that are implemented but not yet committed.
+Follow-ups to the run report (HTTP client).
 
-### `klaus mock <dir>`
+- A step's `redirects` and `droppedHeaders` are now in the JSON output too (for any status, only on steps that have them). Text output shows them in the detail lines of `FAIL` / `ERROR`, and the HTML report shows them in the step detail (passed steps get a collapsed section)
+- Added a top-level `warnings` to the JSON output (only when there is at least one). The `tls.insecure` warning used to appear only on stderr, so a CI that captures just the JSON on stdout never saw it. The stderr output is unchanged; text prints a `warning:` line before the summary, HTML shows a warnings box, and the GitHub summary shows a quote line. Warnings are de-duplicated across the whole run
+- The flow schema note printed by `klaus schema` described the request-body exclusivity as `body` / `graphql` only; it now also lists `form` / `multipart` / `bodyFile` (an omission from when 0.21.0 widened the exclusivity)
 
-Starts a local HTTP server that only serves the cassette recorded with `klaus run --record <dir>`. It never forwards anything to the network, and an unmatched request gets a 404 (with `closest` recorded paths, but never a recorded body). Matching is on **method + path + query** (the recorded host is dropped; this is where it differs from replay, which matches the full URL). It binds to `127.0.0.1` by default, on port 4885 so it does not collide with the UI (4884). Options: `--cors` / `--delay` / `--ignore-query` / `--sequence` / `--origin` / `--json`. A missing, invalid, or empty cassette exits 2. Secrets masked at record time are served as `***` and are not restored.
+## 0.25.0
 
-### `--report html` / `--report github`
-
-- `html`: a single self-contained HTML file with no external assets or JavaScript (default `klaus-report.html`). Failed and error steps are expanded by default
-- `github`: for GitHub Actions. The Markdown job summary goes to `--report-file`, otherwise is appended to `GITHUB_STEP_SUMMARY`, otherwise is written to `klaus-report.md`; when `GITHUB_ACTIONS=true`, one `::error` annotation is printed per failed step. The summary is never written to stdout (so the machine-readable `--json` output stays intact)
+Added `klaus diff` and `klaus promote`.
 
 ### `klaus diff`
 
@@ -25,6 +24,56 @@ Compares two runs from history step by step (status, headers, a structural JSON 
 ### `klaus promote`
 
 Turns runs from history into a re-runnable flow YAML with assertions inferred from the observed responses (`--assert status|schema|values|all`, default `schema`). Masked values cannot be reconstructed, so they become `{{env.TODO_*}}` placeholders that are listed in the output, and nothing is written if a `***` would remain in the result. An existing file is never overwritten without `--force`, and the output path must stay inside the current directory. The generated flow is schema-validated before it is written. When a distinctive value from an earlier response shows up in a later request, it is chained as a `capture` (`--no-chain` disables this).
+
+## 0.24.0
+
+Added `--report html` and `--report github`.
+
+- `html`: a single self-contained HTML file with no external assets or JavaScript (default `klaus-report.html`). Failed and error steps are expanded by default
+- `github`: for GitHub Actions. The Markdown job summary goes to `--report-file`, otherwise is appended to `GITHUB_STEP_SUMMARY`, otherwise is written to `klaus-report.md`; when `GITHUB_ACTIONS=true`, one `::error` annotation is printed per failed step. The summary is never written to stdout (so the machine-readable `--json` output stays intact)
+
+## 0.23.0
+
+Added `klaus mock <dir>`.
+
+Starts a local HTTP server that only serves the cassette recorded with `klaus run --record <dir>`. It never forwards anything to the network, and an unmatched request gets a 404 (with `closest` recorded paths, but never a recorded body). Matching is on **method + path + query** (the recorded host is dropped; this is where it differs from replay, which matches the full URL). It binds to `127.0.0.1` by default, on port 4885 so it does not collide with the UI (4884). Options: `--cors` / `--delay` / `--ignore-query` / `--sequence` / `--origin` / `--json`. A missing, invalid, or empty cassette exits 2. Secrets masked at record time are served as `***` and are not restored.
+
+## 0.22.0
+
+Extended capture and assertions.
+
+- `capture` accepts `{header}`, `{cookie}`, `{regex, group?}`, and `{status: true}` (a string is still a JSONPath). A cookie capture looks the value up in the cookie jar for the final URL, and becomes an `error` with guidance when there is no jar. A capture `error` message never includes the captured value or the body (it may contain secrets)
+- Header and body assertions gained `gt` / `gte` / `lt` / `lte` / `length` / `type` / `oneOf`
+- `assert.status` accepts an array of numbers and the `"2xx"` form
+
+## 0.21.0
+
+Added request body forms.
+
+- `request.form` (`application/x-www-form-urlencoded`), `request.multipart` (text and file parts), and `request.bodyFile` (sends a file's bytes as-is)
+- Input files must stay inside the cwd (after resolving symbolic links); anything outside is recorded in history as a guard refusal. This keeps a flow written by an agent from uploading arbitrary files
+- History and dry-run never keep file contents, only the file name and size
+- `body` / `graphql` / `form` / `multipart` / `bodyFile` are mutually exclusive
+
+## 0.20.0
+
+Added authentication helpers.
+
+- `request.auth` and the flow-wide `http.auth` (also allowed in `klaus.config.yaml` `http.auth`). The step wins, and `auth: none` disables an inherited one. `basic` / `bearer` / `oauth2` (client credentials)
+- OAuth2 tokens are cached per run and fetched again once `expires_in` has passed. The token request goes through the same guards, proxy, TLS, and record/replay as any request, and never follows redirects
+- Passwords, tokens, client secrets, the fetched access token, and the Basic base64 form are registered as secrets and masked in history, output, and dry-run. `--dry-run` shows `Authorization` masked and never fetches a token
+- Combining it with a step that sets its own `Authorization` header is an error
+
+## 0.19.1
+
+Fixed review findings in `klaus req` and `--dry-run`.
+
+- Fixed a crash when `--dry-run` combined `query:` with a host that comes from an earlier capture, and unresolved `{{name}}` is no longer percent-encoded. The unresolved-variable error now has the same message as at run time, and `undetermined` is reported only when the host name itself is unresolved
+- Merging `query` no longer rebuilds the query written in the URL; it is kept as written (secrets containing `&` `+` `=` `/` were broken and only partly masked)
+- The hint in the protected-environment refusal is chosen at the entry point, so `klaus req` and single requests from the UI no longer suggest `--allow-protected`
+- Argument-combination errors (`--dry-run` with `--record`, `--json` with `--text` in `req`) now exit 1 like `run`
+- On a cross-origin redirect, headers carrying a secret value are dropped in addition to credentials, and the dropped header names are recorded in the result and history
+- A cookie's `Domain` attribute is always stored host-only and never shared across subdomains
 
 ## 0.19.0
 

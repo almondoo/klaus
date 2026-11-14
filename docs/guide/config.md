@@ -104,13 +104,13 @@ guard:
 | `auth` | Default [authentication helper](flow-definition.md#auth-authentication-helpers) for every HTTP and SSE step; a flow's `http.auth` or a step's `request.auth` overrides it. Use <code v-pre>{{env.X}}</code> for secrets |
 | `proxy` | HTTP(S) proxy URL. The userinfo is a secret and masked. `HTTP_PROXY` and similar environment variables are never read |
 | `tls.ca` / `tls.cert` / `tls.key` | PEM file paths, resolved relative to this file. `cert` and `key` must be set together. Their contents are never printed |
-| `tls.insecure` | `true` disables certificate verification and prints a `warning:` line on stderr for every run |
+| `tls.insecure` | `true` disables certificate verification and reports a warning for every run (stderr, and the `warnings` of the JSON, text, HTML, and GitHub reports) |
 
 `proxy` and `tls` decide where traffic goes and whom it trusts, so they can only be set here. A flow file that contains `http.proxy` or `http.tls` fails validation (exit code 2). Likewise there is no CLI flag, `klaus req` option, or UI parameter for them. A flow's top-level `http:` may set only `followRedirects`, `maxRedirects`, `cookies`, and `auth`, and overrides this section per key (see [Flow Definition Reference](flow-definition.md#http-http-client-settings)).
 
 - The proxy URL may use <code v-pre>{{env.X}}</code> (OS environment variables) as a template, but not flow variables or captures.
 - The proxy host itself is trusted configuration and is not checked against `guard.allowedHosts`. The final destination of every request (and every redirect hop) is still checked, both for plain HTTP through the proxy and for `CONNECT` tunnels, and a refused request never reaches the proxy.
-- The `warning:` line for `tls.insecure` is written to stderr, so the JSON on stdout stays machine-readable.
+- The `tls.insecure` warning is written to stderr as a `klaus: warning:` line and is also carried in the top-level `warnings` array of the [JSON output](cli.md#json-output-for-machines), so machine-readable output does not depend on stderr being captured.
 
 ## Intentionally unconfigurable keys
 

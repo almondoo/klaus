@@ -27,9 +27,9 @@ const CONSTRAINT_ANNOTATIONS: ReadonlyArray<{ path: readonly string[]; note: str
     note: "Exactly one of `request`, `ws`, or `use` must be set. `sse` is a modifier that attaches to a `request` step.",
   },
   {
-    // requestSchema: body / graphql は排他。graphql 指定時のみ method 省略可
+    // requestSchema: body / graphql / form / multipart / bodyFile は排他。graphql 指定時のみ method 省略可
     path: ["properties", "steps", "items", "properties", "request"],
-    note: "`body` and `graphql` are mutually exclusive. `method` is required unless `graphql` is set.",
+    note: "`body`, `graphql`, `form`, `multipart`, and `bodyFile` are mutually exclusive (set at most one of them). `method` is required unless `graphql` is set.",
   },
   {
     // wsSchema: url は ws:// または wss:// スキームのみ許可(リテラルの場合のみ静的に判定)

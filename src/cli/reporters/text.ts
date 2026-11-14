@@ -67,6 +67,25 @@ export function formatFlowHeader(flowName: string, file: string, iteration?: num
   return `${sanitizeForTerminal(flowName)} (${sanitizeForTerminal(file)})${suffix}`;
 }
 
+/**
+ * リダイレクトの経路と、別オリジンへの遷移で落としたヘッダー名を、失敗の原因調査用に短い行にする
+ * (failed / error ステップの詳細にだけ付ける)。URL は攻撃者制御になり得るためサニタイズする
+ */
+function formatRedirectLines(result: StepResult): string[] {
+  const lines: string[] = [];
+  if (result.redirects !== undefined && result.redirects.length > 0) {
+    const route = result.redirects.map((url) => sanitizeForTerminal(url)).join(" -> ");
+    lines.push(`    redirects: ${truncate(route)}`);
+  }
+  if (result.droppedHeaders !== undefined && result.droppedHeaders.length > 0) {
+    const dropped = result.droppedHeaders
+      .map((entry) => `hop ${entry.hop}: ${entry.headers.map(sanitizeForTerminal).join(", ")}`)
+      .join("; ");
+    lines.push(`    dropped headers on redirect: ${truncate(dropped)}`);
+  }
+  return lines;
+}
+
 /** 1 ステップ分の結果行。FAIL の場合は失敗アサーションの詳細を複数行で付加する */
 export function formatStepLine(result: StepResult, useColor: boolean): string {
   const durationMs = Math.round(result.durationMs);
@@ -85,6 +104,7 @@ export function formatStepLine(result: StepResult, useColor: boolean): string {
       // 制御文字のサニタイズは truncate/colorize より前に行う(colorize が付与する ANSI コードを壊さないため)
       lines.push(`    - ${truncate(sanitizeForTerminal(assertion.message))}`);
     }
+    lines.push(...formatRedirectLines(result));
     return lines.join("\n");
   }
 
@@ -95,7 +115,9 @@ export function formatStepLine(result: StepResult, useColor: boolean): string {
 
   // error(runtime エラー)
   const message = truncate(sanitizeForTerminal(result.error ?? "unknown error"));
-  return colorize(`  ERROR ${name}: ${message}`, "red", useColor);
+  const errorLines = [colorize(`  ERROR ${name}: ${message}`, "red", useColor)];
+  errorLines.push(...formatRedirectLines(result));
+  return errorLines.join("\n");
 }
 
 /** ステップ配列を4状態(passed/failed/error/skipped)で集計した結果 */
@@ -170,7 +192,14 @@ export function createTextReporter(
       write(`${formatStepLine(context.result, useColor)}\n`);
     },
     printSummary(runResult: RunResult): void {
-      write(`\n${formatSummary(runResult)}\n`);
+      // 警告(tls.insecure など)はサマリーの直前に出す。stderr にも同じ警告が出ているが、stdout だけを保存した場合にも残すため
+      const warnings = (runResult.warnings ?? []).map(
+        (message) =>
+          `${colorize("warning:", "yellow", useColor)} ${truncate(sanitizeForTerminal(message))}\n`,
+      );
+      write(
+        `\n${warnings.join("")}${warnings.length > 0 ? "\n" : ""}${formatSummary(runResult)}\n`,
+      );
     },
   };
 }

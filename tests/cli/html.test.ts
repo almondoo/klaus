@@ -112,4 +112,36 @@ describe("formatHtml", () => {
     const html = formatHtml(run, { meta: { env: hostile, actor: hostile, commit: hostile } });
     expect(html).not.toMatch(/<[^>]*\s(href|src|onerror)\s*=/i);
   });
+
+  it("redirects / droppedHeaders を失敗ステップの詳細と、成功ステップの折りたたみに出す", () => {
+    const html = formatHtml(
+      buildRunResult([
+        buildFlow({
+          steps: [
+            buildStep({
+              name: "moved",
+              status: "passed",
+              redirects: ["http://x/b"],
+              droppedHeaders: [{ hop: 1, headers: ["authorization"] }],
+            }),
+            buildStep({ name: "bad", status: "failed", redirects: ["http://x/z"] }),
+            buildStep({ name: "plain", status: "passed" }),
+          ],
+        }),
+      ]),
+    );
+    expect(html).toContain("<h3>Redirects</h3><pre>http://x/b</pre>");
+    expect(html).toContain("<h3>Headers dropped on redirect</h3><pre>hop 1: authorization</pre>");
+    expect(html).toContain("<h3>Redirects</h3><pre>http://x/z</pre>");
+    // リダイレクトの無い成功ステップは従来どおり折りたたまない
+    expect(html.match(/<details class="step"/g)?.length).toBe(2);
+  });
+
+  it("warnings があれば警告欄をエスケープして出し、無ければ出さない", () => {
+    const run = buildRunResult([buildFlow({ steps: [buildStep({})] })]);
+    expect(formatHtml(run)).not.toContain('class="warnings"');
+    const html = formatHtml({ ...run, warnings: [`insecure ${PAYLOAD}`] });
+    expect(html).toContain('<div class="warnings">');
+    expect(html).not.toContain("<script");
+  });
 });

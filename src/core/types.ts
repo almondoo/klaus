@@ -99,4 +99,9 @@ export interface RunResult {
   durationMs: number;
   flows: FlowResult[];
   status: "passed" | "failed" | "error";
+  /**
+   * ステップの成否には影響しない警告(tls.insecure の使用・履歴書き込み失敗など)。重複は除く。
+   * 何も無ければ省略する(stderr への通知とは別に、機械可読な出力にも載せるため)
+   */
+  warnings?: string[];
 }

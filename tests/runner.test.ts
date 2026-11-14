@@ -1098,6 +1098,29 @@ describe("runLoadedFlows", () => {
     });
   }
 
+  it("警告は onWarning へ転送しつつ、重複を除いて RunResult.warnings に残す(無ければ省略)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+    const entries: LoadedFlowEntry[] = [
+      { filePath: "flow-a.yaml", flow: buildTrivialFlow("flow a") },
+    ];
+    const forwarded: string[] = [];
+
+    // 2 行 = 同じフロー・同じステップが 2 回走り、同一文言の警告が 2 回上がる
+    const result = await runLoadedFlows(entries, {
+      cwd,
+      dataRows: [{ row: 1 }, { row: 2 }],
+      history: () => {
+        throw new Error("sink down");
+      },
+      onWarning: (message) => forwarded.push(message),
+    });
+    expect(forwarded).toHaveLength(2);
+    expect(result.warnings).toEqual([forwarded[0]]);
+
+    const quiet = await runLoadedFlows(entries, { cwd, history: false });
+    expect(Object.hasOwn(quiet, "warnings")).toBe(false);
+  });
+
   it("dataRows 指定時、行(外側) × フロー(内側)のイテレーション優先順で実行し、flows[].iteration が 1,1,2,2 になる", async () => {
     cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
     const entries: LoadedFlowEntry[] = [

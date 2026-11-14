@@ -84,6 +84,12 @@ describe("formatGithubSummary", () => {
     expect(md).toContain("<details>");
   });
 
+  it("warnings があれば件数表の後に引用行で出す", () => {
+    const md = formatGithubSummary({ ...run, warnings: ["tls.insecure is enabled"] });
+    expect(md).toContain("> Warning: tls.insecure is enabled");
+    expect(formatGithubSummary(run)).not.toContain("Warning");
+  });
+
   it("サイズ上限を超える場合は詳細を打ち切って注記し、失敗表は残す", () => {
     const flows = Array.from({ length: 40 }, (_, i) =>
       buildFlow({

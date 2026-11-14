@@ -58,9 +58,10 @@ describe("buildFlowJsonSchema", () => {
     // request/ws のどちらか一方(stepSchema の superRefine)
     expect(json.properties.steps.items.description).toMatch(/Exactly one/);
     // body/graphql の排他・method 必須(requestSchema の superRefine)
-    expect(json.properties.steps.items.properties.request.description).toMatch(
-      /mutually exclusive/,
-    );
+    // form / multipart / bodyFile も排他の対象として注記される
+    const requestDescription = json.properties.steps.items.properties.request.description;
+    expect(requestDescription).toMatch(/mutually exclusive/);
+    expect(requestDescription).toMatch(/`form`, `multipart`, and `bodyFile`/);
     // ws.url のスキーム制約(wsSchema の superRefine)
     expect(json.properties.steps.items.properties.ws.properties.url.description).toMatch(
       /ws:\/\/ or wss:\/\//,

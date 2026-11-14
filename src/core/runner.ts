@@ -1354,16 +1354,47 @@ export async function runFlows(
   const startedAt = new Date().toISOString();
   const runStartedAt = performance.now();
 
+  const warningSink = collectWarnings(options.onWarning);
   const flows: FlowResult[] = [];
   for (const filePath of filePaths) {
-    const flowResult = await runFlow(filePath, { ...options, runId });
+    const flowResult = await runFlow(filePath, {
+      ...options,
+      runId,
+      onWarning: warningSink.onWarning,
+    });
     flows.push(flowResult);
   }
 
   const durationMs = performance.now() - runStartedAt;
   const status = aggregateStatus(flows.map((f) => f.status));
 
-  return { runId, startedAt, durationMs, flows, status };
+  return {
+    runId,
+    startedAt,
+    durationMs,
+    flows,
+    status,
+    ...(warningSink.warnings.length > 0 ? { warnings: warningSink.warnings } : {}),
+  };
+}
+
+/**
+ * onWarning の呼び出しを重複なく蓄積しつつ、元の通知先にもそのまま転送するラッパーを作る。
+ * 並列実行ではフローごとに HTTP クライアントが作られ同じ警告が複数回上がるため、蓄積側だけ重複を除く
+ * (元の通知先への転送は従来どおり上がった回数のまま)。
+ */
+function collectWarnings(onWarning: ((message: string) => void) | undefined): {
+  warnings: string[];
+  onWarning: (message: string) => void;
+} {
+  const warnings: string[] = [];
+  return {
+    warnings,
+    onWarning: (message) => {
+      if (!warnings.includes(message)) warnings.push(message);
+      onWarning?.(message);
+    },
+  };
 }
 
 /** 既に読み込み済みの Flow と、その読み込み元ファイルパスの組 */
@@ -1483,6 +1514,9 @@ export async function runLoadedFlows(
   const startedAt = new Date().toISOString();
   const runStartedAt = performance.now();
   const jobs = options.jobs ?? 1;
+  // 警告は呼び出し元への通知に加えて RunResult.warnings にも残す(以降の実行は collected を通す)
+  const warningSink = collectWarnings(options.onWarning);
+  options = { ...options, onWarning: warningSink.onWarning };
 
   const units = buildRunUnits(entries, options);
   let flows: FlowResult[];
@@ -1506,7 +1540,14 @@ export async function runLoadedFlows(
   const durationMs = performance.now() - runStartedAt;
   const status = aggregateStatus(flows.map((f) => f.status));
 
-  return { runId, startedAt, durationMs, flows, status };
+  return {
+    runId,
+    startedAt,
+    durationMs,
+    flows,
+    status,
+    ...(warningSink.warnings.length > 0 ? { warnings: warningSink.warnings } : {}),
+  };
 }
 
 /** executeSingleRequest のオプション */
