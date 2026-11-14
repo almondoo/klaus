@@ -29,3 +29,15 @@ export class RuntimeError extends KlausError {
     this.name = "RuntimeError";
   }
 }
+
+/**
+ * 安全柵(送信先ホストの許可リスト・保護環境)による送信拒否。RuntimeError の一種で、
+ * CLI では他の実行時エラーと同じく exit 3 になる。拒否は監査のため、他の実行時エラーと異なり
+ * 履歴にも記録する(runner.ts の executeStep が型で判別する)。
+ */
+export class GuardRefusalError extends RuntimeError {
+  constructor(message: string) {
+    super(message);
+    this.name = "GuardRefusalError";
+  }
+}

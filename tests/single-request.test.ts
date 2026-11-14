@@ -141,6 +141,105 @@ describe("executeSingleRequest", () => {
     expect(result.error).toContain("--allow-protected");
   });
 
+  it('$protected: "readonly" の環境では安全メソッド(GET)のみ許可され、POST は拒否される', async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+    await mkdir(join(cwd, "environments"), { recursive: true });
+    await writeFile(
+      join(cwd, "environments", "stg.yaml"),
+      `$protected: readonly\nbaseUrl: ${ctx.baseUrl}\n`,
+      "utf-8",
+    );
+
+    const get = await executeSingleRequest({
+      request: { method: "GET", url: "{{baseUrl}}/ping" },
+      cwd,
+      envName: "stg",
+      history: false,
+    });
+    const post = await executeSingleRequest({
+      request: { method: "POST", url: "{{baseUrl}}/echo", body: { a: 1 } },
+      cwd,
+      envName: "stg",
+      history: false,
+    });
+
+    expect(get.result.status).toBe("passed");
+    expect(post.result.status).toBe("error");
+    expect(post.result.error).toContain("refusing POST");
+    expect(post.result.error).toContain("--allow-protected");
+  });
+
+  it("guard.allowedHosts に無いホストへの単発リクエストは送信されず error になる", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+
+    const { result } = await executeSingleRequest({
+      request: { method: "GET", url: `${ctx.baseUrl}/ping` },
+      cwd,
+      history: false,
+      guard: { allowedHosts: ["api.example.com"] },
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.error).toContain("guard.allowedHosts");
+  });
+
+  it("guard.allowedHosts に一致するホストへの単発リクエストは実行される", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+    const { host } = new URL(ctx.baseUrl);
+
+    const { result } = await executeSingleRequest({
+      request: { method: "GET", url: `${ctx.baseUrl}/ping` },
+      cwd,
+      history: false,
+      guard: { allowedHosts: [host] },
+    });
+
+    expect(result.status).toBe("passed");
+  });
+
+  it("履歴に env / actor / git を記録し、フローファイルが無いため file は書かない", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+    await mkdir(join(cwd, "environments"), { recursive: true });
+    await writeFile(join(cwd, "environments", "local.yaml"), `baseUrl: ${ctx.baseUrl}\n`, "utf-8");
+
+    await executeSingleRequest({
+      request: { method: "GET", url: "{{baseUrl}}/ping" },
+      cwd,
+      envName: "local",
+      actor: { kind: "human" },
+      git: { commit: "abc123", dirty: false },
+    });
+
+    const entry = JSON.parse((await readFile(historyFilePath(cwd), "utf-8")).trim());
+    expect(entry).toMatchObject({
+      source: "single",
+      env: "local",
+      actor: { kind: "human" },
+      git: { commit: "abc123", dirty: false },
+    });
+    expect(entry).not.toHaveProperty("file");
+  });
+
+  it("安全柵に拒否された単発リクエストは status: error の履歴として記録される(source: single)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+
+    await executeSingleRequest({
+      request: { method: "GET", url: `${ctx.baseUrl}/ping` },
+      cwd,
+      guard: { allowedHosts: ["api.example.com"] },
+      actor: { kind: "human" },
+    });
+
+    const entry = JSON.parse((await readFile(historyFilePath(cwd), "utf-8")).trim());
+    expect(entry).toMatchObject({
+      source: "single",
+      status: "error",
+      request: { method: "GET", url: `${ctx.baseUrl}/ping` },
+      actor: { kind: "human" },
+    });
+    expect(entry.error).toContain("guard.allowedHosts");
+  });
+
   it("request.query が URL にマージされて送信される", async () => {
     cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
 

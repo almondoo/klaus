@@ -7,7 +7,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command, InvalidArgumentError } from "commander";
 import { ParseError } from "../core/index.js";
-import { applyConfigToRunOptions, applyConfigToUiOptions, loadCliConfig } from "./config.js";
+import { MAX_ACTOR_NAME_LENGTH } from "./audit.js";
+import {
+  applyConfigToRunOptions,
+  applyConfigToUiOptions,
+  loadCliConfig,
+  resolveGuardOptions,
+} from "./config.js";
 import { type GenerateCommandOptions, generateCommand } from "./generate.js";
 import {
   DEFAULT_HISTORY_FIELDS,
@@ -199,6 +205,19 @@ program
       return parsed;
     },
   )
+  .option(
+    "--actor <name>",
+    "name recorded as history actor.name for this run (the actor kind — human/agent/ci — is still detected from environment variables)",
+    (value: string) => {
+      const name = value.trim();
+      if (name === "" || name.length > MAX_ACTOR_NAME_LENGTH) {
+        throw new InvalidArgumentError(
+          `invalid --actor value (expected 1-${MAX_ACTOR_NAME_LENGTH} characters): ${value}`,
+        );
+      }
+      return name;
+    },
+  )
   .addHelpText(
     "after",
     `
@@ -229,7 +248,12 @@ ${exitCodesHelpLine}
 
       // --report/--report-file(フォーマット不明・個数不一致)の検査は runCommand 側(resolveReportTargets)
       // が行う(--record/--replay 等の他の組み合わせ検査と同じ流儀で runCommand に集約している)。
-      process.exitCode = await runCommand(files, mergedOptions);
+      // guard(送信先ホストの許可リスト)は config からのみ設定できる(CLI フラグでの上書きは設けない)
+      const guard = resolveGuardOptions(configResult.config);
+      process.exitCode = await runCommand(
+        files,
+        guard ? { ...mergedOptions, guard } : mergedOptions,
+      );
     });
   });
 
@@ -272,7 +296,8 @@ program
         configResult.config,
       );
 
-      await uiCommand(mergedOptions);
+      const guard = resolveGuardOptions(configResult.config);
+      await uiCommand(guard ? { ...mergedOptions, guard } : mergedOptions);
     });
   });
 

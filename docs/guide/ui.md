@@ -14,11 +14,18 @@ klaus ui [-p <n>] [-H <host>] [--no-open]
 
 ## Screens
 
-1. **Single request execution (default screen)**: A tab for running one request on the spot, without going through a flow. Edit method / URL / headers / query parameters / body as a form, and run it with `{{var}}` expanded against the selected environment. The result shows status, duration, response headers, and body; values can be extracted from the response body via JSONPath and saved into the selected environment (saved as a merge of a single key, leaving other keys untouched)
+1. **Single request execution (default screen)**: A tab for running one request on the spot, without going through a flow. Edit method / URL / headers / query parameters / body as a form, and run it with `{{var}}` expanded against the selected environment. The result shows status, duration, response headers, and body; values can be extracted from the response body via JSONPath and saved into the selected environment (saved as a merge of a single key, leaving other keys untouched; refused with 403 for a protected environment)
 2. **Flow list (sidebar)**: Lists flow YAML files under the cwd. Files with parse errors are shown with an error icon and reason, and can't be run. Selecting a flow switches to the execution view. The environment selector at the top switches the equivalent of `--env`, and the run button starts execution
 3. **Execution view**: Steps transition live from running → pass/fail (delivered via SSE). Overall progress is shown as "Step n / m"; failed steps auto-expand to show request/response detail (JSON), while successful steps are collapsed by default. A summary is shown on completion
-4. **Environment editor**: Opened via the edit button next to the environment selector; lets you edit the selected environment's key-value pairs in a table. Saving writes back to the file while preserving existing YAML comments
+4. **Environment editor**: Opened via the edit button next to the environment selector; lets you edit the selected environment's key-value pairs in a table. Saving writes back to the file while preserving existing YAML comments. Saving to a protected environment (`$protected: true` or `readonly`) is refused with 403; edit the file directly
 5. **History browser**: Displays `.klaus/history/*.jsonl` newest first. Grouped by run, with row clicks drilling down into step detail. Supports filtering by flow and "load more" paging
+
+## Protected environments and the host allowlist
+
+- Flow runs from the UI never pass `--allow-protected`, so they are refused for any protected environment. Single requests are refused for `$protected: true`, and for `$protected: readonly` only safe methods (`GET` / `HEAD` / `OPTIONS`) are allowed.
+- `PUT /api/environments/:name` and the "save captured value to environment" action return 403 for protected environments (`true` or `readonly`). Edit the file directly.
+- If `klaus.config.yaml` sets [`guard.allowedHosts`](config.md#host-allowlist-guard-allowedhosts), runs and single requests from the UI are checked against it too. `klaus ui` reads the config at startup, so restart it after changing the list.
+- Runs from the UI are recorded in history with `actor.kind: human` (see [Execution History](history.md#audit-fields)).
 
 ## Security Model
 

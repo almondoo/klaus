@@ -23,7 +23,7 @@ One line = one step execution. `runId` lets you group steps from the same run.
   "step": "login",              // step name
   "startedAt": "2026-08-08T…",  // ISO 8601
   "durationMs": 6,
-  "status": "passed",           // "passed" | "failed" | "skipped" (may be absent on older entries; see Operational Notes)
+  "status": "passed",           // "passed" | "failed" | "skipped" | "error" (may be absent on older entries; see Operational Notes)
   "request": {                  // omitted for skipped steps
     "method": "POST",
     "url": "http://…",          // template-resolved (secrets masked)
@@ -40,7 +40,11 @@ One line = one step execution. `runId` lets you group steps from the same run.
   ],
   "assertions": [
     { "ok": true, "kind": "status", "expected": 200, "actual": 200, "message": "…" }
-  ]
+  ],
+  "env": "local",               // optional: see Audit Fields
+  "file": "api/auth-flow.yaml", // optional
+  "actor": { "kind": "agent", "name": "claude-code" },  // optional
+  "git": { "commit": "<sha>", "dirty": false }          // optional
 }
 ```
 
@@ -53,9 +57,22 @@ One line = one step execution. `runId` lets you group steps from the same run.
 | WebSocket | method is `"WS"`, body is the array of sent messages | status is fixed at `101`, body is the array of received messages (data strings) | — |
 | skipped | omitted | omitted | — |
 
-**Skipped steps are recorded too** (`status: "skipped"`, no request/response, empty assertions). Steps that resulted in a runtime error are not recorded in the history.
+**Skipped steps are recorded too** (`status: "skipped"`, no request/response, empty assertions). Steps that resulted in a runtime error are not recorded in the history, with one exception: a step refused by a guardrail (`guard.allowedHosts`, or `$protected`) is recorded for auditing, with `status: "error"`, the masked request that would have been sent, the refusal reason in `error`, and the audit fields.
 
 Newly written entries always include `status`. Older entries without a `status` field can still be read by deriving pass/fail from `assertions`, as before (backward compatible).
+
+## Audit Fields
+
+Four optional fields record where a run came from. They are additive, so `v` stays 1, and entries written before they existed simply lack them.
+
+| Field | Content |
+|---|---|
+| `env` | Environment name. With `--env-file`, the file's basename. Omitted when no environment is used |
+| `file` | Flow file path relative to the working directory (POSIX separators). Omitted for single requests |
+| `actor` | `{ kind, name? }`. `kind` is `human`, `agent`, or `ci`, detected from the environment: the agent markers `CLAUDECODE` / `AI_AGENT` first, then `CI`, otherwise `human`. `klaus run --actor <name>` sets `name` (the `kind` is still detected). Runs from `klaus ui` record `human` |
+| `git` | `{ commit, dirty }`: `HEAD` at run time, and whether tracked files have uncommitted changes (untracked files are ignored). Omitted when git is unavailable |
+
+View them with `klaus history --fields env,file,actor,git` or `klaus history show <runId>`.
 
 ## Versioning Contract
 

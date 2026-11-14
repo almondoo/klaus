@@ -23,7 +23,7 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
   "step": "login",              // ステップ名
   "startedAt": "2026-08-08T…",  // ISO 8601
   "durationMs": 6,
-  "status": "passed",           // "passed" | "failed" | "skipped"(旧エントリには無い場合がある。運用上の注意を参照)
+  "status": "passed",           // "passed" | "failed" | "skipped" | "error"(旧エントリには無い場合がある。運用上の注意を参照)
   "request": {                  // skipped ステップでは省略される
     "method": "POST",
     "url": "http://…",          // テンプレート解決済み(シークレットはマスク後)
@@ -40,7 +40,11 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
   ],
   "assertions": [
     { "ok": true, "kind": "status", "expected": 200, "actual": 200, "message": "…" }
-  ]
+  ],
+  "env": "local",               // 省略可: 監査項目を参照
+  "file": "api/auth-flow.yaml", // 省略可
+  "actor": { "kind": "agent", "name": "claude-code" },  // 省略可
+  "git": { "commit": "<sha>", "dirty": false }          // 省略可
 }
 ```
 
@@ -53,9 +57,22 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
 | WebSocket | method は `"WS"`、body は送信メッセージ配列 | status は `101` 固定、body は受信メッセージ(data 文字列)の配列 | — |
 | skipped | 省略 | 省略 | — |
 
-**skipped ステップも記録される**(`status: "skipped"`、request/response なし、assertions は空)。runtime エラーになったステップは履歴には記録されない。
+**skipped ステップも記録される**(`status: "skipped"`、request/response なし、assertions は空)。runtime エラーになったステップは履歴には記録されない。ただし例外として、安全柵(`guard.allowedHosts` または `$protected`)に拒否されたステップは監査のために記録され、`status: "error"`、送信しようとしたリクエスト(マスク済み)、`error` に拒否理由、監査項目を持つ。
 
 新規に書き込まれるエントリには常に `status` が設定される。`status` フィールドが無い旧エントリは、従来どおり `assertions` の内容から成否を導出して読み込める(後方互換)。
+
+## 監査項目
+
+実行の出どころを記録する、省略可能な4つのフィールド。追加のみの変更なので `v` は 1 のままで、これらが導入される前のエントリには単に存在しない。
+
+| フィールド | 内容 |
+|---|---|
+| `env` | 環境名。`--env-file` の場合はそのファイルのベース名。環境を使わない実行では省略 |
+| `file` | フロー定義ファイルの cwd からの相対パス(POSIX 区切り)。単発リクエストでは省略 |
+| `actor` | `{ kind, name? }`。`kind` は `human` / `agent` / `ci` で、環境から検出する: エージェントのマーカー `CLAUDECODE` / `AI_AGENT` を優先し、次に `CI`、どれも無ければ `human`。`klaus run --actor <name>` で `name` を設定できる(`kind` は引き続き検出)。`klaus ui` からの実行は `human` を記録する |
+| `git` | `{ commit, dirty }`: 実行時の `HEAD` と、追跡対象ファイルに未コミットの変更があるか(未追跡ファイルは無視)。git が使えない場合は省略 |
+
+`klaus history --fields env,file,actor,git` または `klaus history show <runId>` で参照できる。
 
 ## バージョニング契約
 

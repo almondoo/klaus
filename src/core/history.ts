@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { mapDeepStrings } from "./deep-map.js";
 import { appendPrivateLine } from "./private-file.js";
 import type { AssertionResult, RequestSnapshot, ResponseSnapshot, SseEvent } from "./types.js";
@@ -25,7 +25,7 @@ export interface HistoryEntry {
    * 既存の(このフィールド追加前に書かれた)行には無いため、読み出し側は
    * 省略時に assertions から従来通り導出するフォールバックを持つこと。
    */
-  status?: "passed" | "failed" | "skipped";
+  status?: "passed" | "failed" | "skipped" | "error";
   /** skipped ステップでは省略する */
   request?: RequestSnapshot;
   /** skipped ステップでは省略する */
@@ -37,6 +37,47 @@ export interface HistoryEntry {
   source?: "single";
   /** step.retry を設定した場合のみ設定。実際に実行された試行回数(1 以上) */
   attempts?: number;
+  /**
+   * status が "error" のエントリのみ設定する、ステップを error にした理由(安全柵による送信拒否)。
+   * 接続不能・タイムアウトなど他の実行時エラーは履歴に書かれないため、現状は安全柵の拒否でのみ記録される。
+   * 追加のみの後方互換な変更のため v は 1 のまま
+   */
+  error?: string;
+  /**
+   * 監査項目(以下 4 つはすべて省略可能。追加のみの後方互換な変更のため v は 1 のまま)。
+   * 実行した環境名(--env-file 指定時はそのファイル名)。環境を使わない実行では省略する
+   */
+  env?: string;
+  /** フロー定義ファイルの cwd からの相対パス(POSIX 区切り)。絶対パスは入れない。単発実行では省略する */
+  file?: string;
+  /** 実行主体。core は計算せず、呼び出し元(CLI・server)が RunFlowOptions.actor 等で渡した値を記録する */
+  actor?: HistoryActor;
+  /** 実行時点の git の状態。呼び出し元(CLI)が取得できた場合のみ記録する */
+  git?: HistoryGit;
+}
+
+/** 履歴に記録する実行主体 */
+export interface HistoryActor {
+  kind: "human" | "agent" | "ci";
+  name?: string;
+}
+
+/** 履歴に記録する実行時点の git の状態 */
+export interface HistoryGit {
+  commit: string;
+  /** 追跡対象ファイルに未コミットの変更があるか */
+  dirty: boolean;
+}
+
+/**
+ * フロー定義ファイルのパスを、履歴の file フィールド用に cwd からの相対パス(POSIX 区切り)へ変換する。
+ * 相対化できない場合(別ドライブ等で絶対パスのままになる)や cwd 自身を指す場合は undefined を返し、
+ * 絶対パスを履歴に残さない。
+ */
+export function toHistoryFilePath(cwd: string, filePath: string): string | undefined {
+  const rel = relative(resolve(cwd), resolve(cwd, filePath));
+  if (rel === "" || isAbsolute(rel)) return undefined;
+  return rel.split(sep).join("/");
 }
 
 /**
@@ -184,9 +225,16 @@ export function maskHistoryEntry(entry: HistoryEntry, secrets: readonly string[]
 
   const assertions = maskAssertions(entry.assertions, variants);
 
+  // 監査項目に秘密情報は入らない想定だが、他のフィールドと同じ規則で一貫してマスクする
+  // (env 名・ファイルパス・--actor の任意文字列に秘密値が混入した場合に備える)
   return {
     ...entry,
     assertions,
+    ...(entry.error !== undefined ? { error: maskString(entry.error, variants) } : {}),
+    ...(entry.env !== undefined ? { env: maskString(entry.env, variants) } : {}),
+    ...(entry.file !== undefined ? { file: maskString(entry.file, variants) } : {}),
+    ...(entry.actor ? { actor: maskDeep(entry.actor, variants) } : {}),
+    ...(entry.git ? { git: maskDeep(entry.git, variants) } : {}),
     ...(request ? { request } : {}),
     ...(response ? { response } : {}),
     ...(events ? { events } : {}),

@@ -8,11 +8,12 @@ import { existsSync } from "node:fs";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { Context } from "hono";
-import { RESERVED_ENV_KEY, toTemplateVariables } from "../../core/env.js";
+import { isProtectedEnvironment, RESERVED_ENV_KEY, toTemplateVariables } from "../../core/env.js";
 import {
   captureValues,
   EnvironmentNotFoundError,
   loadEnvironmentFile,
+  ParseError,
   RuntimeError,
   resolveEnvironmentPath,
   saveEnvironment,
@@ -24,7 +25,11 @@ import type {
   EnvironmentListEntry,
   EnvironmentUpdateRequestBody,
 } from "../types.js";
-import { invalidEnvironmentNameResponse, reservedEnvKeyResponse } from "../validation.js";
+import {
+  invalidEnvironmentNameResponse,
+  protectedEnvironmentResponse,
+  reservedEnvKeyResponse,
+} from "../validation.js";
 
 const YAML_EXT = ".yaml";
 
@@ -110,6 +115,19 @@ export async function handlePutEnvironment(
     return reservedEnvKeyResponse(c);
   }
 
+  // 保護環境は UI からの書き込みを拒否する(ファイルを直接編集する運用)。
+  // 保護状態を判定できない(読み込めない)環境ファイルは、保護を回避できてしまわないよう fail closed にする
+  const putPath = resolveExistingEnvironmentPath(c, cwd, name);
+  if (putPath instanceof Response) return putPath;
+  try {
+    if (isProtectedEnvironment(await loadEnvironmentFile(putPath))) {
+      return protectedEnvironmentResponse(c, name);
+    }
+  } catch (error) {
+    if (error instanceof ParseError) return c.json({ error: error.message }, 400);
+    throw error;
+  }
+
   try {
     await saveEnvironment(cwd, name, body.values);
   } catch (error) {
@@ -188,6 +206,8 @@ export async function handlePostEnvironmentCapture(
   const path = resolveExistingEnvironmentPath(c, cwd, name);
   if (path instanceof Response) return path;
   const existing = await loadEnvironmentFile(path);
+  // 保護環境は UI からの書き込みを拒否する(PUT と同じ。ファイルを直接編集する運用)
+  if (isProtectedEnvironment(existing)) return protectedEnvironmentResponse(c, name);
   const values: Record<string, string> = { ...existing, [body.key]: stringValue };
 
   try {

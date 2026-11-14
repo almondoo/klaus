@@ -15,6 +15,7 @@ import {
   assertTrustedAncestorSource,
   type CliConfig,
   configSchema,
+  type GuardOptions,
   ParseError,
   toParseError,
 } from "../core/index.js";
@@ -96,6 +97,15 @@ export async function loadCliConfig(cwd: string): Promise<CliConfig | undefined>
  * (このモジュールを commander から独立させておくため)。
  */
 export type CliOptionSource = string | undefined;
+
+/**
+ * klaus.config.yaml の `guard` を core の GuardOptions へ変換する(`guard` が無ければ undefined)。
+ * run / ui の両方が同じ設定を core へ渡す。CLI フラグによる上書きは意図的に提供しない。
+ */
+export function resolveGuardOptions(config: CliConfig | undefined): GuardOptions | undefined {
+  const allowedHosts = config?.guard?.allowedHosts;
+  return allowedHosts !== undefined ? { allowedHosts } : undefined;
+}
 
 export interface RunOptionSources {
   env?: CliOptionSource;

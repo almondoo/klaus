@@ -92,7 +92,9 @@ function matchesHistoryQuery(entry: HistoryEntry, query: GetHistoryQuery): boole
  * (ui/src/utils/history.ts の resolveStepStatus と同じ規約。core からは ui を参照できないため個別に持つ)
  * CLI(klaus history)の --failed フィルタ・status 表示からも参照するため公開する。
  */
-export function resolveHistoryEntryStatus(entry: HistoryEntry): "passed" | "failed" | "skipped" {
+export function resolveHistoryEntryStatus(
+  entry: HistoryEntry,
+): "passed" | "failed" | "skipped" | "error" {
   if (entry.status) return entry.status;
   return entry.assertions.some((assertion) => !assertion.ok) ? "failed" : "passed";
 }

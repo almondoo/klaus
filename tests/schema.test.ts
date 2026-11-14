@@ -373,7 +373,16 @@ describe("environmentSchema", () => {
     expect(result.baseUrl).toBe("http://localhost:3000");
   });
 
-  it("$protected に文字列を渡すと検証エラーになる(boolean 専用)", () => {
+  it('予約キー $protected に "readonly" を受け入れる', () => {
+    const result = environmentSchema.parse({
+      baseUrl: "http://localhost:3000",
+      $protected: "readonly",
+    });
+    expect(result.$protected).toBe("readonly");
+  });
+
+  it('$protected に boolean と "readonly" 以外の文字列を渡すと検証エラーになる', () => {
     expect(() => environmentSchema.parse({ $protected: "true" })).toThrow();
+    expect(() => environmentSchema.parse({ $protected: "READONLY" })).toThrow();
   });
 });

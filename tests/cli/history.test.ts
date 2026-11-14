@@ -128,6 +128,47 @@ describe("historyListCommand / historyShowCommand", () => {
       expect((output[0] as { request: { method: string } }).request.method).toBe("GET");
     });
 
+    it("監査項目(env / file / actor / git)を --fields で指定して取り出せる(オブジェクトは JSON のまま)", async () => {
+      const audited = {
+        ...ENTRY_PING,
+        runId: "run-audit",
+        step: "audited",
+        startedAt: "2026-08-08T11:00:00.000Z",
+        env: "staging",
+        file: "flows/ping.yaml",
+        actor: { kind: "agent", name: "claude-code" },
+        git: { commit: "abc123", dirty: true },
+      };
+      await writeFile(
+        join(workDir, ".klaus", "history", "2026-08-09.jsonl"),
+        `${JSON.stringify(audited)}\n`,
+        "utf-8",
+      );
+
+      await historyListCommand({ last: 1, fields: "step,env,file,actor,git", json: true }, workDir);
+
+      expect(JSON.parse(stdoutSpy.join("").trim())).toEqual([
+        {
+          step: "audited",
+          env: "staging",
+          file: "flows/ping.yaml",
+          actor: { kind: "agent", name: "claude-code" },
+          git: { commit: "abc123", dirty: true },
+        },
+      ]);
+
+      // history show は保存されたままのエントリを出力するため、監査項目もそのまま含まれる
+      stdoutSpy.length = 0;
+      await historyShowCommand("run-audit", {}, workDir);
+      expect(JSON.parse(stdoutSpy.join("").trim())).toEqual([audited]);
+    });
+
+    it("監査項目を持たない旧エントリでは該当フィールドが省略される(後方互換)", async () => {
+      await historyListCommand({ last: 1, fields: "step,env,actor,git", json: true }, workDir);
+
+      expect(JSON.parse(stdoutSpy.join("").trim())).toEqual([{ step: "get-me" }]);
+    });
+
     it("--failed で status が failed のエントリのみに絞り込む", async () => {
       await historyListCommand(
         { last: 20, fields: "step,status", failed: true, json: true },

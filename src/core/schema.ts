@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseAllowedHostEntry } from "./guard.js";
 
 /**
  * フロー定義 YAML / 環境ファイル YAML の zod スキーマ。
@@ -490,21 +491,22 @@ export type Flow = z.infer<typeof flowSchema>;
  * 環境ファイル(environments/<name>.yaml)。値はテンプレート可の文字列。
  * `$protected` は予約キーで、true の場合はこの環境への run をデフォルトで拒否する
  * (--allow-protected を明示した場合のみ実行可能。src/core/runner.ts 参照)。
+ * "readonly" の場合は GET / HEAD / OPTIONS のみ --allow-protected なしで送信できる。
  * テンプレート変数展開の対象からは除外する(src/core/env.ts の toTemplateVariables)。
  */
 export const environmentSchema = z
   .object({
     $protected: z
-      .boolean()
+      .union([z.boolean(), z.literal("readonly")])
       .optional()
       .describe(
-        "Reserved key. When true, running against this environment is refused unless --allow-protected is passed.",
+        'Reserved key. When true, running against this environment is refused unless --allow-protected is passed. When "readonly", only GET, HEAD, and OPTIONS requests are allowed without --allow-protected (other methods and WebSocket steps are refused).',
       ),
   })
   .catchall(z.string())
   .describe(
     "Environment variables map (variable name to string value). Values may themselves be templates. " +
-      "The reserved key $protected (boolean) marks the environment as protected.",
+      'The reserved key $protected (true or "readonly") marks the environment as protected.',
   );
 export type Environment = z.infer<typeof environmentSchema>;
 
@@ -534,6 +536,7 @@ export function parseReportFormatList(value: string): ReportFormat[] | undefined
 /**
  * klaus.config.yaml(CLI オプションの既定値ファイル)のスキーマ。
  * `run` / `ui` サブコマンドのオプションのうち、既定値として設定してよいものだけを列挙する。
+ * `guard` は既定値ではなく安全柵(送信先ホストの許可リスト)で、CLI フラグでは上書きできない。
  * 意図的に含めないオプション:
  * - `--allow-protected`(config で既定 true にするとガードレールが形骸化するため)
  * - `--record` / `--replay`(実行モードは呼び出しごとに明示させる)
@@ -600,5 +603,22 @@ export const configSchema = z.strictObject({
     })
     .optional()
     .describe("Default values for `klaus ui` options."),
+  guard: z
+    .strictObject({
+      allowedHosts: z
+        .array(
+          z.string().refine((entry) => parseAllowedHostEntry(entry) !== undefined, {
+            message:
+              'must be a hostname ("api.example.com"), a leading wildcard ("*.example.com"), or an IPv6 literal in brackets, each with an optional ":port"',
+          }),
+        )
+        .min(1, { message: "must not be empty (omit the key to disable the restriction)" })
+        .optional()
+        .describe(
+          'Hosts that requests may be sent to (HTTP, SSE, WebSocket, and single requests; not checked in --replay mode). Entries: exact hostname ("api.example.com"), leading wildcard ("*.example.com", subdomains only, not the apex), optional port ("localhost:3000"; without a port, any port matches). Case-insensitive. When omitted, there is no restriction. There is intentionally no CLI flag to override this.',
+        ),
+    })
+    .optional()
+    .describe("Safety fences applied to every request sent by `klaus run` and `klaus ui`."),
 });
 export type CliConfig = z.infer<typeof configSchema>;

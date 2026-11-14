@@ -18,8 +18,9 @@ steps:                 # 必須: 1件以上。name はフロー内で一意
 
 - 環境ファイルは cwd から上方探索(`.git` を含む祖先ディレクトリ、またはファイルシステムルートで打ち切り)で `environments/<name>.yaml` を解決する。詳細は [Getting Started](getting-started.md) を参照。`klaus run --env <name>` でフローの `env:` を上書きできる。`klaus run --env-file <path>` は代わりに任意パスの環境ファイルを(上方探索なしで)直接読み込み、`klaus run --var <key=value>` はその上から個別の変数を追加・上書きする([CLI リファレンス](cli.md#klaus-run)参照)
 - 環境ファイルは `キー: 文字列値` のフラットなマップ。値にはテンプレート(<code v-pre>{{env.X}}</code> 等)を使える
-- 予約キー `$protected: true` を環境ファイルに書くと、その環境への `klaus run` はデフォルトで拒否される(exit 3)。`--allow-protected` を明示した場合のみ実行できる。本番相当の環境を誤って実行しないためのガードレールで、`$protected` はテンプレート変数(<code v-pre>{{...}}</code>)としては参照できない。`klaus ui` / server API 経由の実行はこのフラグを渡さないため、保護環境は常に拒否される
-- `$protected` はファイル直接編集でのみ設定・解除する。`klaus ui` の環境エディタには表示されず、UI からの保存でも既存の `$protected` の値は変更されずそのまま保持される
+- 予約キー `$protected: true` を環境ファイルに書くと、その環境への `klaus run` はデフォルトで拒否される(exit 3)。`--allow-protected` を明示した場合のみ実行できる。本番相当の環境を誤って実行しないためのガードレールで、`$protected` はテンプレート変数(<code v-pre>{{...}}</code>)としては参照できない。`klaus ui` / server API 経由のフロー実行はこのフラグを渡さないため、常に拒否される
+- `$protected: readonly` はより緩いモード: `--allow-protected` なしでは `GET` / `HEAD` / `OPTIONS` のステップは実行され、それ以外のメソッド(および WebSocket)は exit 3 で拒否される。GraphQL ステップは既定で `POST` のため拒否される。[CLI リファレンス](cli.md#保護環境-protected)を参照
+- `$protected` はファイル直接編集でのみ設定・解除する。`klaus ui` の環境エディタには表示されず、保護環境(`true` / `readonly`)への UI からの保存は 403 で拒否されるため、ファイルを直接編集すること
 
 ## tags
 

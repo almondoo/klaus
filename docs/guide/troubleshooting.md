@@ -80,6 +80,32 @@ environment "production" is protected ($protected: true) and refuses execution b
 
 **Fix**: if running against this environment is intentional, pass `--allow-protected` to `klaus run`. Note that `klaus ui` / the server API never accept this flag — protected environments are always refused there, with no override. See [File Structure](flow-definition.md#file-structure).
 
+For `$protected: readonly` environments, only `GET` / `HEAD` / `OPTIONS` are allowed without the flag. Any other method is refused with:
+
+```
+environment "production" is protected ($protected: readonly) and only allows GET, HEAD, and OPTIONS by default; refusing POST. Pass --allow-protected to run against this environment intentionally.
+```
+
+A `GET` carrying a method-override header (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`) is refused with:
+
+```
+environment "production" is protected ($protected: readonly) and refuses requests carrying the x-http-method-override header, which can turn a read into a write. Pass --allow-protected to run against this environment intentionally.
+```
+
+The fix is the same (`--allow-protected`), or switch the step to a safe method. GraphQL steps default to `POST`, so they are refused too. See [Protected environments](cli.md#protected-environments-protected).
+
+### "host \"X\" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request."
+
+**Symptom**
+
+```
+host "api.other.com" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request.
+```
+
+**Cause**: `klaus.config.yaml` sets `guard.allowedHosts`, and the step's URL (after template expansion) points to a host that matches none of the entries. Note that `*.example.com` does not match `example.com` itself, and an entry with a port matches only that port.
+
+**Fix**: if the host is intended, add it to `guard.allowedHosts` in `klaus.config.yaml` (restart `klaus ui` if it is running); otherwise fix the URL. There is no CLI flag to bypass the check. See [Host allowlist](config.md#host-allowlist-guard-allowedhosts).
+
 ## `--record` / `--replay` errors (exit code 3)
 
 ### "no recorded response for \"METHOD url\" in replay mode. ..." / "failed to read cassette file ... for replay mode: ..."
@@ -111,6 +137,18 @@ step "subscribe": SSE/WS steps are not supported in record/replay mode (HTTP onl
 **Fix**: run this flow without `--record`/`--replay`, or split the SSE/WS step out into a separate flow file that's run normally. See [SSE / WebSocket steps are not supported](record-replay.md#sse-websocket-steps-are-not-supported).
 
 ## `klaus ui` errors
+
+### "Forbidden: environment \"X\" is protected and cannot be edited via this API (edit the file directly)"
+
+**Symptom**: saving the environment editor, or the "save captured value to environment" action, fails with HTTP 403 and this message:
+
+```
+Forbidden: environment "production" is protected and cannot be edited via this API (edit the file directly)
+```
+
+**Cause**: the environment file has `$protected: true` or `$protected: readonly`. The UI is a route an agent may drive, so it cannot write to protected environments.
+
+**Fix**: edit `environments/<name>.yaml` directly in your editor. See [File Structure](flow-definition.md#file-structure).
 
 ### "... EADDRINUSE ... (port \<n\> is already in use; specify a different port with --port)"
 

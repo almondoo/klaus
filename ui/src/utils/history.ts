@@ -1,7 +1,7 @@
 import type { HistoryEntry } from "../api/client";
 
 /** ステップ単体の状態(HistoryEntry.status と同じ語彙) */
-export type HistoryStepStatus = "passed" | "failed" | "skipped";
+export type HistoryStepStatus = "passed" | "failed" | "skipped" | "error";
 
 /** 履歴ブラウザで使う run 単位のグループ(純関数。render 時に導出する派生値) */
 export interface HistoryRunGroup {
@@ -30,6 +30,7 @@ export function resolveStepStatus(entry: HistoryEntry): HistoryStepStatus {
 /**
  * グループ(run)全体の状態を、含まれる全ステップの状態から導出する。
  * - 1件でも "failed" があれば group は "failed"(skipped は failed に影響しない)
+ * - failed が無く "error"(安全柵による送信拒否)が1件でもあれば group は "error"
  * - failed が無く、全ステップが "skipped" なら group も "skipped"
  *   (全ステップがスキップされた run を "passed" と偽装せず、既存の "skipped" 語彙をそのまま使う)
  * - それ以外(skipped でないステップが1件でもあり、failed が無い)は "passed"
@@ -37,6 +38,7 @@ export function resolveStepStatus(entry: HistoryEntry): HistoryStepStatus {
 function resolveGroupStatus(steps: HistoryEntry[]): HistoryStepStatus {
   const stepStatuses = steps.map(resolveStepStatus);
   if (stepStatuses.some((s) => s === "failed")) return "failed";
+  if (stepStatuses.some((s) => s === "error")) return "error";
   if (stepStatuses.every((s) => s === "skipped")) return "skipped";
   return "passed";
 }

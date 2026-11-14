@@ -15,6 +15,8 @@ Documentation site: https://almondoo.github.io/klaus/
 - **Web UI**: `klaus ui` launches a localhost runner + history viewer alongside the CLI
 - **record/replay & OpenAPI generation**: `--record`/`--replay` for cassette-based testing, `klaus generate` to scaffold flows from an OpenAPI spec
 - **Agent-friendly output**: Failures can be identified from exit code alone. JSON output is the default in non-TTY environments
+- **Host allowlist**: `guard.allowedHosts` in `klaus.config.yaml` restricts which hosts requests may be sent to (no CLI flag to override)
+- **Read-only protected environments**: `$protected: readonly` lets only GET / HEAD / OPTIONS run without `--allow-protected`
 - **Local-first**: Execution history is appended to `.klaus/history/*.jsonl`. No cloud sync or account mechanism
 
 ## Installation

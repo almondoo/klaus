@@ -156,6 +156,8 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                         if (step.request) stepDetail.request = step.request;
                         if (step.response) stepDetail.response = step.response;
                         if (step.events) stepDetail.events = step.events;
+                        // 安全柵に拒否された(error)エントリは拒否理由を詳細に出す
+                        if (step.error) stepDetail.error = step.error;
                         const hasStepDetail = Object.keys(stepDetail).length > 0;
                         return (
                           <Fragment key={stepKey}>
@@ -177,7 +179,11 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                               </TableCell>
                               <TableCell className="font-mono text-muted-foreground">
                                 {/* skipped は HTTP レスポンスを持たないため、ステータスコードの代わりにその旨を表示する */}
-                                {step.response ? step.response.status : "スキップ"}
+                                {step.response
+                                  ? step.response.status
+                                  : stepStatus === "error"
+                                    ? "エラー"
+                                    : "スキップ"}
                               </TableCell>
                             </TableRow>
                             {stepExpanded && (

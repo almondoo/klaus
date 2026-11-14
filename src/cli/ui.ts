@@ -7,6 +7,7 @@
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { GuardOptions } from "../core/index.js";
 import type { StartServerOptions, StartServerResult } from "../server/index.js";
 
 export interface UiCommandOptions {
@@ -16,6 +17,8 @@ export interface UiCommandOptions {
   host?: string;
   /** commander の --no-open により、指定が無ければ true(ブラウザを開く) */
   open: boolean;
+  /** klaus.config.yaml の `guard`。サーバーの実行(フロー・単発リクエスト)に渡す。CLI フラグは設けない */
+  guard?: GuardOptions | undefined;
 }
 
 interface ServerModule {
@@ -79,7 +82,12 @@ export async function uiCommand(options: UiCommandOptions): Promise<void> {
 
   let startResult: StartServerResult;
   try {
-    startResult = await startServer({ port: options.port, host: options.host, cwd: process.cwd() });
+    startResult = await startServer({
+      port: options.port,
+      host: options.host,
+      cwd: process.cwd(),
+      guard: options.guard,
+    });
   } catch (error) {
     // 固定既定ポート(4884)化に伴い衝突しやすくなるため、EADDRINUSE には --port の案内を添える
     if (isErrnoException(error) && error.code === "EADDRINUSE") {

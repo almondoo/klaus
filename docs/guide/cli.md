@@ -27,7 +27,8 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 | `--no-mask` | Disables secret masking in stdout output (JSON/text) | masking enabled |
 | `--record <dir>` | Record mode: sends real HTTP requests and saves masked request/response pairs to a cassette in `<dir>` | — |
 | `--replay <dir>` | Replay mode: serves HTTP responses from the cassette in `<dir>` instead of the network (unrecorded requests fail with exit code 3). Cannot be combined with `--record` | — |
-| `--allow-protected` | Allow running against an environment file marked `$protected: true` (otherwise refused with exit code 3) | — |
+| `--allow-protected` | Allow running against an environment file marked `$protected: true` or `$protected: readonly` (otherwise refused with exit code 3; see "Protected environments" below) | — |
+| `--actor <name>` | Name recorded as `actor.name` in the history entries of this run (1-100 characters). `actor.kind` is still detected from the environment (see [Execution History](history.md#audit-fields)) | — |
 | `--data <path>` | Run data-driven: for each row in this JSON/YAML data file, run all given flow files once (see "Data-driven runs" below) | — |
 | `--tags <list>` | Comma-separated list of tags; only run flows whose `tags:` includes at least one of them (OR semantics; see "Tag-based flow selection" below) | — |
 | `--exclude-tags <list>` | Comma-separated list of tags; drop flows whose `tags:` includes any of them. Takes precedence over `--tags` | — |
@@ -35,7 +36,18 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 
 `--report` takes a comma-separated list of formats (entries are trimmed; each must be `junit` or `tap`). Passing an unknown or empty format entry prints an error to stderr and exits with 1. `--report` also rejects a duplicated format (e.g. `--report junit,junit`) and rejects `--report-file` values that resolve to the same output path across formats, both with an error to stderr and exit 1, since either would make two writes race on one file. With N formats given to `--report`, `--report-file` must be passed either **exactly N times** (in the same order, pairing the 1st `--report-file` with the 1st format and so on) or **not at all** (in which case each format is written to its own default filename: `klaus-report.xml` for `junit`, `klaus-report.tap` for `tap`). Any other count — e.g. one `--report-file` for two formats — is rejected with an error and exits with 1 without writing any file. This generalizes the single-format behavior: `--report junit` alone still defaults to `klaus-report.xml`, unchanged from before. Passing `--json` and `--text` together, or `-e`/`--env` and `--env-file` together, also prints an error to stderr and exits with 1 (nothing is run). This `-e`/`--env` + `--env-file` conflict only fires for an `-e`/`--env` **typed on the command line**; a `run.env` default coming from `klaus.config.yaml` yields to an explicit `--env-file` instead of conflicting with it (see [Default CLI options](config.md)).
 
-`--env-file` honors a `$protected: true` key in the loaded file exactly like a named environment: the run is refused with exit code 3 unless `--allow-protected` is also passed.
+`--env-file` honors a `$protected` key in the loaded file exactly like a named environment (see below).
+
+### Protected environments (`$protected`)
+
+| `$protected` | Without `--allow-protected` |
+|---|---|
+| `true` | Every step is refused (exit code 3) |
+| `readonly` | `GET` / `HEAD` / `OPTIONS` run normally; every other method and every WebSocket step is refused (exit code 3). GraphQL steps default to `POST`, so they are refused |
+
+For `readonly`, a `GET` / `HEAD` / `OPTIONS` request that carries a method-override header (`X-HTTP-Method-Override`, `X-HTTP-Method`, or `X-Method-Override`) is refused as well, since the server may treat it as a write. The check looks only at the HTTP method and these headers, so a GraphQL mutation sent via `GET` cannot be detected and is not refused.
+
+Passing `--allow-protected` lifts both. The refusal happens right before sending, so a refused step ends as `error` (exit code 3). `--replay` sends nothing, but the method check still applies. The separate [`guard.allowedHosts`](config.md#host-allowlist-guard-allowedhosts) allowlist in `klaus.config.yaml` has no CLI flag to override it. Both refusals exit with code 3, see [Troubleshooting](troubleshooting.md).
 
 `--var` values are **not** registered as secrets and are **not** masked in output, unlike <code v-pre>{{env.X}}</code> (OS environment variable references). If a value is a real secret, pass it through an OS environment variable and reference it as <code v-pre>{{env.X}}</code> instead, so it benefits from the masking described in [Execution History](history.md).
 
@@ -171,7 +183,7 @@ Pass a comma-separated list to `--report` (e.g. `--report junit,tap`) to generat
 | 0 | All passed |
 | 1 | General error (invalid CLI arguments, unexpected exception) |
 | 2 | Definition file parse error |
-| 3 | Runtime error (connection failure, timeout, capture failure, etc.) |
+| 3 | Runtime error (connection failure, timeout, capture failure, a step refused by `$protected` or `guard.allowedHosts`, etc.) |
 | 4 | Assertion failure |
 
 Details of the decision rules:

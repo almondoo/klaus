@@ -41,7 +41,9 @@ export {
   saveEnvironment,
 } from "./env.js";
 export * from "./errors.js";
-export type { HistoryEntry } from "./history.js";
+export type { AllowedHostPattern, GuardOptions } from "./guard.js";
+export { checkHostAllowed, isSafeMethod, parseAllowedHostEntry } from "./guard.js";
+export type { HistoryActor, HistoryEntry, HistoryGit } from "./history.js";
 export {
   appendHistory,
   expandSecretVariants,
@@ -57,6 +59,12 @@ export {
   resolveHistoryEntryStatus,
 } from "./history-query.js";
 export type { HttpRequestOptions, HttpResponse, RawHttpResponse } from "./http.js";
+/**
+ * 注意: sendRawRequest / sendRequest は低レベルの送信関数で、安全柵(guard.allowedHosts・
+ * $protected)の判定を行わない(設計上の仕様)。判定が効くのは runFlow / runFlows / runLoadedFlows /
+ * executeFlow / executeSingleRequest など、runner.ts のエントリポイント経由の実行のみ。
+ * ライブラリとして直接呼ぶ場合は、呼び出し側で送信先を検証すること。
+ */
 export { DEFAULT_TIMEOUT_MS, sendRawRequest, sendRequest } from "./http.js";
 export type { FlowIssue, FlowValidationResult } from "./loader.js";
 export {
@@ -133,9 +141,17 @@ export {
   wsSendItemSchema,
 } from "./schema.js";
 export type { SseResult } from "./sse.js";
+/**
+ * 注意: receiveSse は低レベルの受信関数で、安全柵(guard.allowedHosts・$protected)の判定を行わない。
+ * 判定が効くのは runFlow / runFlows / runLoadedFlows / executeFlow / executeSingleRequest 経由の実行のみ。
+ */
 export { receiveSse } from "./sse.js";
 export type { TemplateContext } from "./template.js";
 export { renderDeep, renderHeaders, renderString } from "./template.js";
 export * from "./types.js";
 export type { WsConnectOptions, WsConnectResult } from "./ws.js";
+/**
+ * 注意: connectWebSocket は低レベルの接続関数で、安全柵(guard.allowedHosts・$protected)の判定を行わない。
+ * 判定が効くのは runFlow / runFlows / runLoadedFlows / executeFlow / executeSingleRequest 経由の実行のみ。
+ */
 export { connectWebSocket } from "./ws.js";

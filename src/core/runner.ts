@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { basename } from "node:path";
 import { JSONPath } from "jsonpath-plus";
 import { evaluateAssertions } from "./assert.js";
 import {
@@ -11,10 +12,16 @@ import {
 } from "./cassette.js";
 import { evaluateCondition } from "./condition.js";
 import type { DataRow } from "./data.js";
-import { isProtectedEnvironment, loadEnvironment, toTemplateVariables } from "./env.js";
-import { KlausError, RuntimeError } from "./errors.js";
-import type { HistoryEntry } from "./history.js";
-import { appendHistory, maskHistoryEntry } from "./history.js";
+import { getProtectedMode, loadEnvironment, toTemplateVariables } from "./env.js";
+import { GuardRefusalError, KlausError, RuntimeError } from "./errors.js";
+import {
+  checkHostAllowed,
+  findMethodOverrideHeader,
+  type GuardOptions,
+  isSafeMethod,
+} from "./guard.js";
+import type { HistoryActor, HistoryEntry, HistoryGit } from "./history.js";
+import { appendHistory, maskHistoryEntry, toHistoryFilePath } from "./history.js";
 import type { HttpRequestOptions, HttpResponse } from "./http.js";
 import { sendRequest } from "./http.js";
 import { loadFlow } from "./loader.js";
@@ -88,6 +95,16 @@ export interface RunFlowOptions {
    * 保護環境は常に拒否される)。呼び出し元(CLI オプション等)から明示的に undefined が渡ることがある
    */
   allowProtected?: boolean | undefined;
+  /**
+   * 送信先ホストの許可リストなどの安全柵。呼び出し元(CLI・server)が klaus.config.yaml の `guard` を
+   * 読んで渡す(core は設定ファイルを読まない)。未指定なら制限なし。--allow-protected のような
+   * 上書き手段は設けない。判定は送信直前のテンプレート展開後 URL に対して行う(--replay 時は送信しないため対象外)
+   */
+  guard?: GuardOptions | undefined;
+  /** 履歴エントリの actor に記録する実行主体。core は推定せず、呼び出し元が渡した値をそのまま記録する */
+  actor?: HistoryActor | undefined;
+  /** 履歴エントリの git に記録する実行時点の git の状態。core は取得せず、呼び出し元が渡した値をそのまま記録する */
+  git?: HistoryGit | undefined;
   /** 複数フローをまとめて runId で紐付けたい場合に指定する */
   runId?: string;
   history?: boolean | ((entry: HistoryEntry) => void | Promise<void>);
@@ -302,7 +319,7 @@ function buildHistoryBase(
   step: string,
   startedAt: string,
   durationMs: number,
-  status: "passed" | "failed" | "skipped",
+  status: "passed" | "failed" | "skipped" | "error",
   /** --data 実行時のみ設定する 1 始まりのイテレーション番号(RunFlowOptions.iteration をそのまま伝播させる) */
   iteration?: number,
 ): Pick<
@@ -337,6 +354,57 @@ function buildStepResultBase(
 
 type HistorySink = (entry: HistoryEntry) => void | Promise<void>;
 
+/** executeStep が送信直前に参照する安全柵の状態(環境の保護モードと送信先の許可リスト) */
+interface StepGuard {
+  /** $protected: true の環境へ --allow-protected なしで実行しようとした場合の拒否エラー(全ステップを拒否する) */
+  blockedError?: GuardRefusalError;
+  /**
+   * $protected: "readonly" の環境へ --allow-protected なしで実行する場合の環境表示名。
+   * 設定されている間は GET / HEAD / OPTIONS 以外の送信(WebSocket を含む)を送信直前に拒否する
+   */
+  readonlyEnvName?: string;
+  /** 送信先ホストの許可リスト等(RunFlowOptions.guard / ExecuteSingleRequestOptions.guard) */
+  options?: GuardOptions;
+}
+
+/**
+ * 送信(接続)直前の安全柵判定。違反時は GuardRefusalError を投げ、executeStep の catch で
+ * ステップ error(exit 3)になり、監査のため履歴にも記録される。
+ * 判定順は「保護環境(true)の全面拒否 → 読み取り専用モードのメソッド → メソッド上書きヘッダー → 送信先ホスト」。
+ * method はテンプレート展開後の実際に送るメソッド(WS ステップは "WS")。
+ * skipHostCheck は --replay 用(実送信がないため送信先ホストを判定しない)。
+ */
+function assertSendAllowed(
+  stepGuard: StepGuard | undefined,
+  method: string,
+  url: string,
+  headers: Record<string, string> | undefined,
+  skipHostCheck: boolean,
+): void {
+  if (!stepGuard) return;
+  if (stepGuard.blockedError) throw stepGuard.blockedError;
+  if (stepGuard.readonlyEnvName !== undefined && !isSafeMethod(method)) {
+    throw new GuardRefusalError(
+      `environment "${stepGuard.readonlyEnvName}" is protected ($protected: readonly) and only allows GET, HEAD, and OPTIONS by default; ` +
+        `refusing ${method === "WS" ? "WebSocket" : method}. ` +
+        "Pass --allow-protected to run against this environment intentionally.",
+    );
+  }
+  // 安全メソッドの GET でも、サーバー側のメソッド上書きヘッダーで書き込みに化けさせられるため拒否する
+  const overrideHeader =
+    stepGuard.readonlyEnvName !== undefined ? findMethodOverrideHeader(headers) : undefined;
+  if (overrideHeader !== undefined) {
+    throw new GuardRefusalError(
+      `environment "${stepGuard.readonlyEnvName}" is protected ($protected: readonly) and refuses requests carrying the ${overrideHeader} header, which can turn a read into a write. ` +
+        "Pass --allow-protected to run against this environment intentionally.",
+    );
+  }
+  if (!skipHostCheck) {
+    const hostError = checkHostAllowed(url, stepGuard.options);
+    if (hostError) throw hostError;
+  }
+}
+
 /** 指定ミリ秒だけ待つ(step.retry の試行間隔に使う) */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -354,11 +422,11 @@ async function executeStep(
   flowName: string,
   recording: ActiveRecording | undefined,
   /**
-   * 保護環境($protected: true かつ未許可)への実行を検知した場合の RuntimeError。
-   * 指定されている場合、リクエスト送信前にこれを投げてステップを error にする
+   * 保護環境の拒否・読み取り専用モード・送信先ホスト許可リストの判定に使う安全柵の状態。
+   * blockedError が指定されている場合、リクエスト送信前にこれを投げてステップを error にする
    * (record/replay モードで replayLoadError を遅延して投げるのと同じ考え方)。
    */
-  blockedError?: RuntimeError,
+  stepGuard?: StepGuard,
   /** --data 実行時のみ設定する 1 始まりのイテレーション番号(historyEntry.iteration に伝播させる) */
   iteration?: number,
 ): Promise<{
@@ -399,11 +467,6 @@ async function executeStep(
   };
 
   try {
-    // 保護環境への実行が拒否されている場合、リクエストを送らずここでステップ error にする
-    if (blockedError) {
-      throw blockedError;
-    }
-
     // record/replay モードは HTTP のみ対応(SSE/WS は初版スコープ外)。
     // 黙って実ネットワークへ素通しせず、ここで明示的な RuntimeError にしてステップ error にする。
     if (recording && (step.ws || isSseStep(step))) {
@@ -431,6 +494,9 @@ async function executeStep(
         headers,
         body: sendItems.length > 0 ? sendItems : undefined,
       };
+
+      // 送信(接続)直前の判定。WebSocket は読み取り専用の保護環境でも常に拒否する(record/replay は WS 非対応)
+      assertSendAllowed(stepGuard, "WS", url, headers, false);
 
       const wsResult = await connectWebSocket({
         url,
@@ -487,6 +553,8 @@ async function executeStep(
     requestSnapshot = { method, url, headers, body };
 
     if (isSseStep(step)) {
+      // SSE は HTTP メソッドに従う(record/replay は SSE 非対応のため、ここでは常に実送信になる)
+      assertSendAllowed(stepGuard, method, url, headers, false);
       const sseResult = await receiveSse(
         { method, url, headers, body, timeoutMs: request.timeoutMs },
         step.sse,
@@ -513,6 +581,11 @@ async function executeStep(
       return finish(requestSnapshot, sseResult.durationMs, assertions, {}, extra, extra);
     }
 
+    // 送信直前の判定(テンプレート展開後のメソッド・URL に対して行う)。
+    // replay では実送信がないため送信先ホストは判定しない(record は実際に送るため判定する)。
+    // 注意: 現在はリダイレクトを追従しないため再判定は不要。リダイレクト追従を導入する場合は、
+    // 追従先の URL に対しても同じ判定(assertSendAllowed)を必ず行うこと。
+    assertSendAllowed(stepGuard, method, url, headers, recording?.mode === "replay");
     const response = await resolveHttpResponse(
       recording,
       { method, url, headers, body, timeoutMs: request.timeoutMs },
@@ -548,6 +621,20 @@ async function executeStep(
       assertions: [],
       error: message,
     };
+    // 安全柵による拒否は監査のため履歴にも残す(送信しようとした内容は masked 済みで request に入る)。
+    // それ以外の実行時エラー(接続不能・タイムアウト等)は従来どおり履歴に書かない
+    if (error instanceof GuardRefusalError) {
+      return {
+        result: stepResult,
+        captured: {},
+        historyEntry: {
+          ...buildHistoryBase(runId, flowName, step.name, startedAt, 0, "error", iteration),
+          ...(requestSnapshot ? { request: requestSnapshot } : {}),
+          assertions: [],
+          error: message,
+        },
+      };
+    }
     return { result: stepResult, captured: {} };
   }
 }
@@ -576,7 +663,8 @@ function aggregateStatus(statuses: AggregatableStatus[]): "passed" | "failed" | 
 }
 
 /**
- * 環境が $protected: true かつ許可されていない場合に、ステップへ伝播させる RuntimeError を返す。
+ * 環境が $protected: true かつ許可されていない場合に、ステップへ伝播させる RuntimeError を返す
+ * ("readonly" は全面拒否ではなく送信直前にメソッドで判定するため、ここでは undefined を返す)。
  * ここでは投げずに返すだけにし、呼び出し元がリクエスト送信前の executeStep に渡すことで、
  * 各ステップが既存の RuntimeError → ステップ error(exit 3)の経路に自然に乗るようにする
  * (record/replay モードの replayLoadError と同じ「検知は早期・エラー化は遅延」という設計)。
@@ -586,12 +674,58 @@ function checkEnvironmentAllowed(
   envName: string | undefined,
   environment: Environment,
   allowProtected: boolean | undefined,
-): RuntimeError | undefined {
-  if (!isProtectedEnvironment(environment) || allowProtected) return undefined;
-  return new RuntimeError(
+): GuardRefusalError | undefined {
+  if (getProtectedMode(environment) !== true || allowProtected) return undefined;
+  return new GuardRefusalError(
     `environment "${envName}" is protected ($protected: true) and refuses execution by default. ` +
       "Pass --allow-protected to run against this environment intentionally.",
   );
+}
+
+/**
+ * 環境の保護モード・許可リストから、executeStep に渡す安全柵の状態を組み立てる。
+ * 何も制限がなければ undefined(従来どおりの経路)。
+ */
+function buildStepGuard(
+  envName: string | undefined,
+  environment: Environment,
+  allowProtected: boolean | undefined,
+  guard: GuardOptions | undefined,
+): StepGuard | undefined {
+  const blockedError = checkEnvironmentAllowed(envName, environment, allowProtected);
+  const readonlyEnvName =
+    getProtectedMode(environment) === "readonly" && !allowProtected ? String(envName) : undefined;
+  if (!blockedError && readonlyEnvName === undefined && guard?.allowedHosts === undefined) {
+    return undefined;
+  }
+  return {
+    ...(blockedError ? { blockedError } : {}),
+    ...(readonlyEnvName !== undefined ? { readonlyEnvName } : {}),
+    ...(guard ? { options: guard } : {}),
+  };
+}
+
+/**
+ * 履歴エントリへ付与する監査項目(env / file / actor / git)を組み立てる。
+ * file は cwd からの相対パス(POSIX 区切り)にし、絶対パスは記録しない。
+ * env は --env-file 指定時はそのファイル名のみ(ディレクトリを含む絶対パスを残さないため)。
+ */
+function buildAuditFields(
+  cwd: string,
+  filePath: string | undefined,
+  envName: string | undefined,
+  envFilePath: string | undefined,
+  actor: HistoryActor | undefined,
+  git: HistoryGit | undefined,
+): Pick<HistoryEntry, "env" | "file" | "actor" | "git"> {
+  const env = envFilePath !== undefined ? basename(envFilePath) : envName;
+  const file = filePath !== undefined ? toHistoryFilePath(cwd, filePath) : undefined;
+  return {
+    ...(env !== undefined ? { env } : {}),
+    ...(file !== undefined ? { file } : {}),
+    ...(actor ? { actor } : {}),
+    ...(git ? { git } : {}),
+  };
 }
 
 /**
@@ -627,10 +761,19 @@ export async function executeFlow(
   );
   // 保護環境チェックの表示名は、--env-file 指定時はそのファイルパスを使う(名前付き環境と同様、
   // 何を保護対象と判定したかが利用者に伝わるようにするため)
-  const protectedBlockedError = checkEnvironmentAllowed(
+  const stepGuard = buildStepGuard(
     options.envFilePath ?? options.envNameOverride ?? flow.env,
     environment,
     options.allowProtected,
+    options.guard,
+  );
+  const auditFields = buildAuditFields(
+    cwd,
+    filePath,
+    options.envNameOverride ?? flow.env,
+    options.envFilePath,
+    options.actor,
+    options.git,
   );
   const historySink = resolveHistorySink(cwd, options.history);
 
@@ -761,7 +904,7 @@ export async function executeFlow(
             runId,
             flow.name,
             activeRecording,
-            protectedBlockedError,
+            stepGuard,
             options.iteration,
           );
         } while (
@@ -787,7 +930,7 @@ export async function executeFlow(
     // 失敗してもステップの status は変えず、onWarning で通知するだけに留める。
     if (historySink && historyEntry) {
       // デフォルトシンク・カスタムシンクのいずれにも、必ずマスク済みのエントリを渡す
-      const maskedEntry = maskHistoryEntry(historyEntry, [...secrets]);
+      const maskedEntry = maskHistoryEntry({ ...historyEntry, ...auditFields }, [...secrets]);
       try {
         await historySink(maskedEntry);
       } catch (error) {
@@ -1021,6 +1164,12 @@ export interface ExecuteSingleRequestOptions {
   envName?: string | undefined;
   /** 履歴書き込みの有無。既定は true(executeFlow の DEFAULT_HISTORY と同じ) */
   history?: boolean;
+  /** 送信先ホストの許可リストなどの安全柵。RunFlowOptions.guard と同じ意味・同じ判定を通る */
+  guard?: GuardOptions | undefined;
+  /** 履歴エントリの actor に記録する実行主体(RunFlowOptions.actor と同じ) */
+  actor?: HistoryActor | undefined;
+  /** 履歴エントリの git に記録する実行時点の git の状態(RunFlowOptions.git と同じ) */
+  git?: HistoryGit | undefined;
   /**
    * 実行完了時に、収集済みの secrets({{env.X}} で解決した値)を呼び出し元へ渡すコールバック。
    * RunFlowOptions.onSecrets と同じ用途・シグネチャ。未指定の場合は何もしない。
@@ -1045,9 +1194,10 @@ export async function executeSingleRequest(
   const cwd = options.cwd ?? process.cwd();
   const request = requestSchema.parse(options.request);
   const environment = await loadEnvironment(cwd, undefined, options.envName);
-  // 単発実行(server/UI 経由)は allowProtected を受け取らないため、保護環境は常に拒否される
-  // (v1 の意図的な挙動。--allow-protected は CLI の run コマンド専用)
-  const protectedBlockedError = checkEnvironmentAllowed(options.envName, environment, undefined);
+  // 単発実行は allowProtected を受け取らないため、$protected: true の環境は常に拒否される
+  // (v1 の意図的な挙動。--allow-protected は CLI の run コマンド専用)。
+  // $protected: "readonly" の環境は安全メソッド(GET / HEAD / OPTIONS)のみ許可する
+  const stepGuard = buildStepGuard(options.envName, environment, undefined, options.guard);
   const runId = randomUUID();
   const flowName = "(single)";
   const captures: Record<string, unknown> = {};
@@ -1060,20 +1210,22 @@ export async function executeSingleRequest(
   const step: Step = { name: "request", request };
 
   // 単発実行(UI からの単発リクエスト実行)は record/replay の対象外(フロー実行専用機能のため)
-  const outcome = await executeStep(
-    step,
-    templateContext,
-    runId,
-    flowName,
-    undefined,
-    protectedBlockedError,
-  );
+  const outcome = await executeStep(step, templateContext, runId, flowName, undefined, stepGuard);
 
   const shouldWriteHistory = options.history ?? DEFAULT_HISTORY;
   if (shouldWriteHistory && outcome.historyEntry) {
-    const maskedEntry = maskHistoryEntry({ ...outcome.historyEntry, source: "single" }, [
-      ...secrets,
-    ]);
+    const auditFields = buildAuditFields(
+      cwd,
+      undefined,
+      options.envName,
+      undefined,
+      options.actor,
+      options.git,
+    );
+    const maskedEntry = maskHistoryEntry(
+      { ...outcome.historyEntry, source: "single", ...auditFields },
+      [...secrets],
+    );
     try {
       await appendHistory(cwd, maskedEntry);
     } catch {

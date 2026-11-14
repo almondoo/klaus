@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   EnvironmentNotFoundError,
+  getProtectedMode,
   isProtectedEnvironment,
   loadEnvironment,
   resolveEnvironmentPath,
@@ -325,6 +326,15 @@ describe("isProtectedEnvironment / toTemplateVariables", () => {
       baseUrl: "http://localhost:3000",
     });
     expect(isProtectedEnvironment(environment)).toBe(true);
+  });
+
+  it('$protected: "readonly" の環境は保護対象で、モードは "readonly"、true は true になる', () => {
+    const readonly = environmentSchema.parse({ $protected: "readonly", baseUrl: "http://x" });
+    expect(isProtectedEnvironment(readonly)).toBe(true);
+    expect(getProtectedMode(readonly)).toBe("readonly");
+    expect(getProtectedMode(environmentSchema.parse({ $protected: true }))).toBe(true);
+    expect(getProtectedMode(environmentSchema.parse({ $protected: false }))).toBe(false);
+    expect(Object.hasOwn(toTemplateVariables(readonly), "$protected")).toBe(false);
   });
 
   it("$protected が無い/false の環境は保護対象と判定しない", () => {

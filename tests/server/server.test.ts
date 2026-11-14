@@ -757,6 +757,12 @@ describe("klaus server", () => {
         "$protected: true\nbaseUrl: http://localhost:4000\ntoken: secret-token\n",
         "utf-8",
       );
+      // $protected: readonly の環境ファイル(UI からの書き込みは true と同様に拒否される)
+      await writeFile(
+        join(dir, "environments", "protected-readonly.yaml"),
+        "$protected: readonly\nbaseUrl: http://localhost:4000\ntoken: secret-token\n",
+        "utf-8",
+      );
       server = await startServer({ cwd: dir, port: 0 });
       apiBase = `http://127.0.0.1:${server.port}`;
     });
@@ -947,27 +953,65 @@ describe("klaus server", () => {
       });
     });
 
-    it("PUT /api/environments/:name: $protected を持つ環境の他キー更新後もファイルに $protected: true が残る", async () => {
+    it.each([
+      ["protected", "$protected: true"],
+      ["protected-readonly", "$protected: readonly"],
+    ])(
+      "PUT /api/environments/:name: 保護環境(%s)への書き込みは 403 で拒否され、ファイルは変更されない",
+      async (name, marker) => {
+        const filePath = join(dir, "environments", `${name}.yaml`);
+        const beforeContent = await readFile(filePath, "utf-8");
+
+        const res = await fetch(`${apiBase}/api/environments/${name}`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Klaus-Token": server.token,
+            Cookie: `klaus_token=${server.token}`,
+          },
+          body: JSON.stringify({ values: { baseUrl: "http://localhost:9000" } }),
+        });
+
+        expect(res.status).toBe(403);
+        expect(await res.text()).toBe(
+          `Forbidden: environment "${name}" is protected and cannot be edited via this API (edit the file directly)`,
+        );
+        const afterContent = await readFile(filePath, "utf-8");
+        expect(afterContent).toBe(beforeContent);
+        expect(afterContent).toContain(marker);
+      },
+    );
+
+    it("PUT /api/environments/:name: 保護環境でも Cookie(CSRF)が無ければ保護判定より先に 403 で拒否される", async () => {
       const res = await fetch(`${apiBase}/api/environments/protected`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", "X-Klaus-Token": server.token },
+        body: JSON.stringify({ values: { baseUrl: "http://localhost:9000" } }),
+      });
+      expect(res.status).toBe(403);
+      expect(await res.text()).toContain("CSRF");
+    });
+
+    it("PUT /api/environments/:name: 保護状態を判定できない(スキーマ違反の)環境ファイルは fail closed で 400", async () => {
+      await writeFile(
+        join(dir, "environments", "broken.yaml"),
+        "$protected: true\nport: 3000\n",
+        "utf-8",
+      );
+
+      const res = await fetch(`${apiBase}/api/environments/broken`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
           "X-Klaus-Token": server.token,
           Cookie: `klaus_token=${server.token}`,
         },
-        body: JSON.stringify({ values: { baseUrl: "http://localhost:9000" } }),
-      });
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({
-        name: "protected",
-        values: { baseUrl: "http://localhost:9000" },
+        body: JSON.stringify({ values: { port: "3000" } }),
       });
 
-      const content = await readFile(join(dir, "environments", "protected.yaml"), "utf-8");
+      expect(res.status).toBe(400);
+      const content = await readFile(join(dir, "environments", "broken.yaml"), "utf-8");
       expect(content).toContain("$protected: true");
-      expect(content).toContain("baseUrl: http://localhost:9000");
-      // token は送信 values に含まれなかったため削除される($protected と異なり通常キーの挙動は不変)
-      expect(content).not.toContain("token: secret-token");
     });
   });
 
@@ -990,6 +1034,16 @@ describe("klaus server", () => {
       const readonlyPath = join(dir, "environments", "readonly-capture.yaml");
       await writeFile(readonlyPath, "baseUrl: http://localhost:4000\n", "utf-8");
       await chmod(readonlyPath, 0o444);
+      await writeFile(
+        join(dir, "environments", "protected-true.yaml"),
+        "$protected: true\nbaseUrl: http://localhost:4000\n",
+        "utf-8",
+      );
+      await writeFile(
+        join(dir, "environments", "protected-readonly.yaml"),
+        "$protected: readonly\nbaseUrl: http://localhost:4000\n",
+        "utf-8",
+      );
       server = await startServer({ cwd: dir, port: 0 });
       apiBase = `http://127.0.0.1:${server.port}`;
     });
@@ -1132,6 +1186,26 @@ describe("klaus server", () => {
       expect(afterContent).toBe(beforeContent);
     });
 
+    it.each(["protected-true", "protected-readonly"])(
+      "保護環境(%s)への capture は 403 で拒否され、ファイルは変更されない",
+      async (name) => {
+        const filePath = join(dir, "environments", `${name}.yaml`);
+        const beforeContent = await readFile(filePath, "utf-8");
+
+        const res = await postCapture(name, {
+          key: "token",
+          path: "$.token",
+          json: { token: "abc123" },
+        });
+
+        expect(res.status).toBe(403);
+        expect(await res.text()).toBe(
+          `Forbidden: environment "${name}" is protected and cannot be edited via this API (edit the file directly)`,
+        );
+        expect(await readFile(filePath, "utf-8")).toBe(beforeContent);
+      },
+    );
+
     it("ファイル書き込みに失敗すると EnvironmentNotFoundError 以外の例外は 500 で rethrow される", async () => {
       const res = await postCapture("readonly-capture", {
         key: "token",
@@ -1139,6 +1213,197 @@ describe("klaus server", () => {
         json: { token: "abc123" },
       });
       expect(res.status).toBe(500);
+    });
+  });
+
+  describe("guard.allowedHosts(startServer の guard オプション)", () => {
+    let dir: string;
+    let server: StartServerResult;
+    let apiBase: string;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(join(tmpRoot, "klaus-server-guard-"));
+      await writeFile(
+        join(dir, "flow.yaml"),
+        [
+          "name: guarded flow",
+          "steps:",
+          "  - name: step1",
+          "    request:",
+          "      method: GET",
+          `      url: "${fixture.baseUrl}/step1"`,
+          "",
+        ].join("\n"),
+        "utf-8",
+      );
+      await mkdir(join(dir, "environments"), { recursive: true });
+      await writeFile(
+        join(dir, "environments", "stg.yaml"),
+        `$protected: readonly\nbaseUrl: ${fixture.baseUrl}\n`,
+        "utf-8",
+      );
+      server = await startServer({
+        cwd: dir,
+        port: 0,
+        guard: { allowedHosts: ["api.example.com"] },
+      });
+      apiBase = `http://127.0.0.1:${server.port}`;
+    });
+
+    afterAll(async () => {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    function post(path: string, body: unknown) {
+      return fetch(`${apiBase}${path}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": server.token,
+          Cookie: `klaus_token=${server.token}`,
+        },
+        body: JSON.stringify(body),
+      });
+    }
+
+    it("POST /api/runs: 許可リストに無いホストへのステップは送信されず error になる", async () => {
+      const res = await post("/api/runs", { path: "flow.yaml" });
+      expect(res.status).toBe(200);
+
+      const events = await collectSseEvents(res);
+      const runResult = events.at(-1)?.data as {
+        flow: { status: string; steps: Array<{ status: string; error?: string }> };
+      };
+      expect(runResult.flow.status).toBe("error");
+      expect(runResult.flow.steps[0]?.status).toBe("error");
+      expect(runResult.flow.steps[0]?.error).toContain("guard.allowedHosts");
+    });
+
+    it("POST /api/request: 許可リストに無いホストへの単発リクエストは error になる", async () => {
+      const res = await post("/api/request", {
+        request: { method: "GET", url: `${fixture.baseUrl}/step1` },
+      });
+      expect(res.status).toBe(200);
+
+      const payload = (await res.json()) as { result: { status: string; error?: string } };
+      expect(payload.result.status).toBe("error");
+      expect(payload.result.error).toContain("guard.allowedHosts");
+    });
+
+    it('POST /api/request: $protected: "readonly" の環境でも guard は独立に効き、POST は readonly 側の理由で拒否される', async () => {
+      // 許可リスト外のため GET もホストで拒否される(readonly とは独立に guard が効く)
+      const get = await post("/api/request", {
+        request: { method: "GET", url: "{{baseUrl}}/step1" },
+        env: "stg",
+      });
+      const getPayload = (await get.json()) as { result: { error?: string } };
+      expect(getPayload.result.error).toContain("guard.allowedHosts");
+
+      const postRes = await post("/api/request", {
+        request: { method: "POST", url: "{{baseUrl}}/step1" },
+        env: "stg",
+      });
+      const postPayload = (await postRes.json()) as { result: { error?: string } };
+      expect(postPayload.result.error).toContain("refusing POST");
+    });
+  });
+
+  describe('$protected: "readonly"(guard なしの startServer)', () => {
+    let dir: string;
+    let server: StartServerResult;
+
+    beforeAll(async () => {
+      dir = await mkdtemp(join(tmpRoot, "klaus-server-readonly-"));
+      await mkdir(join(dir, "environments"), { recursive: true });
+      await writeFile(
+        join(dir, "environments", "stg.yaml"),
+        "$protected: readonly\nbaseUrl: x\n",
+        "utf-8",
+      );
+      for (const method of ["GET", "POST"]) {
+        await writeFile(
+          join(dir, `${method.toLowerCase()}-flow.yaml`),
+          [
+            `name: ${method} flow`,
+            "env: stg",
+            "steps:",
+            "  - name: call",
+            "    request:",
+            `      method: ${method}`,
+            `      url: "${fixture.baseUrl}/step1"`,
+            "",
+          ].join("\n"),
+          "utf-8",
+        );
+      }
+      server = await startServer({ cwd: dir, port: 0 });
+    });
+
+    afterAll(async () => {
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    });
+
+    async function runFlowViaApi(path: string) {
+      const res = await fetch(`http://127.0.0.1:${server.port}/api/runs`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": server.token,
+          Cookie: `klaus_token=${server.token}`,
+        },
+        body: JSON.stringify({ path }),
+      });
+      const events = await collectSseEvents(res);
+      const last = events.at(-1)?.data as {
+        flow: { steps: Array<{ status: string; error?: string }> };
+      };
+      return last.flow.steps[0];
+    }
+
+    it("POST /api/runs: POST を含むフローは UI 経由でも拒否される(--allow-protected を渡せないため)", async () => {
+      const step = await runFlowViaApi("post-flow.yaml");
+
+      expect(step?.status).toBe("error");
+      expect(step?.error).toContain("refusing POST");
+    });
+
+    it("POST /api/runs: GET のみのフローは readonly でも実行できる", async () => {
+      const step = await runFlowViaApi("get-flow.yaml");
+
+      expect(step?.status).toBe("passed");
+    });
+  });
+
+  describe("UI 起点の履歴の監査項目", () => {
+    it("POST /api/runs と POST /api/request の履歴は actor.kind が human で、file は cwd 相対パスになる", async () => {
+      const runRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": klaus.token,
+          Cookie: `klaus_token=${klaus.token}`,
+        },
+        body: JSON.stringify({ path: "success.yaml" }),
+      });
+      await collectSseEvents(runRes);
+      await fetch(`${base}/api/request`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": klaus.token,
+          Cookie: `klaus_token=${klaus.token}`,
+        },
+        body: JSON.stringify({ request: { method: "GET", url: `${fixture.baseUrl}/step1` } }),
+      });
+
+      const entries = await readAllHistoryEntries(workDir);
+      const flowEntry = entries.find((entry) => entry.flow === "success flow");
+      const singleEntry = entries.find((entry) => entry.source === "single");
+      expect(flowEntry?.actor).toEqual({ kind: "human" });
+      expect(flowEntry?.file).toBe("success.yaml");
+      expect(singleEntry?.actor).toEqual({ kind: "human" });
     });
   });
 

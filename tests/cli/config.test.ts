@@ -5,6 +5,7 @@ import {
   applyConfigToRunOptions,
   applyConfigToUiOptions,
   loadCliConfig,
+  resolveGuardOptions,
 } from "../../src/cli/config.js";
 import type { RunCommandOptions } from "../../src/cli/run.js";
 import type { UiCommandOptions } from "../../src/cli/ui.js";
@@ -95,6 +96,48 @@ describe("loadCliConfig", () => {
 
   it("ui.port が範囲外の場合はスキーマ違反として拒否する", async () => {
     await writeFile(join(root, "klaus.config.yaml"), "ui:\n  port: 0\n", "utf-8");
+
+    await expect(loadCliConfig(root)).rejects.toThrow(ParseError);
+  });
+
+  it("guard.allowedHosts を読み込み、resolveGuardOptions が core 用の GuardOptions に変換する", async () => {
+    await writeFile(
+      join(root, "klaus.config.yaml"),
+      'guard:\n  allowedHosts:\n    - api.example.com\n    - "*.example.org"\n    - "localhost:3000"\n',
+      "utf-8",
+    );
+
+    const config = await loadCliConfig(root);
+    expect(resolveGuardOptions(config)).toEqual({
+      allowedHosts: ["api.example.com", "*.example.org", "localhost:3000"],
+    });
+  });
+
+  it("guard が無い config / config 自体が無い場合、resolveGuardOptions は undefined(制限なし)", async () => {
+    await writeFile(join(root, "klaus.config.yaml"), "run:\n  env: local\n", "utf-8");
+
+    expect(resolveGuardOptions(await loadCliConfig(root))).toBeUndefined();
+    expect(resolveGuardOptions(undefined)).toBeUndefined();
+  });
+
+  it("guard.allowedHosts が空配列の場合はスキーマ違反として拒否する(曖昧なため)", async () => {
+    await writeFile(join(root, "klaus.config.yaml"), "guard:\n  allowedHosts: []\n", "utf-8");
+
+    await expect(loadCliConfig(root)).rejects.toThrow(ParseError);
+  });
+
+  it("guard.allowedHosts に書式不正のエントリがある場合はスキーマ違反として拒否する", async () => {
+    await writeFile(
+      join(root, "klaus.config.yaml"),
+      'guard:\n  allowedHosts:\n    - "https://api.example.com"\n',
+      "utf-8",
+    );
+
+    await expect(loadCliConfig(root)).rejects.toThrow(ParseError);
+  });
+
+  it("guard の未知キーはスキーマ違反として拒否する", async () => {
+    await writeFile(join(root, "klaus.config.yaml"), "guard:\n  blockedHosts: [a.com]\n", "utf-8");
 
     await expect(loadCliConfig(root)).rejects.toThrow(ParseError);
   });

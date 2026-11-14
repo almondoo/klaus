@@ -48,7 +48,7 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
   - \`--json\`: force JSON output even when running on a TTY
   - \`--report <list>\` / \`--report-file <path>\`: also write additional report formats, \`junit\` and/or \`tap\` (comma-separated)
   - \`--no-history\`: disable writing to the execution history (.klaus/history/*.jsonl)
-  - \`--allow-protected\`: required to run against an environment marked \`$protected: true\` (otherwise refused with exit code 3)
+  - \`--allow-protected\`: required to run against an environment marked \`$protected: true\`, and to send anything other than GET/HEAD/OPTIONS to one marked \`$protected: readonly\` (otherwise refused with exit code 3)
   - \`--record <dir>\` / \`--replay <dir>\`: record real HTTP request/response pairs to a cassette in \`<dir>\`, or replay them offline instead of hitting the network (mutually exclusive; \`--record\` cannot combine with \`--jobs\` > 1)
 - \`klaus validate [files...]\`: schema-validate flow YAML without executing (with no arguments, discovers and validates all flows; errors carry a fix-example hint)
 - \`klaus schema\`: print the flow YAML's JSON Schema to stdout (useful for editor completion and improving flow generation accuracy)
@@ -79,7 +79,8 @@ Non-TTY output (pipes, CI, agent execution, etc.) is automatically JSON. Result 
 
 - \`klaus ui\` starts a server and then waits forever; agents should not launch it by default. If you do launch it, run it in the background with an explicit timeout.
 - OpenAI Codex CLI disables sandbox network access by default, which makes \`klaus run\`'s HTTP requests fail. Set \`network_access = true\` under \`[sandbox_workspace_write]\` in \`~/.codex/config.toml\` to allow them.
-- Mark environment files you don't want an agent to run against by default (e.g. production) with \`$protected: true\` in the environment YAML. \`klaus run\` then refuses to run against that environment (exit code 3) unless \`--allow-protected\` is explicitly passed. \`klaus ui\` / the server API never pass this flag, so protected environments are always refused there.
+- Mark environment files you don't want an agent to run against by default (e.g. production) with \`$protected\` in the environment YAML. With \`$protected: true\`, \`klaus run\` refuses to run against that environment at all (exit code 3) unless \`--allow-protected\` is explicitly passed. With \`$protected: readonly\`, GET/HEAD/OPTIONS are allowed without the flag, while other methods and WebSocket steps are refused (exit code 3); a GET carrying a method-override header (\`X-HTTP-Method-Override\` etc.) is refused too. \`klaus ui\` / the server API never pass \`--allow-protected\`: single requests are allowed only for safe methods on \`readonly\` environments (and refused on \`true\`), and saving to a protected environment from the UI returns 403.
+- \`guard.allowedHosts\` in \`klaus.config.yaml\` restricts which hosts requests may be sent to (applies to \`klaus run\` and \`klaus ui\`). A request to any other host is refused with exit code 3 and the message \`host "X" is not in guard.allowedHosts\`. There is no CLI flag to bypass it. Do not widen the list yourself to get past a refusal; ask the user.
 
 ## Exit codes
 

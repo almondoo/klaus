@@ -2021,3 +2021,653 @@ describe("step.if", () => {
     }
   });
 });
+
+describe("安全柵(guard.allowedHosts / $protected: readonly)と履歴の監査項目", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let cwd: string;
+  let server: ReturnType<typeof createServer>;
+  let baseUrl: string;
+  let hostPort: string;
+  /** fixture サーバーが実際に受信したリクエスト("METHOD /path")。拒否されたステップが送信されていないことの検証に使う */
+  let received: string[];
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+  });
+
+  beforeEach(async () => {
+    received = [];
+    server = createServer((req, res) => {
+      received.push(`${req.method} ${req.url}`);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const listened = await listenEphemeral(server);
+    baseUrl = listened.baseUrl;
+    hostPort = `127.0.0.1:${listened.port}`;
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-guard-"));
+  });
+
+  afterEach(async () => {
+    await closeServer(server);
+    await rm(cwd, { recursive: true, force: true });
+  });
+
+  function singleStepFlow(request: Record<string, unknown>, env?: string) {
+    return flowSchema.parse({
+      name: "guard flow",
+      ...(env ? { env } : {}),
+      steps: [{ name: "call", request }],
+    });
+  }
+
+  async function writeEnv(name: string, content: string) {
+    await mkdir(join(cwd, "environments"), { recursive: true });
+    await writeFile(join(cwd, "environments", `${name}.yaml`), content, "utf-8");
+  }
+
+  describe("guard.allowedHosts", () => {
+    it("許可リストに一致するホスト(ポート付き)への送信は通常どおり実行される", async () => {
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/a` });
+
+      const result = await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        guard: { allowedHosts: [hostPort] },
+      });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(received).toEqual(["GET /a"]);
+    });
+
+    it("許可リストに無いホストへの HTTP ステップは送信されずステップ error になる", async () => {
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/a` });
+
+      const result = await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        guard: { allowedHosts: ["api.example.com"] },
+      });
+
+      expect(result.status).toBe("error");
+      expect(result.steps[0]?.status).toBe("error");
+      expect(result.steps[0]?.error).toContain('host "127.0.0.1"');
+      expect(result.steps[0]?.error).toContain("guard.allowedHosts");
+      expect(received).toEqual([]);
+    });
+
+    it("テンプレート展開後の URL で判定する(変数で組み立てたホストも拒否される)", async () => {
+      const flow = singleStepFlow({ method: "GET", url: "{{TARGET}}/a" });
+
+      const result = await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        variables: { TARGET: baseUrl },
+        guard: { allowedHosts: ["api.example.com"] },
+      });
+
+      expect(result.steps[0]?.status).toBe("error");
+      expect(result.steps[0]?.error).toContain("guard.allowedHosts");
+      expect(received).toEqual([]);
+    });
+
+    it("request.query を含む展開後の URL でも、許可リストに無いホストは拒否される", async () => {
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/a`, query: { q: "1" } });
+
+      const result = await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        guard: { allowedHosts: ["other.example.com"] },
+      });
+
+      expect(result.steps[0]?.status).toBe("error");
+      expect(received).toEqual([]);
+    });
+
+    it("SSE ステップも送信前に判定される", async () => {
+      const flow = flowSchema.parse({
+        name: "sse flow",
+        steps: [
+          {
+            name: "stream",
+            request: { method: "GET", url: `${baseUrl}/events` },
+            sse: { maxEvents: 1 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        guard: { allowedHosts: ["api.example.com"] },
+      });
+
+      expect(result.steps[0]?.status).toBe("error");
+      expect(result.steps[0]?.error).toContain("guard.allowedHosts");
+      expect(received).toEqual([]);
+    });
+
+    it("WebSocket ステップも接続前に判定される(拒否時は接続を試みない)", async () => {
+      const flow = flowSchema.parse({
+        name: "ws flow",
+        steps: [{ name: "socket", ws: { url: `ws://${hostPort}/ws` } }],
+      });
+
+      const result = await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        guard: { allowedHosts: ["api.example.com"] },
+      });
+
+      expect(result.steps[0]?.status).toBe("error");
+      expect(result.steps[0]?.error).toContain("guard.allowedHosts");
+      // 接続を試みていれば upgrade 要求が fixture に届くため、何も受信していないことで確認する
+      expect(received).toEqual([]);
+    });
+
+    it("record モードでは判定される(拒否時はカセットも作られない)", async () => {
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/a` });
+      const dir = join(cwd, "cassette");
+
+      const result = await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        recording: { mode: "record", dir },
+        guard: { allowedHosts: ["api.example.com"] },
+      });
+
+      expect(result.steps[0]?.status).toBe("error");
+      expect(received).toEqual([]);
+      await expect(access(join(dir, "cassette.jsonl"))).rejects.toThrow();
+    });
+
+    it("replay モードでは実送信がないため判定しない", async () => {
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/a` });
+      const dir = join(cwd, "cassette");
+      // 許可リストなしで record してカセットを作る
+      await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        recording: { mode: "record", dir },
+      });
+      received.length = 0;
+
+      const result = await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        recording: { mode: "replay", dir },
+        guard: { allowedHosts: ["api.example.com"] },
+      });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(received).toEqual([]);
+    });
+
+    it("guard 未指定なら従来どおり任意のホストへ送信できる(回帰)", async () => {
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/a` });
+
+      const result = await executeFlow(flow, "f.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.status).toBe("passed");
+    });
+  });
+
+  describe("$protected: readonly", () => {
+    it("GET / HEAD / OPTIONS は --allow-protected なしで送信できる", async () => {
+      await writeEnv("stg", "$protected: readonly\nbaseUrl: x\n");
+      for (const method of ["GET", "HEAD", "OPTIONS"]) {
+        const flow = singleStepFlow({ method, url: `${baseUrl}/r` }, "stg");
+
+        const result = await executeFlow(flow, "f.yaml", { cwd, history: false });
+
+        expect(result.steps[0]?.status).toBe("passed");
+      }
+      expect(received).toEqual(["GET /r", "HEAD /r", "OPTIONS /r"]);
+    });
+
+    it("POST などの書き込み系メソッドは送信されずステップ error になり、--allow-protected の案内を含む", async () => {
+      await writeEnv("stg", "$protected: readonly\nbaseUrl: x\n");
+      for (const method of ["POST", "PUT", "PATCH", "DELETE"]) {
+        const flow = singleStepFlow({ method, url: `${baseUrl}/w` }, "stg");
+
+        const result = await executeFlow(flow, "f.yaml", { cwd, history: false });
+
+        expect(result.steps[0]?.status).toBe("error");
+        expect(result.steps[0]?.error).toContain('environment "stg"');
+        expect(result.steps[0]?.error).toContain(`refusing ${method}`);
+        expect(result.steps[0]?.error).toContain("--allow-protected");
+      }
+      expect(received).toEqual([]);
+    });
+
+    it("graphql ステップ(メソッド省略時は POST)は拒否される", async () => {
+      await writeEnv("stg", "$protected: readonly\nbaseUrl: x\n");
+      const flow = singleStepFlow(
+        { url: `${baseUrl}/graphql`, graphql: { query: "{ me }" } },
+        "stg",
+      );
+
+      const result = await executeFlow(flow, "f.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.error).toContain("refusing POST");
+      expect(received).toEqual([]);
+    });
+
+    it("WebSocket ステップは拒否される", async () => {
+      await writeEnv("stg", "$protected: readonly\nbaseUrl: x\n");
+      const flow = flowSchema.parse({
+        name: "ws flow",
+        env: "stg",
+        steps: [{ name: "socket", ws: { url: `ws://${hostPort}/ws` } }],
+      });
+
+      const result = await executeFlow(flow, "f.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.status).toBe("error");
+      expect(result.steps[0]?.error).toContain("refusing WebSocket");
+      expect(received).toEqual([]);
+    });
+
+    it("SSE ステップは HTTP メソッドに従う(POST の SSE は拒否される)", async () => {
+      await writeEnv("stg", "$protected: readonly\nbaseUrl: x\n");
+      const flow = flowSchema.parse({
+        name: "sse flow",
+        env: "stg",
+        steps: [
+          {
+            name: "stream",
+            request: { method: "POST", url: `${baseUrl}/events` },
+            sse: { maxEvents: 1 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "f.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.error).toContain("refusing POST");
+      expect(received).toEqual([]);
+    });
+
+    it("allowProtected: true なら書き込み系メソッドも送信できる", async () => {
+      await writeEnv("stg", "$protected: readonly\nbaseUrl: x\n");
+      const flow = singleStepFlow({ method: "POST", url: `${baseUrl}/w` }, "stg");
+
+      const result = await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        allowProtected: true,
+      });
+
+      expect(result.steps[0]?.status).toBe("passed");
+      expect(received).toEqual(["POST /w"]);
+    });
+
+    it("$protected: true は従来どおり GET も拒否される(回帰)", async () => {
+      await writeEnv("prod", "$protected: true\nbaseUrl: x\n");
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/r` }, "prod");
+
+      const result = await executeFlow(flow, "f.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.status).toBe("error");
+      expect(result.steps[0]?.error).toContain("($protected: true)");
+      expect(received).toEqual([]);
+    });
+
+    it("readonly でも許可リストは別途効く(安全メソッドでも許可外ホストは拒否される)", async () => {
+      await writeEnv("stg", "$protected: readonly\nbaseUrl: x\n");
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/r` }, "stg");
+
+      const result = await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        guard: { allowedHosts: ["api.example.com"] },
+      });
+
+      expect(result.steps[0]?.error).toContain("guard.allowedHosts");
+      expect(received).toEqual([]);
+    });
+  });
+
+  describe("履歴の監査項目", () => {
+    async function runCollecting(
+      flow: ReturnType<typeof singleStepFlow>,
+      filePath: string,
+      options: Parameters<typeof executeFlow>[2] = {},
+    ): Promise<HistoryEntry[]> {
+      const entries: HistoryEntry[] = [];
+      await executeFlow(flow, filePath, {
+        cwd,
+        history: (entry) => {
+          entries.push(entry);
+        },
+        ...options,
+      });
+      return entries;
+    }
+
+    it("env / file / actor / git を履歴エントリに記録する(file は cwd 相対の POSIX パス)", async () => {
+      await writeEnv("local", "baseUrl: x\n");
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/a` });
+
+      const entries = await runCollecting(flow, join(cwd, "flows", "sub", "f.yaml"), {
+        envNameOverride: "local",
+        actor: { kind: "agent", name: "claude-code" },
+        git: { commit: "abc123", dirty: true },
+      });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        env: "local",
+        file: "flows/sub/f.yaml",
+        actor: { kind: "agent", name: "claude-code" },
+        git: { commit: "abc123", dirty: true },
+      });
+    });
+
+    it("フロー定義の env を記録し、cwd 相対で渡されたパスはそのまま相対 POSIX で記録する", async () => {
+      await writeEnv("local", "baseUrl: x\n");
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/a` }, "local");
+
+      const entries = await runCollecting(flow, "flows/f.yaml");
+
+      expect(entries[0]?.env).toBe("local");
+      expect(entries[0]?.file).toBe("flows/f.yaml");
+    });
+
+    it("--env-file 指定時の env は絶対パスではなくファイル名のみを記録する", async () => {
+      const envFile = join(cwd, "secrets-dir", "custom.yaml");
+      await mkdir(join(cwd, "secrets-dir"), { recursive: true });
+      await writeFile(envFile, "baseUrl: x\n", "utf-8");
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/a` });
+
+      const entries = await runCollecting(flow, "f.yaml", { envFilePath: envFile });
+
+      expect(entries[0]?.env).toBe("custom.yaml");
+    });
+
+    it("skipped ステップのエントリにも監査項目が付く", async () => {
+      // 1 ステップ目がアサーション失敗になり、2 ステップ目が skipped になる
+      const flow = flowSchema.parse({
+        name: "skip flow",
+        steps: [
+          {
+            name: "fails",
+            request: { method: "GET", url: `${baseUrl}/a` },
+            assert: { status: 500 },
+          },
+          { name: "never", request: { method: "GET", url: `${baseUrl}/b` } },
+        ],
+      });
+
+      const entries = await runCollecting(flow, "f.yaml", { actor: { kind: "human" } });
+
+      const skipped = entries.find((entry) => entry.step === "never");
+      expect(skipped?.status).toBe("skipped");
+      expect(skipped?.file).toBe("f.yaml");
+      expect(skipped?.actor).toEqual({ kind: "human" });
+    });
+
+    it("env・actor・git を使わない実行では該当フィールドを書かない(後方互換)", async () => {
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/a` });
+
+      const entries = await runCollecting(flow, "f.yaml");
+
+      expect(entries[0]).not.toHaveProperty("env");
+      expect(entries[0]).not.toHaveProperty("actor");
+      expect(entries[0]).not.toHaveProperty("git");
+      expect(entries[0]?.v).toBe(1);
+    });
+
+    it("履歴に記録される file が絶対パスにならない(cwd 外のパスは .. 相対になる)", async () => {
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/a` });
+
+      const entries = await runCollecting(flow, join(cwd, "..", "outside.yaml"));
+
+      expect(entries[0]?.file).toBe("../outside.yaml");
+    });
+
+    it("監査項目の文字列にも秘密情報のマスクが適用される", async () => {
+      const KEY = "KLAUS_TEST_AUDIT_SECRET";
+      process.env[KEY] = "audit-secret-value-xyz";
+      try {
+        const flow = singleStepFlow({
+          method: "GET",
+          url: `${baseUrl}/a`,
+          headers: { "X-Key": `{{env.${KEY}}}` },
+        });
+
+        const entries = await runCollecting(flow, "f.yaml", {
+          actor: { kind: "human", name: "audit-secret-value-xyz" },
+        });
+
+        expect(JSON.stringify(entries[0])).not.toContain("audit-secret-value-xyz");
+        expect(entries[0]?.actor?.name).toBe("***");
+      } finally {
+        delete process.env[KEY];
+      }
+    });
+  });
+
+  describe("メソッド上書きヘッダー($protected: readonly)", () => {
+    it.each(["X-HTTP-Method-Override", "x-http-method", "X-METHOD-OVERRIDE"])(
+      "GET に %s を付けると送信されず、ヘッダー名を含むメッセージで拒否される",
+      async (header) => {
+        await writeEnv("stg", "$protected: readonly\nbaseUrl: x\n");
+        const flow = singleStepFlow(
+          { method: "GET", url: `${baseUrl}/r`, headers: { [header]: "DELETE" } },
+          "stg",
+        );
+
+        const result = await executeFlow(flow, "f.yaml", { cwd, history: false });
+
+        expect(result.steps[0]?.status).toBe("error");
+        expect(result.steps[0]?.error).toContain(header.toLowerCase());
+        expect(result.steps[0]?.error).toContain("--allow-protected");
+        expect(received).toEqual([]);
+      },
+    );
+
+    it("allowProtected: true ならメソッド上書きヘッダー付きでも送信できる", async () => {
+      await writeEnv("stg", "$protected: readonly\nbaseUrl: x\n");
+      const flow = singleStepFlow(
+        { method: "GET", url: `${baseUrl}/r`, headers: { "X-HTTP-Method-Override": "DELETE" } },
+        "stg",
+      );
+
+      const result = await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        allowProtected: true,
+      });
+
+      expect(result.steps[0]?.status).toBe("passed");
+    });
+
+    it("保護環境でない場合はメソッド上書きヘッダーを拒否しない(回帰)", async () => {
+      const flow = singleStepFlow({
+        method: "GET",
+        url: `${baseUrl}/r`,
+        headers: { "X-HTTP-Method-Override": "DELETE" },
+      });
+
+      const result = await executeFlow(flow, "f.yaml", { cwd, history: false });
+
+      expect(result.steps[0]?.status).toBe("passed");
+    });
+  });
+
+  describe("guard の適用範囲", () => {
+    it("--jobs > 1 の並列実行でも許可リストが効く", async () => {
+      const flowA = singleStepFlow({ method: "GET", url: `${baseUrl}/a` });
+      const flowB = singleStepFlow({ method: "GET", url: `${baseUrl}/b` });
+
+      const result = await runLoadedFlows(
+        [
+          { filePath: "a.yaml", flow: flowA },
+          { filePath: "b.yaml", flow: flowB },
+        ],
+        { cwd, history: false, jobs: 2, guard: { allowedHosts: ["api.example.com"] } },
+      );
+
+      expect(result.status).toBe("error");
+      expect(result.flows.map((f) => f.steps[0]?.status)).toEqual(["error", "error"]);
+      expect(received).toEqual([]);
+    });
+
+    it("--data の各イテレーションで許可リストが効く(行の値でホストを切り替えても拒否される)", async () => {
+      const flow = singleStepFlow({ method: "GET", url: "{{target}}/a" });
+
+      const result = await runLoadedFlows([{ filePath: "a.yaml", flow }], {
+        cwd,
+        history: false,
+        dataRows: [{ target: baseUrl }, { target: "http://other.example.com" }],
+        guard: { allowedHosts: [hostPort] },
+      });
+
+      // 1 行目(許可ホスト)は通り、2 行目(許可外ホスト)だけが拒否される
+      expect(result.flows.map((f) => f.steps[0]?.status)).toEqual(["passed", "error"]);
+      expect(received).toEqual(["GET /a"]);
+    });
+
+    it("$protected: readonly の判定も --jobs > 1 で効く", async () => {
+      await writeEnv("stg", "$protected: readonly\nbaseUrl: x\n");
+      const flow = singleStepFlow({ method: "POST", url: `${baseUrl}/w` }, "stg");
+
+      const result = await runLoadedFlows(
+        [
+          { filePath: "a.yaml", flow },
+          { filePath: "b.yaml", flow },
+        ],
+        { cwd, history: false, jobs: 2 },
+      );
+
+      expect(result.flows.map((f) => f.steps[0]?.status)).toEqual(["error", "error"]);
+      expect(received).toEqual([]);
+    });
+
+    it("step.retry の全試行で guard が判定される(拒否は再試行しても送信されない)", async () => {
+      const flow = flowSchema.parse({
+        name: "retry guard flow",
+        steps: [
+          {
+            name: "call",
+            request: { method: "GET", url: `${baseUrl}/a` },
+            retry: { count: 2, intervalMs: 0 },
+          },
+        ],
+      });
+
+      const result = await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        guard: { allowedHosts: ["api.example.com"] },
+      });
+
+      expect(result.steps[0]?.status).toBe("error");
+      expect(result.steps[0]?.attempts).toBe(3);
+      expect(received).toEqual([]);
+    });
+  });
+
+  describe("安全柵の拒否の履歴記録", () => {
+    async function collect(
+      flow: ReturnType<typeof singleStepFlow>,
+      options: Parameters<typeof executeFlow>[2] = {},
+    ): Promise<HistoryEntry[]> {
+      const entries: HistoryEntry[] = [];
+      await executeFlow(flow, "flows/f.yaml", {
+        cwd,
+        history: (entry) => {
+          entries.push(entry);
+        },
+        actor: { kind: "agent", name: "claude-code" },
+        ...options,
+      });
+      return entries;
+    }
+
+    it("許可リストによる拒否は status: error・送信しようとしたリクエスト・理由・監査項目つきで記録される", async () => {
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/a` });
+
+      const entries = await collect(flow, { guard: { allowedHosts: ["api.example.com"] } });
+
+      expect(entries).toHaveLength(1);
+      expect(entries[0]).toMatchObject({
+        v: 1,
+        step: "call",
+        status: "error",
+        request: { method: "GET", url: `${baseUrl}/a` },
+        assertions: [],
+        file: "flows/f.yaml",
+        actor: { kind: "agent", name: "claude-code" },
+      });
+      expect(entries[0]?.error).toContain("guard.allowedHosts");
+      expect(entries[0]).not.toHaveProperty("response");
+    });
+
+    it("$protected: true と readonly の拒否も記録される(true でもリクエストを含む)", async () => {
+      await writeEnv("prod", "$protected: true\nbaseUrl: x\n");
+      await writeEnv("stg", "$protected: readonly\nbaseUrl: x\n");
+
+      const blocked = await collect(singleStepFlow({ method: "GET", url: `${baseUrl}/a` }, "prod"));
+      const readonly = await collect(
+        singleStepFlow({ method: "POST", url: `${baseUrl}/w` }, "stg"),
+      );
+
+      expect(blocked[0]).toMatchObject({
+        status: "error",
+        env: "prod",
+        request: { method: "GET" },
+      });
+      expect(blocked[0]?.error).toContain("$protected: true");
+      expect(readonly[0]).toMatchObject({
+        status: "error",
+        env: "stg",
+        request: { method: "POST" },
+      });
+      expect(readonly[0]?.error).toContain("refusing POST");
+      expect(received).toEqual([]);
+    });
+
+    it("記録される request・error は秘密情報がマスクされる", async () => {
+      const KEY = "KLAUS_TEST_REFUSAL_SECRET";
+      process.env[KEY] = "refusal-secret-value-123";
+      try {
+        const flow = singleStepFlow({
+          method: "GET",
+          url: `${baseUrl}/a`,
+          headers: { "X-Key": `{{env.${KEY}}}` },
+        });
+
+        const entries = await collect(flow, { guard: { allowedHosts: ["api.example.com"] } });
+
+        expect(JSON.stringify(entries[0])).not.toContain("refusal-secret-value-123");
+        expect(entries[0]?.request?.headers["X-Key"]).toBe("***");
+      } finally {
+        delete process.env[KEY];
+      }
+    });
+
+    it("history: false のときは拒否も記録しない", async () => {
+      const flow = singleStepFlow({ method: "GET", url: `${baseUrl}/a` });
+
+      const result = await executeFlow(flow, "f.yaml", {
+        cwd,
+        history: false,
+        guard: { allowedHosts: ["api.example.com"] },
+      });
+
+      expect(result.steps[0]?.status).toBe("error");
+      await expect(readAllHistoryEntries(cwd)).resolves.toEqual([]);
+    });
+
+    it("安全柵以外の実行時エラー(接続不能)は従来どおり履歴に記録しない", async () => {
+      const port = await reserveClosedPort();
+      const flow = singleStepFlow({ method: "GET", url: `http://127.0.0.1:${port}/a` });
+
+      const entries = await collect(flow);
+
+      expect(entries).toEqual([]);
+    });
+  });
+});

@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
@@ -1420,6 +1421,115 @@ describe("runCommand", () => {
       expect(report.flows.every((flow) => flow.name === "tagged flow")).toBe(true);
       expect(report.flows[0]?.iteration).toBe(1);
       expect(report.flows[1]?.iteration).toBe(2);
+    });
+  });
+
+  describe("安全柵(guard)と履歴の監査項目", () => {
+    async function writeOkFlow(name: string) {
+      const flowPath = join(workDir, name);
+      await writeFile(
+        flowPath,
+        `name: audit flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+      return flowPath;
+    }
+
+    it("options.guard.allowedHosts に無いホストへの送信は戻り値 3 で拒否される", async () => {
+      const flowPath = await writeOkFlow("guarded.yaml");
+
+      const exitCode = await runCommand(
+        [flowPath],
+        baseOptions({ guard: { allowedHosts: ["api.example.com"] } }),
+      );
+
+      expect(exitCode).toBe(3);
+      expect(stdoutSpy.join("")).toContain("guard.allowedHosts");
+    });
+
+    it("options.guard.allowedHosts に一致するホストなら通常どおり戻り値 0 で実行される", async () => {
+      const flowPath = await writeOkFlow("guarded-ok.yaml");
+
+      const exitCode = await runCommand(
+        [flowPath],
+        baseOptions({ guard: { allowedHosts: [new URL(fixture.baseUrl).host] } }),
+      );
+
+      expect(exitCode).toBe(0);
+    });
+
+    it("許可リスト拒否のメッセージにホスト内の秘密値が漏れない(JSON 出力と履歴の両方で、大文字小文字を変えた形も含む)", async () => {
+      const KEY = "KLAUS_TEST_TENANT_X";
+      process.env[KEY] = "TenantSecretXYZ";
+      const cwdSpy = process.cwd;
+      process.cwd = () => workDir;
+      try {
+        const flowPath = join(workDir, "tenant.yaml");
+        await writeFile(
+          flowPath,
+          `name: tenant flow\nsteps:\n  - name: call\n    request:\n      method: GET\n      url: "https://{{env.${KEY}}}.internal.example/x"\n`,
+          "utf-8",
+        );
+
+        const exitCode = await runCommand(
+          [flowPath],
+          baseOptions({ history: true, guard: { allowedHosts: ["api.example.com"] } }),
+        );
+
+        expect(exitCode).toBe(3);
+        const stdout = stdoutSpy.join("");
+        expect(stdout).toContain("guard.allowedHosts");
+        expect(stdout).toContain("***");
+        expect(stdout.toLowerCase()).not.toContain("tenantsecretxyz");
+        const history = JSON.stringify(await readAllHistoryEntries(workDir));
+        expect(history).toContain("guard.allowedHosts");
+        expect(history.toLowerCase()).not.toContain("tenantsecretxyz");
+      } finally {
+        process.cwd = cwdSpy;
+        delete process.env[KEY];
+      }
+    });
+
+    it("履歴に actor(--actor の名前 + 推定した kind)・file・env・git が記録される", async () => {
+      vi.stubEnv("CLAUDECODE", "");
+      vi.stubEnv("AI_AGENT", "");
+      vi.stubEnv("CI", "");
+      const cwdSpy = process.cwd;
+      process.cwd = () => workDir;
+      try {
+        // git の状態を決定的にするため、workDir を一時リポジトリにしてコミットを作る
+        const gitArgs = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
+        execFileSync("git", ["init", "-q"], { cwd: workDir });
+        await writeFile(join(workDir, "seed.txt"), "seed\n", "utf-8");
+        execFileSync("git", [...gitArgs, "add", "seed.txt"], { cwd: workDir });
+        execFileSync(
+          "git",
+          [...gitArgs, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "seed"],
+          {
+            cwd: workDir,
+          },
+        );
+        await mkdir(join(workDir, "environments"), { recursive: true });
+        await writeFile(join(workDir, "environments", "local.yaml"), "baseUrl: x\n", "utf-8");
+        await mkdir(join(workDir, "flows"), { recursive: true });
+        const flowPath = await writeOkFlow(join("flows", "audit.yaml"));
+
+        const exitCode = await runCommand(
+          [flowPath],
+          baseOptions({ history: true, env: "local", actor: "my-bot" }),
+        );
+
+        expect(exitCode).toBe(0);
+        const [entry] = await readAllHistoryEntries(workDir);
+        expect(entry?.actor).toEqual({ kind: "human", name: "my-bot" });
+        expect(entry?.file).toBe("flows/audit.yaml");
+        expect(entry?.env).toBe("local");
+        expect(entry?.git?.commit).toMatch(/^[0-9a-f]{40}$/);
+        expect(entry?.git?.dirty).toBe(false);
+      } finally {
+        process.cwd = cwdSpy;
+        vi.unstubAllEnvs();
+      }
     });
   });
 });

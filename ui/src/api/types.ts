@@ -95,7 +95,9 @@ export interface HistoryEntry {
    */
   iteration?: number;
   /** 旧エントリには無い。省略時は従来通り assertions から導出する(groupHistoryByRun 参照) */
-  status?: "passed" | "failed" | "skipped";
+  status?: "passed" | "failed" | "skipped" | "error";
+  /** status が "error"(安全柵による送信拒否)のエントリのみ入る拒否理由 */
+  error?: string;
   /** skipped では省略 */
   request?: {
     method: string;

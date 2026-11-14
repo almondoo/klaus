@@ -15,6 +15,8 @@
 - **Web UI**: `klaus ui` で CLI と並行してローカルのランナー + 履歴ビューアを起動
 - **record/replay・OpenAPI 生成**: `--record`/`--replay` でカセットベースの検証、`klaus generate` で OpenAPI スペックからフロー雛形を生成
 - **エージェント向け出力**: exit code だけで故障箇所を判別可能。非 TTY では JSON 出力がデフォルト
+- **送信先ホストの許可リスト**: `klaus.config.yaml` の `guard.allowedHosts` でリクエストの送信先を制限(上書きする CLI フラグはない)
+- **読み取り専用の保護環境**: `$protected: readonly` で、`--allow-protected` なしでも GET / HEAD / OPTIONS のみ実行可能
 - **ローカルファースト**: 実行履歴は `.klaus/history/*.jsonl` に追記。クラウド同期・アカウント機構はない
 
 ## インストール

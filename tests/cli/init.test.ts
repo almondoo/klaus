@@ -92,6 +92,17 @@ describe("initCommand", () => {
     const agentsContent = await readFile(join(workDir, "AGENTS.md"), "utf-8");
     expect(agentsContent).toContain("--allow-protected");
     expect(agentsContent).toContain("$protected: true");
+    expect(agentsContent).toContain("$protected: readonly");
+    expect(agentsContent).toContain("returns 403");
+  });
+
+  it("生成される AGENTS.md には送信先ホストの許可リスト(guard.allowedHosts)の説明が含まれる", async () => {
+    await initCommand(workDir);
+
+    const agentsContent = await readFile(join(workDir, "AGENTS.md"), "utf-8");
+    expect(agentsContent).toContain("guard.allowedHosts");
+    expect(agentsContent).toContain('host "X" is not in guard.allowedHosts');
+    expect(agentsContent).toContain("no CLI flag to bypass");
   });
 
   it("生成した api/example.yaml は klaus のローダー(loadFlow)を通る", async () => {

@@ -80,6 +80,32 @@ environment "production" is protected ($protected: true) and refuses execution b
 
 **対処**: この環境への実行が意図したものであれば、`klaus run` に `--allow-protected` を指定する。`klaus ui` / server API はこのフラグを一切受け付けないため、保護環境は常に拒否され、回避手段はない。[ファイル構造](flow-definition.md#ファイル構造) を参照。
 
+`$protected: readonly` の環境では、フラグなしで許可されるのは `GET` / `HEAD` / `OPTIONS` のみ。それ以外のメソッドは次のメッセージで拒否される。
+
+```
+environment "production" is protected ($protected: readonly) and only allows GET, HEAD, and OPTIONS by default; refusing POST. Pass --allow-protected to run against this environment intentionally.
+```
+
+メソッド上書きヘッダー(`X-HTTP-Method-Override`・`X-HTTP-Method`・`X-Method-Override`)を付けた `GET` は次のメッセージで拒否される。
+
+```
+environment "production" is protected ($protected: readonly) and refuses requests carrying the x-http-method-override header, which can turn a read into a write. Pass --allow-protected to run against this environment intentionally.
+```
+
+対処は同じ(`--allow-protected`)か、ステップを安全なメソッドに変える。GraphQL ステップは既定で `POST` のため、これも拒否される。[保護環境](cli.md#保護環境-protected)を参照。
+
+### 「host "X" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request.」
+
+**症状**
+
+```
+host "api.other.com" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request.
+```
+
+**原因**: `klaus.config.yaml` に `guard.allowedHosts` が設定されており、ステップの URL(テンプレート展開後)のホストがどのエントリにも一致しない。`*.example.com` は `example.com` 自身には一致せず、ポート付きのエントリはそのポートのみに一致する点に注意。
+
+**対処**: そのホストが意図したものなら、`klaus.config.yaml` の `guard.allowedHosts` に追加する(`klaus ui` を起動中なら再起動する)。そうでなければ URL を直す。判定を回避する CLI フラグはない。[送信先ホストの許可リスト](config.md#送信先ホストの許可リスト-guard-allowedhosts)を参照。
+
 ## `--record` / `--replay` のエラー(exit code 3)
 
 ### 「no recorded response for "METHOD url" in replay mode. ...」/「failed to read cassette file ... for replay mode: ...」
@@ -111,6 +137,18 @@ step "subscribe": SSE/WS steps are not supported in record/replay mode (HTTP onl
 **対処**: このフローは `--record`/`--replay` なしで実行するか、SSE/WS ステップを別のフローファイルに分けて通常どおり実行する。[SSE / WebSocket ステップは非対応](record-replay.md#sse-websocket-ステップは非対応) を参照。
 
 ## `klaus ui` のエラー
+
+### 「Forbidden: environment "X" is protected and cannot be edited via this API (edit the file directly)」
+
+**症状**: 環境エディタの保存、または「抽出した値を環境へ保存」が HTTP 403 と次のメッセージで失敗する。
+
+```
+Forbidden: environment "production" is protected and cannot be edited via this API (edit the file directly)
+```
+
+**原因**: 環境ファイルに `$protected: true` または `$protected: readonly` が設定されている。UI はエージェントが操作し得る経路のため、保護環境には書き込めない。
+
+**対処**: `environments/<name>.yaml` をエディタで直接編集する。[ファイル構造](flow-definition.md#ファイル構造)を参照。
 
 ### 「... EADDRINUSE ... (port \<n\> is already in use; specify a different port with --port)」
 

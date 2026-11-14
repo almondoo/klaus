@@ -10,11 +10,22 @@ import type { Environment } from "./schema.js";
 /** 環境ファイルの予約キー(保護フラグ)。API 経由の編集対象・テンプレート変数から除外する */
 export const RESERVED_ENV_KEY = "$protected";
 
+/** 環境の保護モード。false=非保護、true=全面拒否、"readonly"=安全メソッド(GET/HEAD/OPTIONS)のみ許可 */
+export type ProtectedMode = boolean | "readonly";
+
 /**
- * 環境が保護対象($protected: true)かどうかを判定する。
+ * 環境の保護モードを返す($protected が true / "readonly" 以外は false)。
+ */
+export function getProtectedMode(environment: Environment): ProtectedMode {
+  const value = environment[RESERVED_ENV_KEY];
+  return value === true || value === "readonly" ? value : false;
+}
+
+/**
+ * 環境が保護対象($protected: true または "readonly")かどうかを判定する。
  */
 export function isProtectedEnvironment(environment: Environment): boolean {
-  return environment[RESERVED_ENV_KEY] === true;
+  return getProtectedMode(environment) !== false;
 }
 
 /**

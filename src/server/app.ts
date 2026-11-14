@@ -6,7 +6,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
-import { loadFlow, ParseError } from "../core/index.js";
+import { type GuardOptions, loadFlow, ParseError } from "../core/index.js";
 import {
   handleGetEnvironmentDetail,
   handlePostEnvironmentCapture,
@@ -36,6 +36,8 @@ export interface CreateAppOptions {
    * 受け付ける設定を選んだとみなし、Host/Origin 検証のホスト名部分を緩和する(ポート一致のみ確認、後述)。
    */
   host?: string;
+  /** 送信先ホストの許可リストなどの安全柵。POST /api/runs と POST /api/request の実行に渡す */
+  guard?: GuardOptions | undefined;
 }
 
 /**
@@ -51,7 +53,7 @@ function timingSafeTokenEqual(a: string, b: string): boolean {
 }
 
 export function createApp(options: CreateAppOptions): Hono {
-  const { cwd, token, port, staticDir, host = "127.0.0.1" } = options;
+  const { cwd, token, port, staticDir, host = "127.0.0.1", guard } = options;
   const app = new Hono();
 
   const expectedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
@@ -157,9 +159,9 @@ export function createApp(options: CreateAppOptions): Hono {
     handlePostEnvironmentCapture(c, cwd, c.req.param("name")),
   );
 
-  app.post("/api/runs", (c) => handleRunRequest(c, cwd));
+  app.post("/api/runs", (c) => handleRunRequest(c, cwd, guard));
 
-  app.post("/api/request", (c) => handleSingleRequest(c, cwd));
+  app.post("/api/request", (c) => handleSingleRequest(c, cwd, guard));
 
   app.get("/api/history", async (c) => {
     const flow = c.req.query("flow");

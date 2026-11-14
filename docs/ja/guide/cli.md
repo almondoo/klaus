@@ -27,7 +27,8 @@ klaus run <files...> [options]
 | `--no-mask` | stdout(JSON/text 出力とも)へのシークレットマスキングを無効化 | マスク有効 |
 | `--record <dir>` | record モード: 実際に HTTP リクエストを送信し、マスク済みの request/response ペアを `<dir>` のカセットに保存する | — |
 | `--replay <dir>` | replay モード: 実ネットワークではなく `<dir>` のカセットから HTTP レスポンスを再生する(記録外リクエストは exit code 3 で失敗する)。`--record` とは併用不可 | — |
-| `--allow-protected` | `$protected: true` の環境ファイルへの実行を許可する(未指定時は exit code 3 で拒否) | — |
+| `--allow-protected` | `$protected: true` / `$protected: readonly` の環境ファイルへの実行を許可する(未指定時は exit code 3 で拒否。後述の「保護環境」を参照) | — |
+| `--actor <name>` | この実行の履歴エントリの `actor.name` に記録する名前(1〜100 文字)。`actor.kind` は従来どおり環境から推定される([実行履歴](history.md#監査項目)を参照) | — |
 | `--data <path>` | データ駆動実行: この JSON/YAML データファイルの各行につき、指定した全フローファイルを1回ずつ実行する(詳細は後述の「データ駆動実行(--data)」を参照) | — |
 | `--tags <list>` | カンマ区切りのタグ一覧。フローの `tags:` にいずれか1つでも含まれるものだけを実行する(OR 条件。詳細は後述の「タグによるフロー選択」を参照) | — |
 | `--exclude-tags <list>` | カンマ区切りのタグ一覧。フローの `tags:` にいずれか1つでも含まれるものを除外する。`--tags` より優先される | — |
@@ -35,7 +36,18 @@ klaus run <files...> [options]
 
 `--report` はカンマ区切りのフォーマット一覧を受け取る(各要素は trim され、`junit` か `tap` のいずれかでなければならない)。未知のフォーマットや空要素を1つでも渡すと stderr にエラーを出して exit 1。`--report` はフォーマットの重複(例: `--report junit,junit`)や、`--report-file` の解決先パスがフォーマット間で同一になる場合も同様に stderr にエラーを出して exit 1 で拒否する(どちらも同一ファイルへの書き込みが競合するため)。`--report` に N 個のフォーマットを渡した場合、`--report-file` は**同じ順序でちょうど N 回**指定する(1個目の `--report-file` が1個目のフォーマットとペアになる)か、**一度も指定しない**(この場合フォーマットごとの既定ファイル名 — `junit` は `klaus-report.xml`、`tap` は `klaus-report.tap` — に書き出される)かのいずれかにする。それ以外の回数(例: 2フォーマットに対して `--report-file` を1回だけ)はエラーとして拒否され、exit 1 でどのファイルも書き出さない。これは単一フォーマットの従来挙動をそのまま一般化したものであり、`--report junit` 単体は変わらず `klaus-report.xml` が既定値になる。`--json` と `--text`、または `-e`/`--env` と `--env-file` を同時に指定した場合も同様に stderr にエラーを出して exit 1(何も実行しない)。この `-e`/`--env` と `--env-file` の併用エラーは、**コマンドラインで明示的に指定した** `-e`/`--env` に対してのみ発生する。`klaus.config.yaml` の `run.env` による既定値は、明示指定された `--env-file` と衝突せずそちらに道を譲る([CLI オプションの既定値](config.md)参照)。
 
-`--env-file` は、読み込んだファイルの `$protected: true` を名前付き環境と全く同じように尊重する: `--allow-protected` を併せて渡さない限り exit code 3 で拒否される。
+`--env-file` は、読み込んだファイルの `$protected` を名前付き環境と全く同じように尊重する(後述)。
+
+### 保護環境(`$protected`)
+
+| `$protected` | `--allow-protected` なしの挙動 |
+|---|---|
+| `true` | 全ステップを拒否する(exit code 3) |
+| `readonly` | `GET` / `HEAD` / `OPTIONS` は通常どおり実行し、それ以外のメソッドと WebSocket ステップはすべて拒否する(exit code 3)。GraphQL ステップは既定で `POST` のため拒否される |
+
+`readonly` では、メソッド上書きヘッダー(`X-HTTP-Method-Override`・`X-HTTP-Method`・`X-Method-Override`)を付けた `GET` / `HEAD` / `OPTIONS` も拒否される(サーバーが書き込みとして扱い得るため)。判定の対象は HTTP メソッドとこれらのヘッダーのみで、`GET` で送られた GraphQL のミューテーションは検出できず、拒否されない。
+
+`--allow-protected` を渡すとどちらも解除される。拒否は送信の直前に行われるため、拒否されたステップは `error`(exit code 3)になる。`--replay` は何も送信しないが、メソッドの判定は適用される。別機構の `klaus.config.yaml` の [`guard.allowedHosts`](config.md#送信先ホストの許可リスト-guard-allowedhosts)(送信先ホストの許可リスト)には、上書きする CLI フラグがない。どちらの拒否も exit code 3 で、[トラブルシューティング](troubleshooting.md)を参照。
 
 `--var` の値は <code v-pre>{{env.X}}</code>(OS 環境変数参照)と異なり、シークレットとして登録されず、出力でもマスクされない。真のシークレットを渡したい場合は OS 環境変数経由で <code v-pre>{{env.X}}</code> として参照し、[実行履歴](history.md)に記載のマスキングの恩恵を受けること。
 
@@ -171,7 +183,7 @@ request/response スナップショットや assertions などの詳細を持つ
 | 0 | 全件成功 |
 | 1 | 一般エラー(不正な CLI 引数・予期しない例外) |
 | 2 | 定義ファイルのパースエラー |
-| 3 | 実行時エラー(接続不能・タイムアウト・キャプチャ失敗等) |
+| 3 | 実行時エラー(接続不能・タイムアウト・キャプチャ失敗、`$protected` や `guard.allowedHosts` によるステップの拒否等) |
 | 4 | アサーション失敗 |
 
 判定ルールの詳細:

@@ -3,6 +3,7 @@ import {
   type DataRow,
   expandSecretVariants,
   type Flow,
+  type GuardOptions,
   type LoadedFlowEntry,
   loadDataFile,
   loadFlow,
@@ -18,6 +19,7 @@ import {
   type StepCompleteContext,
   type StepStartContext,
 } from "../core/index.js";
+import { detectActor, resolveGitState } from "./audit.js";
 import { determineExitCode } from "./exit-code.js";
 import { formatJson } from "./reporters/json.js";
 import { formatJUnit } from "./reporters/junit.js";
@@ -174,6 +176,15 @@ export interface RunCommandOptions {
    * (下記 runCommand の 0. 検査を参照)
    */
   jobs?: number;
+  /**
+   * --actor <name> 指定時の実行主体の名前。履歴の actor.name に記録する(actor.kind は環境変数から推定した値のまま)
+   */
+  actor?: string;
+  /**
+   * klaus.config.yaml の `guard`(送信先ホストの許可リスト等)。CLI フラグは設けない
+   * (エージェントが引数で安全柵を外せないようにするため)。index.ts が config から設定して渡す
+   */
+  guard?: GuardOptions;
 }
 
 /**
@@ -452,7 +463,12 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     textReporter && jobs > 1
       ? createOrderedTextFlusher(textReporter, buildUnitStepCounts(filteredFlows, dataRows))
       : textReporter;
+  // 履歴の監査項目。git は履歴を書く場合のみ取得する(--no-history 時に git を起動しない)
+  const git = options.history ? await resolveGitState(process.cwd()) : undefined;
   const runOptions: RunFlowOptions = {
+    guard: options.guard,
+    actor: detectActor(process.env, options.actor),
+    git,
     envNameOverride: options.env,
     envFilePath: options.envFile,
     variables: options.var,

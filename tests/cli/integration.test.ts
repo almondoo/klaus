@@ -531,6 +531,136 @@ describe("cli integration", () => {
     }
   }, 20000);
 
+  it("(k2) klaus.config.yaml の guard.allowedHosts: 許可外ホストへの run は exit 3 で送信されず、許可ホストなら exit 0", async () => {
+    const guardWorkDir = join(workDir, "guard-run-scenario");
+    await mkdir(guardWorkDir, { recursive: true });
+    const flowPath = join(guardWorkDir, "ok.yaml");
+    await writeFile(
+      flowPath,
+      `name: guard flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+
+    await writeFile(
+      join(guardWorkDir, "klaus.config.yaml"),
+      "guard:\n  allowedHosts:\n    - api.example.com\n",
+      "utf-8",
+    );
+    const denied = await runCli(["run", flowPath, "--no-history"], guardWorkDir);
+    expect(denied.status).toBe(3);
+    expect(JSON.parse(denied.stdout).status).toBe("error");
+    expect(denied.stdout).toContain("guard.allowedHosts");
+
+    await writeFile(
+      join(guardWorkDir, "klaus.config.yaml"),
+      `guard:\n  allowedHosts:\n    - "${new URL(fixture.baseUrl).host}"\n`,
+      "utf-8",
+    );
+    const allowed = await runCli(["run", flowPath, "--no-history"], guardWorkDir);
+    expect(allowed.status).toBe(0);
+  });
+
+  it("(k3) klaus.config.yaml の guard.allowedHosts が空配列だと run は exit 2 になる", async () => {
+    const guardWorkDir = join(workDir, "guard-empty-scenario");
+    await mkdir(guardWorkDir, { recursive: true });
+    await writeFile(
+      join(guardWorkDir, "klaus.config.yaml"),
+      "guard:\n  allowedHosts: []\n",
+      "utf-8",
+    );
+    const flowPath = join(guardWorkDir, "ok.yaml");
+    await writeFile(
+      flowPath,
+      `name: guard flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n`,
+      "utf-8",
+    );
+
+    const result = await runCli(["run", flowPath, "--no-history"], guardWorkDir);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("klaus.config.yaml");
+  });
+
+  it("(k4) run --actor / 環境変数の推定が履歴(history show)の actor・file・git に記録される", async () => {
+    const auditWorkDir = join(workDir, "audit-scenario");
+    await mkdir(auditWorkDir, { recursive: true });
+    const flowPath = join(auditWorkDir, "ok.yaml");
+    await writeFile(
+      flowPath,
+      `name: audit flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+
+    const run = await runCli(["run", flowPath, "--actor", "it-bot"], auditWorkDir);
+    expect(run.status).toBe(0);
+    const runId = (JSON.parse(run.stdout) as { runId: string }).runId;
+
+    const show = await runCli(["history", "show", runId], auditWorkDir);
+    const [entry] = JSON.parse(show.stdout) as Array<{
+      actor?: { kind: string; name?: string };
+      file?: string;
+      git?: unknown;
+    }>;
+    // kind は実行環境(CI / エージェント)に依存して変わるため、name と file の記録のみ固定する
+    expect(entry?.actor?.name).toBe("it-bot");
+    expect(["human", "agent", "ci"]).toContain(entry?.actor?.kind);
+    expect(entry?.file).toBe("ok.yaml");
+  });
+
+  it("(k5) klaus ui: klaus.config.yaml の guard が POST /api/request に効き、許可外ホストは error になる", async () => {
+    const uiGuardDir = join(workDir, "guard-ui-scenario");
+    await mkdir(uiGuardDir, { recursive: true });
+    await writeFile(
+      join(uiGuardDir, "klaus.config.yaml"),
+      "guard:\n  allowedHosts:\n    - api.example.com\n",
+      "utf-8",
+    );
+
+    const child = spawn("node", [cliPath, "ui", "--no-open", "--port", "14898"], {
+      cwd: uiGuardDir,
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf-8");
+    });
+    child.on("error", () => {});
+
+    try {
+      const deadline = Date.now() + 15000;
+      while (!/klaus UI started: \S+/.test(stdout) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const url = /klaus UI started: (\S+)/.exec(stdout)?.[1];
+      expect(url).toBeDefined();
+      const token = new URL(url as string).searchParams.get("token") as string;
+
+      const res = await fetch("http://127.0.0.1:14898/api/request", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": token,
+          Cookie: `klaus_token=${token}`,
+        },
+        body: JSON.stringify({ request: { method: "GET", url: `${fixture.baseUrl}/ok` } }),
+      });
+      const payload = (await res.json()) as { result: { status: string; error?: string } };
+
+      expect(res.status).toBe(200);
+      expect(payload.result.status).toBe("error");
+      expect(payload.result.error).toContain("guard.allowedHosts");
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          resolve();
+          return;
+        }
+        child.once("exit", () => resolve());
+        setTimeout(resolve, 3000);
+      });
+    }
+  }, 20000);
+
   it("(m) schema: 既定(flow スキーマ)の JSON Schema を stdout に出力し exit 0 になる", async () => {
     const result = await runCli(["schema"], workDir);
 

@@ -94,7 +94,9 @@ Place `baseUrl: https://example.com` in `environments/local.yaml`, then run with
 
 - `klaus ui` starts a server and then waits forever; do not launch it unless the task specifically calls for the web UI, and if launched, run it in the background with an explicit timeout.
 - OpenAI Codex CLI disables sandbox network access by default, which makes `klaus run`'s HTTP requests fail. Set `network_access = true` under `[sandbox_workspace_write]` in `~/.codex/config.toml` to allow them.
-- Mark production-like environments with `$protected: true` in the environment YAML; `klaus run` then refuses to execute against them (exit code 3) unless `--allow-protected` is explicitly passed.
+- Mark production-like environments with `$protected: true` in the environment YAML; `klaus run` then refuses to execute against them (exit code 3) unless `--allow-protected` is explicitly passed. `$protected: readonly` is milder: GET / HEAD / OPTIONS run, every other method (and WebSocket) is refused without the flag.
+- `guard.allowedHosts` in `klaus.config.yaml` restricts the hosts requests may be sent to (a refusal is exit code 3: `host "X" is not in guard.allowedHosts`). There is no CLI flag to bypass it; do not edit the list or pass `--allow-protected` just to get past a refusal, ask the user instead.
+- `klaus ui` cannot write protected environments (403); history entries record `env` / `file` / `actor` / `git`, and `klaus run --actor <name>` names the actor.
 - Only values referenced via `{{env.X}}` are treated as secrets and masked as "***" in history; captured values and `--env-file` values are recorded unmasked (see SECURITY.md) — never print raw secret values yourself regardless.
 
 ## Division of labor with Claude Code hooks

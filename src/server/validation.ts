@@ -41,6 +41,18 @@ export function invalidOptionalEnvResponse(c: Context, env: string | undefined):
   return c.text("Forbidden: invalid env name", 403);
 }
 
+/**
+ * 保護環境($protected: true / "readonly")を API 経由で書き換えようとした場合の拒否レスポンス(403)。
+ * 保護環境の値はファイルを直接編集する運用とし、UI(エージェントが操作し得る経路)からは変更させない。
+ * 他の 403 と同じく text 形式で返す。
+ */
+export function protectedEnvironmentResponse(c: Context, name: string): Response {
+  return c.text(
+    `Forbidden: environment "${name}" is protected and cannot be edited via this API (edit the file directly)`,
+    403,
+  );
+}
+
 /** 予約キー($protected)を API 経由で編集しようとした場合の拒否レスポンス(400) */
 export function reservedEnvKeyResponse(c: Context): Response {
   return c.json(
