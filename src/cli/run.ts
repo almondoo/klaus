@@ -1,4 +1,4 @@
-import { writeFile } from "node:fs/promises";
+import { appendFile, writeFile } from "node:fs/promises";
 import {
   type DataRow,
   expandSecretVariants,
@@ -24,6 +24,8 @@ import { detectActor, resolveGitState } from "./audit.js";
 import { loadHttpOptions } from "./config.js";
 import { executeDryRun } from "./dry-run.js";
 import { determineExitCode } from "./exit-code.js";
+import { formatGithubAnnotations, formatGithubSummary } from "./reporters/github.js";
+import { formatHtml } from "./reporters/html.js";
 import { formatJson } from "./reporters/json.js";
 import { formatJUnit } from "./reporters/junit.js";
 import { formatTap } from "./reporters/tap.js";
@@ -33,12 +35,16 @@ import { createTextReporter, resolveUseColor, type TextReporter } from "./report
 const DEFAULT_REPORT_FILENAMES: Record<ReportFormat, string> = {
   junit: "klaus-report.xml",
   tap: "klaus-report.tap",
+  html: "klaus-report.html",
+  github: "klaus-report.md",
 };
 
 /** 1 フォーマット分の (フォーマット, 出力先パス) の組 */
 interface ReportTarget {
   format: ReportFormat;
   filePath: string;
+  /** --report-file で明示された出力先か(github 形式は未指定時に GITHUB_STEP_SUMMARY を優先するため区別する) */
+  explicit: boolean;
 }
 
 type ResolveReportTargetsResult =
@@ -102,6 +108,7 @@ function resolveReportTargets(
   const targets = formats.map((format, index) => ({
     format,
     filePath: files[index] ?? DEFAULT_REPORT_FILENAMES[format],
+    explicit: files[index] !== undefined,
   }));
 
   const filePaths = targets.map((target) => target.filePath);
@@ -114,6 +121,34 @@ function resolveReportTargets(
   }
 
   return { ok: true, targets };
+}
+
+/**
+ * --report github の出力。
+ * - Markdown サマリーの出力先: --report-file 明示 → そのパスへ上書き / 未指定で GITHUB_STEP_SUMMARY あり → そのファイルへ追記 /
+ *   どちらも無い → 既定の klaus-report.md へ上書き。stdout へは書かない(--json の機械可読出力を壊さないため)。
+ * - アノテーション(::error ...): GITHUB_ACTIONS=true のときだけ出力する。通常は stdout、
+ *   stdout が JSON を運んでいる場合(useJson)は stderr へ出す(GitHub はどちらからも workflow command を解釈する)。
+ */
+async function writeGithubReport(
+  target: ReportTarget,
+  runResult: RunResult,
+  secrets: readonly string[],
+  useJson: boolean,
+): Promise<void> {
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  const markdown = formatGithubSummary(runResult, { secrets });
+  if (!target.explicit && summaryPath) {
+    await appendFile(summaryPath, `${markdown}\n`, "utf-8");
+  } else {
+    await writeFile(target.filePath, markdown, "utf-8");
+  }
+  if (process.env.GITHUB_ACTIONS === "true") {
+    const lines = formatGithubAnnotations(runResult, { secrets });
+    if (lines.length > 0) {
+      (useJson ? process.stderr : process.stdout).write(`${lines.join("\n")}\n`);
+    }
+  }
 }
 
 /** run コマンドのオプション(commander から渡される値を正規化した形) */
@@ -570,12 +605,24 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
 
   // stdout(text/JSON)とは別経路で、レポートファイルにのみ secrets をマスクする。
   // 複数フォーマット指定時は独立した書き込みのため並行して書き出す。
+  const reportMeta = {
+    env: options.env,
+    actor: runOptions.actor?.name
+      ? `${runOptions.actor.name} (${runOptions.actor.kind})`
+      : runOptions.actor?.kind,
+    commit: git?.commit,
+  };
   await Promise.all(
     reportResolution.targets.map((target) => {
+      if (target.format === "github") {
+        return writeGithubReport(target, runResult, collectedSecrets, useJson);
+      }
       const formatted =
         target.format === "junit"
           ? formatJUnit(runResult, { secrets: collectedSecrets })
-          : formatTap(runResult, { secrets: collectedSecrets });
+          : target.format === "html"
+            ? formatHtml(runResult, { secrets: collectedSecrets, meta: reportMeta })
+            : formatTap(runResult, { secrets: collectedSecrets });
       return writeFile(target.filePath, formatted, "utf-8");
     }),
   );

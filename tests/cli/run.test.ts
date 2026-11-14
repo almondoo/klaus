@@ -448,6 +448,133 @@ describe("runCommand", () => {
     expect(tap).toContain("ok 1 - success flow > ok");
   });
 
+  describe("--report html / github", () => {
+    const FAILING_FLOW = (baseUrl: string) =>
+      `name: ng flow\nsteps:\n  - name: bad, step:x\n    request:\n      method: GET\n      url: "${baseUrl}/ok"\n    assert:\n      status: 201\n`;
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("--report html,junit は --report-file の順にペアで書き出され、HTML は自己完結で失敗詳細を含む", async () => {
+      const flowPath = join(workDir, "ng.yaml");
+      await writeFile(flowPath, FAILING_FLOW(fixture.baseUrl), "utf-8");
+      const htmlPath = join(workDir, "r.html");
+      const xmlPath = join(workDir, "r.xml");
+
+      const exitCode = await runCommand(
+        [flowPath],
+        baseOptions({ report: "html,junit", reportFile: [htmlPath, xmlPath] }),
+      );
+
+      expect(exitCode).toBe(4);
+      const html = await readFile(htmlPath, "utf-8");
+      expect(html).toContain("<!DOCTYPE html>");
+      expect(html).toContain("bad, step:x");
+      expect(html).toContain("Failed assertions");
+      expect(await readFile(xmlPath, "utf-8")).toContain("<testsuite");
+    });
+
+    it("--report html: {{env.X}} のシークレットは HTML に生値で現れない", async () => {
+      vi.stubEnv("KLAUS_TEST_HTML_SECRET", "html-secret-value-789");
+      const flowPath = join(workDir, "html-secret.yaml");
+      await writeFile(
+        flowPath,
+        `name: f\nsteps:\n  - name: s\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      bodyText:\n        contains: "{{env.KLAUS_TEST_HTML_SECRET}}"\n`,
+        "utf-8",
+      );
+      const htmlPath = join(workDir, "secret.html");
+
+      await runCommand([flowPath], baseOptions({ report: "html", reportFile: [htmlPath] }));
+
+      const html = await readFile(htmlPath, "utf-8");
+      expect(html).not.toContain("html-secret-value-789");
+      expect(html).toContain("***");
+    });
+
+    it("--no-mask(mask: false)でも html / github レポートはマスクされる", async () => {
+      vi.stubEnv("KLAUS_TEST_NOMASK_SECRET", "nomask-secret-value-321");
+      vi.stubEnv("GITHUB_ACTIONS", "true");
+      const flowPath = join(workDir, "nomask.yaml");
+      await writeFile(
+        flowPath,
+        `name: f\nsteps:\n  - name: s\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      bodyText:\n        contains: "{{env.KLAUS_TEST_NOMASK_SECRET}}"\n`,
+        "utf-8",
+      );
+      const htmlPath = join(workDir, "nm.html");
+      const mdPath = join(workDir, "nm.md");
+
+      await runCommand(
+        [flowPath],
+        baseOptions({ report: "html,github", reportFile: [htmlPath, mdPath], mask: false }),
+      );
+
+      expect(await readFile(htmlPath, "utf-8")).not.toContain("nomask-secret-value-321");
+      expect(await readFile(mdPath, "utf-8")).not.toContain("nomask-secret-value-321");
+      // アノテーション(stderr)もマスクされる
+      expect(stderrSpy.join("")).toContain("::error");
+      expect(stderrSpy.join("")).not.toContain("nomask-secret-value-321");
+    });
+
+    it("--report github: GITHUB_STEP_SUMMARY があり --report-file 未指定ならそのファイルへ追記し、stdout には書かない", async () => {
+      const flowPath = join(workDir, "ng.yaml");
+      await writeFile(flowPath, FAILING_FLOW(fixture.baseUrl), "utf-8");
+      const summaryPath = join(workDir, "summary.md");
+      await writeFile(summaryPath, "existing\n", "utf-8");
+      vi.stubEnv("GITHUB_STEP_SUMMARY", summaryPath);
+      vi.stubEnv("GITHUB_ACTIONS", "");
+
+      const exitCode = await runCommand(
+        [flowPath],
+        baseOptions({ report: "github", reportFile: [] }),
+      );
+
+      expect(exitCode).toBe(4);
+      const md = await readFile(summaryPath, "utf-8");
+      expect(md.startsWith("existing\n")).toBe(true);
+      expect(md).toContain("## klaus run: FAILED");
+      // GITHUB_ACTIONS が true でなければアノテーションは出さず、stdout は JSON のまま
+      expect(stdoutSpy.join("")).not.toContain("::error");
+      expect(readJson().status).toBe("failed");
+    });
+
+    it("--report github: --report-file を明示すると GITHUB_STEP_SUMMARY より優先してそのパスへ書く", async () => {
+      const flowPath = join(workDir, "ng.yaml");
+      await writeFile(flowPath, FAILING_FLOW(fixture.baseUrl), "utf-8");
+      const summaryPath = join(workDir, "summary.md");
+      const explicitPath = join(workDir, "explicit.md");
+      vi.stubEnv("GITHUB_STEP_SUMMARY", summaryPath);
+
+      await runCommand([flowPath], baseOptions({ report: "github", reportFile: [explicitPath] }));
+
+      expect(await readFile(explicitPath, "utf-8")).toContain("### Failed steps");
+      await expect(access(summaryPath)).rejects.toThrow();
+    });
+
+    it("--report github: GITHUB_ACTIONS=true のアノテーションは JSON モードでは stderr、text モードでは stdout へ出る", async () => {
+      const flowPath = join(workDir, "ng.yaml");
+      await writeFile(flowPath, FAILING_FLOW(fixture.baseUrl), "utf-8");
+      vi.stubEnv("GITHUB_ACTIONS", "true");
+
+      await runCommand(
+        [flowPath],
+        baseOptions({ report: "github", reportFile: [join(workDir, "a.md")] }),
+      );
+      expect(readJson().status).toBe("failed");
+      expect(stderrSpy.join("")).toContain("::error file=");
+      expect(stderrSpy.join("")).toContain("title=ng flow / bad%2C step%3Ax::");
+
+      stdoutSpy.length = 0;
+      stderrSpy.length = 0;
+      await runCommand(
+        [flowPath],
+        baseOptions({ report: "github", reportFile: [join(workDir, "b.md")], text: true }),
+      );
+      expect(stdoutSpy.join("")).toContain("::error file=");
+      expect(stderrSpy.join("")).not.toContain("::error");
+    });
+  });
+
   it("--report にフォーマット数と異なる回数の --report-file を渡すと exit 1 で何も書き出さない", async () => {
     const flowPath = join(workDir, "success-for-report-count-mismatch.yaml");
     await writeFile(

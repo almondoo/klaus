@@ -804,7 +804,7 @@ export type Environment = z.infer<typeof environmentSchema>;
  * CLI 側(src/cli/run.ts の resolveReportTargets)もこの一覧・パース関数を再利用し、
  * サポートするフォーマットが増減したときの更新箇所を一つに保つ。
  */
-export const REPORT_FORMATS = ["junit", "tap"] as const;
+export const REPORT_FORMATS = ["junit", "tap", "html", "github"] as const;
 export type ReportFormat = (typeof REPORT_FORMATS)[number];
 
 function isReportFormat(value: string): value is ReportFormat {

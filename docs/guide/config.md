@@ -49,7 +49,7 @@ http:
 | Key | Corresponding CLI option | Type |
 |---|---|---|
 | `run.env` | `klaus run --env <name>` | string |
-| `run.report` | `klaus run --report <list>` | comma-separated list of `"junit"` / `"tap"` (e.g. `"junit,tap"`) |
+| `run.report` | `klaus run --report <list>` | comma-separated list of `"junit"` / `"tap"` / `"html"` / `"github"` (e.g. `"junit,html"`) |
 | `run.reportFile` | `klaus run --report-file <path>` | string |
 | `run.history` | `klaus run --no-history` (equivalent to disabling with `false`) | boolean |
 | `run.mask` | `klaus run --no-mask` (equivalent to disabling with `false`) | boolean |

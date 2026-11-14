@@ -49,7 +49,7 @@ http:
 | キー | 対応する CLI オプション | 型 |
 |---|---|---|
 | `run.env` | `klaus run --env <name>` | string |
-| `run.report` | `klaus run --report <list>` | `"junit"` / `"tap"` のカンマ区切りリスト(例: `"junit,tap"`) |
+| `run.report` | `klaus run --report <list>` | `"junit"` / `"tap"` / `"html"` / `"github"` のカンマ区切りリスト(例: `"junit,html"`) |
 | `run.reportFile` | `klaus run --report-file <path>` | string |
 | `run.history` | `klaus run --no-history`(`false` で無効化に相当) | boolean |
 | `run.mask` | `klaus run --no-mask`(`false` で無効化に相当) | boolean |
