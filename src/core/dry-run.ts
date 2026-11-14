@@ -3,6 +3,7 @@ import { loadEnvironment, toTemplateVariables } from "./env.js";
 import { GuardRefusalError, KlausError } from "./errors.js";
 import type { GuardOptions } from "./guard.js";
 import { parseAllowedHostEntry } from "./guard.js";
+import { mergeHttpConfig } from "./http-session.js";
 import {
   assertSendAllowed,
   buildRunUnits,
@@ -12,7 +13,7 @@ import {
   type LoadedFlowEntry,
   type StepGuard,
 } from "./runner.js";
-import type { Environment, Flow, Step } from "./schema.js";
+import type { AuthDef, Environment, Flow, HttpConfig, Step } from "./schema.js";
 import type { TemplateContext } from "./template.js";
 import type { RequestSnapshot } from "./types.js";
 
@@ -29,6 +30,8 @@ export interface DryRunOptions {
   allowProtected?: boolean | undefined;
   /** 送信先ホストの許可リスト(実行時と同じ判定を通す) */
   guard?: GuardOptions | undefined;
+  /** klaus.config.yaml の http(RunFlowOptions.http と同じ意味。dry-run では http.auth の展開にだけ使い、何も送信しない) */
+  http?: HttpConfig | undefined;
   /** --data の行データ。実行時と同じ順序(行(外側) × フロー(内側))でユニットに展開する */
   dataRows?: DataRow[] | undefined;
   /**
@@ -200,6 +203,8 @@ function dryRunStep(
   stepGuard: StepGuard | undefined,
   /** このステップより前のステップが capture で定義する変数名 */
   priorCaptureNames: ReadonlySet<string>,
+  /** http.auth(設定ファイルとフローをマージした既定の認証ヘルパー) */
+  defaultAuth: AuthDef | undefined,
 ): DryRunStepResult {
   const unresolved = new Set<string>();
   const templateContext: TemplateContext = {
@@ -217,7 +222,7 @@ function dryRunStep(
   };
 
   try {
-    const { snapshot } = expandStepRequest(step, templateContext);
+    const { snapshot } = expandStepRequest(step, templateContext, { defaultAuth });
     return {
       ...common,
       request: snapshot,
@@ -272,10 +277,12 @@ export async function dryRunFlow(
     secrets,
   };
 
+  // 設定ファイルの http.auth をフローの http.auth が上書きする(実行時と同じマージ)。トークンは取得しない
+  const defaultAuth = mergeHttpConfig(options.http, flow.http)?.auth;
   const priorCaptureNames = new Set<string>();
   const steps: DryRunStepResult[] = [];
   for (const step of flow.steps) {
-    steps.push(dryRunStep(step, baseContext, stepGuard, priorCaptureNames));
+    steps.push(dryRunStep(step, baseContext, stepGuard, priorCaptureNames, defaultAuth));
     for (const name of Object.keys(step.capture ?? {})) priorCaptureNames.add(name);
   }
 

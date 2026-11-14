@@ -208,6 +208,59 @@ export const assertSchema = z.strictObject({
 });
 export type AssertDef = z.infer<typeof assertSchema>;
 
+/** OAuth2 client credentials(RFC 6749 4.4)の設定。トークン取得リクエストにも安全柵が適用される */
+export const oauth2AuthSchema = z.strictObject({
+  grant: z
+    .literal("client_credentials")
+    .describe("OAuth2 grant type. Only `client_credentials` is supported."),
+  tokenUrl: z.string().describe("Token endpoint URL. Template placeholders are expanded."),
+  clientId: z.string().describe("Client ID. Template placeholders are expanded."),
+  clientSecret: z
+    .string()
+    .describe(
+      "Client secret, sent in the token request body. Template placeholders are expanded. Treated as a secret and masked.",
+    ),
+  scope: z.string().optional().describe("Space-separated scopes to request."),
+  audience: z
+    .string()
+    .optional()
+    .describe("Audience parameter (used by some providers, e.g. Auth0)."),
+});
+
+/**
+ * 認証ヘルパー。`none`(継承した http.auth の無効化)か、basic / bearer / oauth2 のいずれか 1 つ。
+ * 文字列値はテンプレート展開の対象で、パスワード・トークン・クライアントシークレットは秘密値として
+ * マスクされる。AWS SigV4 は扱わない。
+ */
+export const authSchema = z
+  .union([
+    z.literal("none"),
+    z.strictObject({
+      basic: z.strictObject({
+        username: z.string().describe("User name. Template placeholders are expanded."),
+        password: z
+          .string()
+          .describe(
+            "Password. Template placeholders are expanded. Treated as a secret and masked.",
+          ),
+      }),
+    }),
+    z.strictObject({
+      bearer: z.strictObject({
+        token: z
+          .string()
+          .describe(
+            "Bearer token. Template placeholders are expanded. Treated as a secret and masked.",
+          ),
+      }),
+    }),
+    z.strictObject({ oauth2: oauth2AuthSchema }),
+  ])
+  .describe(
+    'Authentication helper: "none", `{ basic: { username, password } }`, `{ bearer: { token } }`, or `{ oauth2: { grant: client_credentials, tokenUrl, clientId, clientSecret, scope?, audience? } }`. Sets the Authorization header (a step that also sets its own Authorization header is an error).',
+  );
+export type AuthDef = z.infer<typeof authSchema>;
+
 /** GraphQL リクエスト定義。query / variables の文字列値はテンプレート展開対象 */
 export const graphqlRequestSchema = z.strictObject({
   query: z
@@ -253,6 +306,11 @@ export const requestSchema = z
     graphql: graphqlRequestSchema
       .optional()
       .describe("GraphQL request definition. Mutually exclusive with `body`."),
+    auth: authSchema
+      .optional()
+      .describe(
+        'Authentication helper for this step. Overrides the flow-level `http.auth`; "none" disables an inherited one.',
+      ),
     timeoutMs: z
       .number()
       .positive()
@@ -341,6 +399,11 @@ const httpFlowFields = {
     .optional()
     .describe(
       "Keep Set-Cookie values received during the run in memory and send them on later matching requests. Never persisted across runs. Defaults to false.",
+    ),
+  auth: authSchema
+    .optional()
+    .describe(
+      'Default authentication helper for every HTTP and SSE step of the run. A step\'s own `request.auth` takes precedence; "none" disables it for a step.',
     ),
 };
 

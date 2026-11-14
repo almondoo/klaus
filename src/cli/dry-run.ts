@@ -7,6 +7,7 @@ import {
   maskDeep,
   ParseError,
 } from "../core/index.js";
+import { loadHttpOptions } from "./config.js";
 import {
   buildDryRunReport,
   formatDryRunJson,
@@ -32,7 +33,10 @@ export async function executeDryRun(
   const collectedSecrets: string[] = [];
   let result: DryRunResult;
   try {
+    // klaus.config.yaml の http(http.auth の展開に使う。run と同じ既定値を読む)
+    const http = options.http ?? (await loadHttpOptions(process.cwd()));
     result = await dryRunLoadedFlows(entries, {
+      http,
       envNameOverride: options.env,
       envFilePath: options.envFile,
       variables: options.var,

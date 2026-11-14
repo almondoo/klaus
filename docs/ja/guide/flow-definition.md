@@ -45,6 +45,7 @@ http:
 steps: [ ... ]
 ```
 
+- `auth` はフロー全体の既定の[認証ヘルパー](#auth認証ヘルパー)で、ステップ自身の `request.auth` が優先する。
 - フローの実行 1 回につき HTTP クライアントを 1 つ作り、全ステップ(HTTP・SSE・WebSocket)で共有する。実行終了時に閉じる。cookie は保存しない。
 - 各キーは `klaus.config.yaml` の `http` セクション([HTTP クライアント](config.md#http-クライアント-http))の同じキーを上書きする。何も指定しなければリダイレクトを追わず、cookie も保持しない。
 - リダイレクトの各ホップは通常のリクエストと同じく `guard.allowedHosts` と `$protected` の判定を通る。拒否されたホップはステップを `error`(終了コード 3)にし、履歴に残る。経由した URL はステップ結果と履歴の `redirects` に入る。
@@ -69,6 +70,45 @@ request:
 ```
 
 レスポンスは Content-Type が JSON なら自動でパースされ、JSONPath アサーション / キャプチャの対象になる。それ以外はテキストとして保持され `bodyText` アサーションの対象になる。`http.followRedirects` を指定しない限りリダイレクトは追わない([http](#http-http-クライアント設定)を参照)。
+
+## auth(認証ヘルパー)
+
+```yaml
+http:
+  auth:                                  # 省略可: フロー内の全 HTTP / SSE ステップの既定
+    bearer: { token: "{{env.API_TOKEN}}" }
+steps:
+  - name: admin call
+    request:
+      method: GET
+      url: "{{baseUrl}}/admin"
+      auth:                              # 省略可: このステップだけ http.auth を上書き
+        basic: { username: admin, password: "{{env.ADMIN_PASSWORD}}" }
+  - name: public call
+    request:
+      method: GET
+      url: "{{baseUrl}}/public"
+      auth: none                         # 継承した http.auth をこのステップだけ無効にする
+  - name: machine to machine
+    request:
+      method: GET
+      url: "{{baseUrl}}/reports"
+      auth:
+        oauth2:
+          grant: client_credentials      # 対応する grant はこれだけ
+          tokenUrl: "{{authUrl}}/oauth/token"
+          clientId: "{{clientId}}"
+          clientSecret: "{{env.CLIENT_SECRET}}"
+          scope: "reports:read"          # 省略可
+          audience: "https://api.example.com"   # 省略可
+```
+
+- `basic` / `bearer` / `oauth2` のうち 1 つだけ(または文字列 `none`)。値はすべてテンプレートを使える。ヘルパーは `Authorization` ヘッダーを設定するため、ステップが自分で `Authorization` ヘッダーも指定しているとエラーになる。
+- `basic` は `Authorization: Basic <base64(username:password)>`、`bearer` は `Authorization: Bearer <token>` を送る。
+- `oauth2` は `tokenUrl` へ `POST`(`application/x-www-form-urlencoded`。ボディに `grant_type`・`client_id`・`client_secret` と、指定時は `scope` / `audience`)してアクセストークンを取得し、`Authorization: Bearer <token>`(サーバーが返す `token_type` があればそれ)として送る。トークンは実行中キャッシュし、`expires_in` が過ぎたら(5 秒早めに)取り直す。`expires_in` がなければ実行の間ずっと使う。トークン取得はステップではないため履歴には残らないが、通常のリクエストと同じ判定を通る: `guard.allowedHosts` を満たす必要があり(トークンエンドポイントのホストも許可リストに要る)、`$protected: readonly` では `POST` のため拒否される(そのフローは `--allow-protected` で実行する)。リダイレクトは追わず、`--record` / `--replay` でも動く。トークン取得の失敗はシークレットを出さずにステップを `error` にする。
+- パスワード・トークン・クライアントシークレット・取得したアクセストークン・`username:password` の base64 形は秘密値で、履歴・標準出力・JSON・レポート・エラーメッセージでマスクされる(4 文字未満の秘密値は認識されない)。
+- `auth` は HTTP と SSE のステップに効く。WebSocket ステップは自分の `headers` で指定する。
+- 別オリジンへのリダイレクトでは `Authorization` ヘッダーを落とす([http](#http-http-クライアント設定)を参照)。`klaus run --dry-run` は秘密値をマスクしたヘッダーを表示し、トークンは取得しない(OAuth2 のステップにはプレースホルダーが出る)。
 
 ## GraphQL
 

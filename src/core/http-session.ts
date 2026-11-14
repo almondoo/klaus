@@ -1,12 +1,21 @@
 import { readFileSync } from "node:fs";
 import { isAbsolute, resolve } from "node:path";
 import { Agent, type Dispatcher, ProxyAgent } from "undici";
+import {
+  buildTokenRequestBody,
+  type CachedToken,
+  extractAccessToken,
+  isTokenFresh,
+  type OAuth2Params,
+  parseTokenResponse,
+  tokenCacheKey,
+} from "./auth.js";
 import { CookieJar, splitSetCookieHeader } from "./cookie-jar.js";
 import { GuardRefusalError, RuntimeError } from "./errors.js";
 import { expandSecretVariants, maskString } from "./history.js";
-import type { HttpRequestOptions } from "./http.js";
+import type { HttpRequestOptions, HttpResponse } from "./http.js";
 import { DEFAULT_TIMEOUT_MS } from "./http.js";
-import type { FlowHttpConfig, HttpConfig } from "./schema.js";
+import type { AuthDef, FlowHttpConfig, HttpConfig } from "./schema.js";
 import { renderString, type TemplateContext } from "./template.js";
 
 /** リダイレクトを追う既定の最大ホップ数 */
@@ -46,7 +55,7 @@ export interface DroppedHeaders {
 }
 
 /**
- * フロー側の http 設定(followRedirects / maxRedirects / cookies)を、設定ファイル側の既定値にキー単位で上書きする。
+ * フロー側の http 設定(followRedirects / maxRedirects / cookies / auth)を、設定ファイル側の既定値にキー単位で上書きする。
  * proxy と tls はフローには書けない(スキーマが拒否する)ため、常に設定ファイル側(base)の値をそのまま使う。
  */
 export function mergeHttpConfig(
@@ -55,7 +64,7 @@ export function mergeHttpConfig(
 ): HttpConfig | undefined {
   if (!override) return base;
   const merged: HttpConfig = { ...base };
-  for (const key of ["followRedirects", "maxRedirects", "cookies"] as const) {
+  for (const key of ["followRedirects", "maxRedirects", "cookies", "auth"] as const) {
     const value = override[key];
     if (value !== undefined) (merged as Record<string, unknown>)[key] = value;
   }
@@ -153,6 +162,8 @@ export class HttpSession {
   private dispatcher: Dispatcher | undefined;
   private wsDispatcher: Dispatcher | undefined;
   private built = false;
+  /** 取得済みの OAuth2 トークン(実行単位のキャッシュ。実行終了時に破棄される) */
+  private readonly oauth2Tokens = new Map<string, CachedToken>();
   private readonly warned = new Set<string>();
 
   constructor(
@@ -160,6 +171,11 @@ export class HttpSession {
     private readonly onWarning?: (message: string) => void,
   ) {
     this.jar = config?.cookies === true ? new CookieJar() : undefined;
+  }
+
+  /** http.auth(ステップの request.auth が無いときに使う既定の認証ヘルパー) */
+  get defaultAuth(): AuthDef | undefined {
+    return this.config?.auth;
   }
 
   get followRedirects(): boolean {
@@ -342,6 +358,8 @@ export class HttpSession {
     discard: (response: R) => void,
     /** true なら実送信しない(replay)ため dispatcher を作らない */
     offline: boolean,
+    /** true ならリダイレクトを追わない(トークン取得など、ボディに秘密値を載せるリクエスト用) */
+    noRedirects = false,
   ): Promise<FollowResult<R>> {
     const startedAt = performance.now();
     const totalMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -387,7 +405,12 @@ export class HttpSession {
       );
 
       const location = response.headers.location;
-      if (!this.followRedirects || !isRedirectStatus(response.status) || location === undefined) {
+      if (
+        noRedirects ||
+        !this.followRedirects ||
+        !isRedirectStatus(response.status) ||
+        location === undefined
+      ) {
         return { response, redirects, elapsedMs: performance.now() - startedAt, droppedHeaders };
       }
       if (redirects.length >= this.maxRedirects) {
@@ -444,12 +467,68 @@ export class HttpSession {
     }
   }
 
+  /**
+   * OAuth2 client credentials のアクセストークンから Authorization ヘッダー値を得る。
+   * 実行単位でキャッシュし、期限が切れたら取り直す。トークン取得リクエストも通常のリクエストと同じ
+   * 安全柵(check)・proxy・TLS・record/replay(sendOne)を通る(保護環境の readonly ではメソッドが POST のため拒否される)。
+   * クライアントシークレットをボディに載せるため、リダイレクトは追わない。取得したトークンは秘密値として登録する。
+   */
+  async oauth2Header(
+    params: OAuth2Params,
+    context: TemplateContext,
+    check: HopCheck,
+    sendOne: HopSender<HttpResponse>,
+    offline: boolean,
+    timeoutMs: number,
+  ): Promise<string> {
+    const key = tokenCacheKey(params);
+    const cached = this.oauth2Tokens.get(key);
+    if (cached && isTokenFresh(cached)) return cached.header;
+
+    let followed: FollowResult<HttpResponse>;
+    try {
+      followed = await this.send<HttpResponse>(
+        {
+          method: "POST",
+          url: params.tokenUrl,
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            Accept: "application/json",
+          },
+          body: buildTokenRequestBody(params),
+          timeoutMs,
+        },
+        context,
+        check,
+        (options, onResponse) =>
+          sendOne(options, (response) => {
+            // レコード(カセットへの書き込み)より前に、受け取ったトークンを秘密値として登録する
+            const accessToken = extractAccessToken(response);
+            if (accessToken !== undefined) context.secrets?.add(accessToken);
+            onResponse(response);
+          }),
+        () => {},
+        offline,
+        true,
+      );
+    } catch (error) {
+      if (error instanceof GuardRefusalError) {
+        throw new GuardRefusalError(`oauth2 token request refused: ${error.message}`);
+      }
+      throw error;
+    }
+    const token = parseTokenResponse(followed.response);
+    this.oauth2Tokens.set(key, token);
+    return token.header;
+  }
+
   async close(): Promise<void> {
     const dispatchers = [this.dispatcher, this.wsDispatcher].filter(
       (dispatcher): dispatcher is Dispatcher => dispatcher !== undefined,
     );
     this.dispatcher = undefined;
     this.wsDispatcher = undefined;
+    this.oauth2Tokens.clear();
     await Promise.all(dispatchers.map((dispatcher) => dispatcher.close().catch(() => undefined)));
   }
 }

@@ -58,7 +58,7 @@ http:
 | `ui.host` | `klaus ui --host <host>` | string |
 | `ui.open` | `klaus ui --no-open` (equivalent to disabling with `false`) | boolean |
 | `guard.allowedHosts` | none (config only; see [Host allowlist](#host-allowlist-guard-allowedhosts)) | array of strings |
-| `http.followRedirects` / `http.maxRedirects` / `http.cookies` | none (a flow's top-level `http:` overrides them; see [HTTP client](#http-client-http)) | boolean / number (0-100) / boolean |
+| `http.followRedirects` / `http.maxRedirects` / `http.cookies` / `http.auth` | none (a flow's top-level `http:` overrides them; see [HTTP client](#http-client-http)) | boolean / number (0-100) / boolean / auth helper |
 | `http.proxy` | none (config only) | string (proxy URL) |
 | `http.tls.ca` / `http.tls.cert` / `http.tls.key` / `http.tls.insecure` | none (config only) | file paths / boolean |
 
@@ -101,11 +101,12 @@ guard:
 | `followRedirects` | Follow `301` / `302` / `303` / `307` / `308` one hop at a time (default `false`). Every hop goes through the same `guard.allowedHosts` and `$protected` checks as a normal request, and a refused hop ends the step as `error`. `301` / `302` on `POST` and `303` become a body-less `GET`; `307` / `308` keep the method and body. Moving to another origin (scheme, host, or port differs, including an https to http downgrade) drops `Authorization`, `Cookie`, `Proxy-Authorization`, and every header whose value contains a registered secret; other headers are forwarded. The visited URLs and the dropped header names (names only) are recorded in the result and history as `redirects` and `droppedHeaders` |
 | `maxRedirects` | Maximum hops (default `10`); exceeding it is an `error` |
 | `cookies` | Keep `Set-Cookie` values in memory for the run and send them on later matching requests (default `false`). Never persisted. Cookie values are secrets and masked in history and output. `Secure` cookies are never sent over `http://`. Cookies are always stored host-only: a `Domain` attribute naming the request host or one of its parents is accepted but does not widen the scope, so cookies are never shared with other subdomains (there is no public suffix list) |
+| `auth` | Default [authentication helper](flow-definition.md#auth-authentication-helpers) for every HTTP and SSE step; a flow's `http.auth` or a step's `request.auth` overrides it. Use <code v-pre>{{env.X}}</code> for secrets |
 | `proxy` | HTTP(S) proxy URL. The userinfo is a secret and masked. `HTTP_PROXY` and similar environment variables are never read |
 | `tls.ca` / `tls.cert` / `tls.key` | PEM file paths, resolved relative to this file. `cert` and `key` must be set together. Their contents are never printed |
 | `tls.insecure` | `true` disables certificate verification and prints a `warning:` line on stderr for every run |
 
-`proxy` and `tls` decide where traffic goes and whom it trusts, so they can only be set here. A flow file that contains `http.proxy` or `http.tls` fails validation (exit code 2). Likewise there is no CLI flag, `klaus req` option, or UI parameter for them. A flow's top-level `http:` may set only `followRedirects`, `maxRedirects`, and `cookies`, and overrides this section per key (see [Flow Definition Reference](flow-definition.md#http-http-client-settings)).
+`proxy` and `tls` decide where traffic goes and whom it trusts, so they can only be set here. A flow file that contains `http.proxy` or `http.tls` fails validation (exit code 2). Likewise there is no CLI flag, `klaus req` option, or UI parameter for them. A flow's top-level `http:` may set only `followRedirects`, `maxRedirects`, `cookies`, and `auth`, and overrides this section per key (see [Flow Definition Reference](flow-definition.md#http-http-client-settings)).
 
 - The proxy URL may use <code v-pre>{{env.X}}</code> (OS environment variables) as a template, but not flow variables or captures.
 - The proxy host itself is trusted configuration and is not checked against `guard.allowedHosts`. The final destination of every request (and every redirect hop) is still checked, both for plain HTTP through the proxy and for `CONNECT` tunnels, and a refused request never reaches the proxy.

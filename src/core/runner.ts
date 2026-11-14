@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { JSONPath } from "jsonpath-plus";
 import { evaluateAssertions } from "./assert.js";
+import { expandAuth, type OAuth2Params } from "./auth.js";
 import {
   appendCassetteEntry,
   buildCassetteEntry,
@@ -26,7 +27,7 @@ import type { HttpRequestOptions, HttpResponse, RawHttpResponse } from "./http.j
 import { sendRawRequest, sendRequest } from "./http.js";
 import { type FollowResult, HttpSession, mergeHttpConfig } from "./http-session.js";
 import { loadFlow } from "./loader.js";
-import type { Environment, Flow, HttpConfig, RequestDef, Step } from "./schema.js";
+import type { AuthDef, Environment, Flow, HttpConfig, RequestDef, Step } from "./schema.js";
 import { requestSchema } from "./schema.js";
 import { receiveSse } from "./sse.js";
 import { renderDeep, renderHeaders, renderString, type TemplateContext } from "./template.js";
@@ -363,6 +364,17 @@ export interface ExpandedStepRequest {
    * 展開後の送信内容。WS ステップは method が "WS" で、body は送信するメッセージ列(送信なしなら undefined)になる
    */
   snapshot: RequestSnapshot;
+  /**
+   * OAuth2 client credentials を使うステップの設定。実行時(executeStep)にトークンを取得して Authorization ヘッダーを
+   * 差し替える。dry-run は取得せず、snapshot のヘッダーにプレースホルダーが入ったままになる
+   */
+  oauth2?: OAuth2Params;
+}
+
+/** expandStepRequest の追加入力 */
+export interface ExpandOptions {
+  /** http.auth(ステップの request.auth が無いときに使う既定の認証ヘルパー) */
+  defaultAuth?: AuthDef | undefined;
 }
 
 /**
@@ -373,6 +385,7 @@ export interface ExpandedStepRequest {
 export function expandStepRequest(
   step: Step,
   templateContext: TemplateContext,
+  options: ExpandOptions = {},
 ): ExpandedStepRequest {
   if (step.ws) {
     const url = renderString(step.ws.url, templateContext);
@@ -403,9 +416,17 @@ export function expandStepRequest(
     request.query,
     templateContext,
   );
-  const headers = renderHeaders(request.headers, templateContext);
+  const renderedHeaders = renderHeaders(request.headers, templateContext);
+  // 認証ヘルパー(request.auth、無ければ http.auth)。basic / bearer はここでヘッダーが確定し、
+  // oauth2 は実行時にトークンを取得する(ここではネットワークに出ない)
+  const auth = expandAuth(request.auth, options.defaultAuth, templateContext, renderedHeaders);
+  const headers = auth ? { ...renderedHeaders, Authorization: auth.header } : renderedHeaders;
   const body = buildRequestBody(request, templateContext);
-  return { kind: isSseStep(step) ? "sse" : "http", snapshot: { method, url, headers, body } };
+  return {
+    kind: isSseStep(step) ? "sse" : "http",
+    snapshot: { method, url, headers, body },
+    ...(auth?.kind === "oauth2" ? { oauth2: auth.params } : {}),
+  };
 }
 
 /**
@@ -688,8 +709,28 @@ async function executeStep(
 
     // テンプレート展開(未解決変数・OS 環境変数未定義は RuntimeError として catch 節に落ちる)
     // graphql 指定時のみ method 省略可であり、その場合は POST を既定にする
-    requestSnapshot = expandStepRequest(step, templateContext).snapshot;
-    const { method, url, headers, body } = requestSnapshot;
+    const expanded = expandStepRequest(step, templateContext, { defaultAuth: session.defaultAuth });
+    let snapshot = expanded.snapshot;
+    if (expanded.oauth2) {
+      // トークンを取得して Authorization ヘッダーを差し替える。送信するリクエスト本体の安全柵を先に判定し、
+      // 拒否されるリクエストのためにクライアントシークレットをトークンエンドポイントへ送らないようにする。
+      // トークン取得リクエストも同じ判定・record/replay を通る
+      const oauthReplay = recording?.mode === "replay";
+      assertSendAllowed(stepGuard, snapshot.method, snapshot.url, snapshot.headers, oauthReplay);
+      const authorization = await session.oauth2Header(
+        expanded.oauth2,
+        templateContext,
+        (hopMethod, hopUrl, hopHeaders) =>
+          assertSendAllowed(stepGuard, hopMethod, hopUrl, hopHeaders, oauthReplay),
+        (hopOptions, onResponse) =>
+          resolveHttpResponse(recording, hopOptions, templateContext.secrets, onResponse),
+        oauthReplay,
+        request.timeoutMs,
+      );
+      snapshot = { ...snapshot, headers: { ...snapshot.headers, Authorization: authorization } };
+    }
+    requestSnapshot = snapshot;
+    const { method, url, headers, body } = snapshot;
 
     if (isSseStep(step)) {
       // SSE は HTTP メソッドに従う(record/replay は SSE 非対応のため、ここでは常に実送信になる)

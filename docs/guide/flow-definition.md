@@ -45,6 +45,7 @@ http:
 steps: [ ... ]
 ```
 
+- `auth` is the flow-wide default [authentication helper](#auth-authentication-helpers); a step's own `request.auth` takes precedence.
 - One HTTP client is created per run of the flow and shared by all steps (HTTP, SSE, and WebSocket). It is closed when the run ends; cookies are never persisted.
 - Each key overrides the same key in the `http` section of `klaus.config.yaml` ([HTTP client](config.md#http-client-http)). With nothing set, redirects are not followed and no cookies are kept.
 - Every redirect hop is checked against `guard.allowedHosts` and `$protected` like a normal request; a refused hop makes the step `error` (exit code 3) and is recorded in history. The visited URLs appear as `redirects` in the step result and history.
@@ -69,6 +70,45 @@ request:
 ```
 
 If the Content-Type is JSON, the response is automatically parsed and becomes the target of JSONPath assertions / captures. Otherwise it's kept as text and becomes the target of `bodyText` assertions. Redirects are not followed unless `http.followRedirects` is set (see [http](#http-http-client-settings)).
+
+## auth (authentication helpers)
+
+```yaml
+http:
+  auth:                                  # Optional: default for every HTTP / SSE step in the flow
+    bearer: { token: "{{env.API_TOKEN}}" }
+steps:
+  - name: admin call
+    request:
+      method: GET
+      url: "{{baseUrl}}/admin"
+      auth:                              # Optional: overrides http.auth for this step
+        basic: { username: admin, password: "{{env.ADMIN_PASSWORD}}" }
+  - name: public call
+    request:
+      method: GET
+      url: "{{baseUrl}}/public"
+      auth: none                         # Disables an inherited http.auth for this step
+  - name: machine to machine
+    request:
+      method: GET
+      url: "{{baseUrl}}/reports"
+      auth:
+        oauth2:
+          grant: client_credentials      # The only supported grant
+          tokenUrl: "{{authUrl}}/oauth/token"
+          clientId: "{{clientId}}"
+          clientSecret: "{{env.CLIENT_SECRET}}"
+          scope: "reports:read"          # Optional
+          audience: "https://api.example.com"   # Optional
+```
+
+- Exactly one of `basic`, `bearer`, `oauth2` (or the string `none`). All values support templates. The helper sets the `Authorization` header; a step that also sets its own `Authorization` header is an error.
+- `basic` sends `Authorization: Basic <base64(username:password)>`, `bearer` sends `Authorization: Bearer <token>`.
+- `oauth2` fetches an access token with `POST` to `tokenUrl` (`application/x-www-form-urlencoded`, with `grant_type`, `client_id`, `client_secret`, and the optional `scope` / `audience` in the body) and sends it as `Authorization: Bearer <token>` (or the `token_type` the server returns). The token is cached for the run and fetched again when its `expires_in` has passed (5 seconds early); without `expires_in` it is kept for the whole run. The token request is not a step and is not recorded in history, but it goes through the same checks as any request: it must satisfy `guard.allowedHosts`, so the token endpoint's host has to be allowed too, and under `$protected: readonly` it is refused because it is a `POST` (use `--allow-protected` to run such a flow). It never follows redirects, and works with `--record` / `--replay`. A failed token request ends the step as `error` without echoing the secret.
+- Passwords, tokens, client secrets, fetched access tokens, and the base64 form of `username:password` are secrets: they are masked in history, stdout, JSON, reports, and error messages (a secret shorter than 4 characters is not recognized).
+- `auth` applies to HTTP and SSE steps; WebSocket steps set their own `headers`.
+- The `Authorization` header is dropped when a redirect moves to another origin (see [http](#http-http-client-settings)). `klaus run --dry-run` shows the header with secrets masked and never fetches a token (an OAuth2 step shows a placeholder).
 
 ## GraphQL
 

@@ -109,6 +109,7 @@ export {
 } from "./runner.js";
 export type {
   AssertDef,
+  AuthDef,
   BodyAssertion,
   BodyTextAssertion,
   CliConfig,
@@ -133,6 +134,7 @@ export type {
 } from "./schema.js";
 export {
   assertSchema,
+  authSchema,
   bodyAssertionSchema,
   bodyTextAssertionSchema,
   configSchema,
