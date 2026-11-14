@@ -3,9 +3,35 @@
 Records what changed in each release, plus **the decisions behind it and the pitfalls I hit along the way**.
 The current spec lives in the respective references ([CLI](../../guide/cli.md) / [Flow definition](../../guide/flow-definition.md) / [Architecture](architecture.md)) — this is the place I keep "why it ended up this way."
 
-Changes in 0.2.0 through 0.14.3 are not recorded on this page (see the git history and GitHub Releases).
+0.2.0 through 0.14.4 were reconstructed after the fact from the git history (taking the `chore: vX.Y.Z` version-bump commits as boundaries: everything between the previous bump and a given bump belongs to that version). Only user-visible changes (feat / fix) are summarized, briefly; internal refactors, tests, and dependency-update details are left out.
 
-## Next release (unreleased)
+## 0.15.0
+
+Added guardrails. klaus is used by agents as well as humans, so this mechanically stops requests to the wrong destination and writes to environments that must be protected.
+
+### Destination host allowlist (`guard.allowedHosts`)
+
+Requests to any host not listed in `guard.allowedHosts` in `klaus.config.yaml` are refused. A refused step ends as `error` and the run exits with code 3. **There is deliberately no CLI flag to override it** (a per-invocation flag would let an agent lift the restriction imposed on it). If unset, there is no restriction, as before.
+
+### Read-only mode for protected environments (`$protected: readonly`)
+
+`$protected: readonly` in an environment file allows only `GET` / `HEAD` / `OPTIONS` (every other method and every WebSocket step is refused). A read-style request carrying a method-override header (such as `X-HTTP-Method-Override`) is refused as well. `--allow-protected` lifts it.
+
+### Behaviour change: UI writes to protected environments are refused with 403
+
+Writes from `klaus ui` to a protected environment (`$protected: true` / `readonly`), namely the environment `PUT` and saving via capture, are now **refused with 403**. If you were changing a protected environment's values through the UI, edit the environment file directly instead.
+
+### Audit fields in history, and refusals recorded
+
+History entries now record `env` / `file` / `actor` (`kind` is `human` / `agent` / `ci`, detected from environment variables) / `git`. A step refused by a guardrail is also kept in history, with the (masked) request that would have been sent and the refusal reason; nothing was actually sent. View them with `klaus history --fields env,file,actor,git`.
+
+### `run --actor <name>`
+
+An option that sets `actor.name` in history. `actor.kind` is still detected from the environment.
+
+## 0.14.4
+
+Mostly the move of the development environment to Node 26 / pnpm 12 and a bulk dependency update. The only change in runtime behaviour is the JSONPath engine upgrade below.
 
 ### Upgraded the JSONPath engine (jsonpath-plus) to v11
 
@@ -21,6 +47,157 @@ jsonpath-plus was upgraded from v10.4.0 to v11.2.2. Because it includes upstream
 Results for common forms such as `$.a.b`, `$['k']`, filters, `..`, `*`, and `.length` are unchanged. Review the expected values in your captures and assertions only if you use comma-containing keys or the `[0:0]` slice.
 
 The supported runtime is Node.js `>=22.19.0` (`engines.node`). CI verifies both the floor, 22.19.0, and the latest, 26.
+
+## 0.14.3
+
+- History entries are now stored in the file for the **UTC date** of `startedAt` rather than the append time. This fixes entries dropping out of paging when the clock moves backwards, and `historyRef.date` disagreeing with the real file for steps that cross UTC midnight (the "local date" wording in the docs was also corrected)
+- Loading a history page is faster: it reads from the newest file and stops early
+
+## 0.14.2
+
+No user-visible changes (only the biome config `$schema` was updated).
+
+## 0.14.1
+
+- History and cassette files are now created with owner-only permissions
+- Fixed the UI capture API being able to overwrite the reserved key `$protected` (it is now refused)
+
+## 0.14.0
+
+- Migrated the UI's API layer to TanStack Query (no change in look or features; an internal restructuring that refetches the env after capture via cache invalidation)
+
+## 0.13.5
+
+No user-visible changes (extended the retention period of the CI npm-package artifact).
+
+## 0.13.4
+
+- Fixed drift between the agent-facing documentation (Agent Skill / `AGENTS.md` template) and the implementation, and added a test that detects such drift
+
+## 0.13.3
+
+- Brought the Agent Skill up to date with the v0.13 features (`--tags` / `--jobs` / `--data` / TAP, etc.)
+
+## 0.13.2
+
+- Fixed missing backslash escaping in TAP reports (a CodeQL finding). Compilation of user-supplied regular expressions was also consolidated in one place
+- Documented that regexes in assertions are template-expanded
+- Updated dependencies (eventsource-parser v4, the nanoid vulnerability fix). Added `minimumReleaseAge` to `pnpm-workspace.yaml` so freshly published versions are not resolved
+
+## 0.13.1
+
+Fixes from review feedback.
+
+- Guaranteed the ordering of history queries
+- The UI history view now shows the `--data` iteration number
+- `--report-file` destinations are now checked for duplicates
+- Fixed the comparison and quote validation of `if` conditions
+- `envFilePath` is now resolved relative to the cwd
+
+## 0.13.0
+
+- Added `klaus run --jobs <n>`. Runs flows (files) in parallel, up to 32. Steps within one flow always stay sequential. Cannot be combined with `--record`
+
+## 0.12.0
+
+- Added the TAP reporter (`--report tap`)
+- `--report` now accepts several formats at once, comma-separated (e.g. `junit,tap`). Pass `--report-file` the same number of times as formats, in the same order
+
+## 0.11.0
+
+- Added per-flow tag selection (`--tags` is OR; `--exclude-tags` excludes and takes precedence)
+
+## 0.10.0
+
+- Added `klaus run --data <path>`. Runs all the given flows once for each row of a JSON / YAML data file (data-driven, one iteration per row)
+
+## 0.9.0
+
+- Added the `if` condition to steps. A condition in a restricted syntax; when false, the step is skipped
+
+## 0.8.0
+
+- Added `continueOnError` to steps. Subsequent steps run even after a failure
+
+## 0.7.0
+
+- Added `klaus run --var key=value` (ad-hoc template variables; not masked as secrets) and `--env-file <path>` (an environment file at an arbitrary path)
+
+## 0.6.0
+
+- Added per-step `retry`. Retries failed / error steps and records the attempt count (`attempts`) in history
+- Fixed terminal control-sequence injection and directory-boundary bypass via symbolic links (security). The text reporter and `history` output now sanitize flow and step names, and path resolution for environment files, `step.use`, and the server additionally checks boundaries on real paths. Because the check and the read are separate syscalls, a swap during execution (TOCTOU) cannot be prevented; this is documented as a known limitation
+
+## 0.5.4
+
+- Reported invalid values of `--port` / `--last` through `InvalidArgumentError` for cleaner errors
+- Reorganized the documentation (added troubleshooting, grouped the sidebar, condensed the README). Added nested and array-index JSONPath examples for `capture`, and aligned the Agent Skill text with the implementation
+- Overhauled `examples/` and `make verify` (samples for every flow type, and a single Docker verification path)
+
+## 0.5.3
+
+- Updated dependencies, eliminating the vulnerable vite 5 line
+
+## 0.5.2
+
+No user-visible changes (an internal refactor consolidating duplicated logic across all layers into shared helpers).
+
+## 0.5.1
+
+- Fixed mismatches between the documentation and the implementation, and made English the site's default locale. Updated the CLI `--help` pointers to match the docs restructuring
+
+## 0.5.0
+
+A large release: feature additions across the execution engine, the CLI, and the UI server.
+
+- Added step references via `use:`. Reuses the request / assert of a single-step flow from another file (assertions are merged additively; cycles and the cwd boundary are checked)
+- Added `$protected` environments. `$protected: true` in an environment file declares a protected environment, and sending is refused (exit code 3) without `--allow-protected`. The UI's environment API always isolates `$protected`
+- Added `assert.bodySchema`. JSON Schema validation with ajv, returning one assertion result per violation
+- Added record / replay. `--record <dir>` saves real requests to a masked cassette, and `--replay <dir>` replays them without the network (unrecorded requests exit with code 3; SSE / WebSocket are unsupported)
+- Added `klaus generate` (generates flow scaffolds from OpenAPI)
+- Made `run` / `ui` defaults configurable in `klaus.config.yaml`. Precedence is explicit CLI > config > built-in defaults. The JSON Schema is available via `klaus schema --target config`
+- Added `-H, --host` and `--no-open` to `klaus ui` and made 4884 the default port. Token authentication and CSRF are always enforced for non-loopback hosts. Fixed the crash when no opener exists, making it usable in containers
+- Added `klaus run --text` (choose text output even when not a TTY; mutually exclusive with `--json`)
+- `validate` output now includes the YAML line and column
+- Strengthened secret masking (URL-encoded and JSON-escaped variants are detected too; JSON output masks the object tree before serialization)
+- Added the Agent Skill, a guide for operating klaus. Also updated the `AGENTS.md` template generated by `klaus init`
+- Reorganized `examples/` into `api/` (single checks) and `flows/` (scenarios)
+
+## 0.4.1
+
+Security fixes.
+
+- Fixed URL-encoded secrets slipping past the masking in history
+- Fixed secrets leaking in report output, and control-character injection
+- Environment files in untrusted ancestor directories (such as a `/tmp/environments/` another user can write to) are no longer loaded. For a candidate found above the cwd, the owner and other-writable bit are checked, and an untrusted one is refused with exit code 2 (POSIX only; group-writable is tolerated)
+
+## 0.4.0
+
+- Unknown keys and typos in flow YAML are now validation errors (exit code 2), by making every schema strict
+- Generated and published JSON Schemas for flows and run reports, in the npm package and on the docs site. The `run --json` output (v2) is also a zod schema now, available via `klaus schema --target run-report`
+- Unified CLI output in English, and added the docs URL, `klaus init`, and an exit-code summary to the end of `--help`. Unresolved-template errors now list the resolvable variable names (key names only)
+- Introduced test coverage measurement and enforced lines 90% in CI
+
+## 0.3.0
+
+Features aimed at single-shot execution from agents and the UI.
+
+- UI: added a single-request execution mode as the default screen (editing method / url / headers / query / body, and showing the result). Added a `query` field to `request`
+- UI: added viewing and editing of environments (preserving YAML comments) with a key-value editor. Extended the CSRF check to POST / PUT / DELETE
+- UI: added a capture endpoint that extracts a response value with JSONPath and saves it to the environment, plus a save-afterwards UI
+- CLI: made the `run --json` output v2 (compact, failure-focused, truncated at 500 characters, with a `historyRef` for fetching the full record)
+- CLI: added `klaus history` / `klaus history show`
+- CLI: `klaus init` now generates `AGENTS.md` (a guide for agents)
+- CLI: added `klaus validate` (validation with fix hints) and `klaus schema` (JSON Schema output)
+- Added a note to the history list column header that the duration is the total of all steps
+- Switched the publish list to explicit positive patterns and excluded sourcemaps from the npm package
+
+## 0.2.0
+
+- SSE events and skipped steps are now recorded in history, and secret values are masked
+- `environments/` is now resolved by searching upward from the cwd
+- Added `klaus init` (scaffold generation)
+- Bundled runtime dependencies into `dist`, pinning the supply chain at publish time
 
 ## 0.1.1
 

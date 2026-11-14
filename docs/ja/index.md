@@ -12,6 +12,7 @@ API 検証 CLI「klaus」のドキュメント目次。
 - [record / replay モード](guide/record-replay.md) — 実ネットワークの代わりに記録済みカセットでフローを検証する
 - [localhost UI](guide/ui.md) — `klaus ui` の使い方、セキュリティモデル
 - [Agent Skill(Claude Code / Codex)](guide/agent-skill.md) — 同梱の Agent Skill で AI コーディングエージェントに klaus の使い方を教える
+- [他ツールとの比較](guide/comparison.md) — Hurl・Bruno・runn・Step CI と比べた klaus の位置づけと、他のツールが向く場面
 - [トラブルシューティング](guide/troubleshooting.md) — klaus が実際に出力するエラーメッセージと、その原因・対処
 
 ## リファレンス

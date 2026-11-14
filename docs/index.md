@@ -12,6 +12,7 @@ Documentation index for klaus, the API verification CLI.
 - [record / replay mode](guide/record-replay.md) — verify flows against a recorded cassette instead of the live network
 - [localhost UI](guide/ui.md) — how to use `klaus ui`, and its security model
 - [Agent Skill (Claude Code / Codex)](guide/agent-skill.md) — teach an AI coding agent klaus's workflow via a bundled Agent Skill
+- [Comparison with other tools](guide/comparison.md) — where klaus fits next to Hurl, Bruno, runn, and Step CI, and where they are the better choice
 - [Troubleshooting](guide/troubleshooting.md) — real error messages klaus prints, with their cause and fix
 
 ## Reference
