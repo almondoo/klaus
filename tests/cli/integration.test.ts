@@ -1395,4 +1395,127 @@ steps:
     const nothing = await runCli(["snapshot", "accept", "no-such-run"], snapDir, cliPath, env);
     expect(nothing.status).toBe(1);
   });
+
+  it("(ac) --openapi: 仕様どおり(exit 0・カバレッジ)→ 違反(exit 4)→ カバレッジ下限(exit 4)→ run.openapi 設定 → 壊れた仕様(exit 2)→ 引数エラー(exit 1)→ dry-run の計画", async () => {
+    const apiDir = join(workDir, "openapi-scenario");
+    await mkdir(apiDir, { recursive: true });
+    await writeFile(
+      join(apiDir, "openapi.json"),
+      JSON.stringify({
+        openapi: "3.0.3",
+        info: { title: "Snap API", version: "1" },
+        paths: {
+          "/snap": {
+            get: {
+              responses: {
+                "200": {
+                  description: "ok",
+                  content: {
+                    "application/json": {
+                      schema: {
+                        type: "object",
+                        required: ["id"],
+                        properties: { id: { type: "integer" }, name: { type: "string" } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "/untested": { get: { responses: { "200": { description: "ok" } } } },
+        },
+      }),
+      "utf-8",
+    );
+    await writeFile(
+      join(apiDir, "flow.yaml"),
+      `name: api flow\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/snap"\n`,
+      "utf-8",
+    );
+    snapBody = { id: 1, name: "alice", at: "t1" };
+
+    const ok = await runCli(
+      ["run", "flow.yaml", "--openapi", "openapi.json", "--no-history"],
+      apiDir,
+      cliPath,
+    );
+    expect(ok.status).toBe(0);
+    expect(JSON.parse(ok.stdout).openapi).toMatchObject({
+      documents: [{ file: "openapi.json", title: "Snap API", operations: 2 }],
+      operations: { total: 2, covered: 1, percent: 50 },
+      uncovered: [{ operation: "GET /untested" }],
+      unmatched: [],
+      partial: false,
+      planned: false,
+    });
+
+    // 下限を下回ると、通ったステップがあっても exit 4(status も failed)
+    const below = await runCli(
+      [
+        "run",
+        "flow.yaml",
+        "--openapi",
+        "openapi.json",
+        "--openapi-coverage-min",
+        "80",
+        "--no-history",
+      ],
+      apiDir,
+      cliPath,
+    );
+    expect(below.status).toBe(4);
+    expect(JSON.parse(below.stdout)).toMatchObject({
+      status: "failed",
+      openapi: { coverageMin: { percent: 80, met: false } },
+    });
+
+    // 設定ファイルの run.openapi(設定ファイルからの相対パス)
+    await writeFile(join(apiDir, "klaus.config.yaml"), "run:\n  openapi: openapi.json\n", "utf-8");
+    const configured = await runCli(["run", "flow.yaml", "--no-history"], apiDir, cliPath);
+    expect(configured.status).toBe(0);
+    expect(JSON.parse(configured.stdout).openapi.operations.total).toBe(2);
+
+    // 応答が仕様に違反する
+    snapBody = { id: "not-a-number" };
+    const bad = await runCli(["run", "flow.yaml", "--no-history"], apiDir, cliPath);
+    expect(bad.status).toBe(4);
+    const report = JSON.parse(bad.stdout);
+    expect(report.flows[0].steps[0].assertions[0]).toMatchObject({
+      kind: "openapi",
+      ok: false,
+      openapi: {
+        state: "invalid",
+        operation: "GET /snap",
+        violations: [{ location: "body", path: "/id" }],
+      },
+    });
+    expect(report.openapi.violations).toBe(1);
+
+    // dry-run は送らず、計画のカバレッジだけを出す
+    const dry = await runCli(["run", "flow.yaml", "--dry-run"], apiDir, cliPath);
+    expect(dry.status).toBe(0);
+    expect(JSON.parse(dry.stdout).openapi).toMatchObject({
+      planned: true,
+      operations: { covered: 1 },
+    });
+
+    // 引数の誤りは exit 1、壊れた仕様は exit 2
+    await writeFile(join(apiDir, "klaus.config.yaml"), "run: {}\n", "utf-8");
+    const strictWithoutSpec = await runCli(
+      ["run", "flow.yaml", "--openapi-strict"],
+      apiDir,
+      cliPath,
+    );
+    expect(strictWithoutSpec.status).toBe(1);
+    const range = await runCli(
+      ["run", "flow.yaml", "--openapi", "openapi.json", "--openapi-coverage-min", "101"],
+      apiDir,
+      cliPath,
+    );
+    expect(range.status).toBe(1);
+    await writeFile(join(apiDir, "broken.yaml"), "openapi: 3.0.0\npaths: [\n", "utf-8");
+    const broken = await runCli(["run", "flow.yaml", "--openapi", "broken.yaml"], apiDir, cliPath);
+    expect(broken.status).toBe(2);
+  });
 });

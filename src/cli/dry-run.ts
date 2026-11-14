@@ -5,6 +5,8 @@ import {
   expandSecretVariants,
   type LoadedFlowEntry,
   maskDeep,
+  type OpenApiRunSummary,
+  type OpenApiValidator,
   ParseError,
 } from "../core/index.js";
 import { loadHttpOptions } from "./config.js";
@@ -29,6 +31,10 @@ export async function executeDryRun(
   dataRows: DataRow[] | undefined,
   options: RunCommandOptions,
   useJson: boolean,
+  /** --openapi 指定時の検証器。送らずに、展開後のリクエストが照合できるオペレーションを「計画済み」として数える */
+  openapi?: OpenApiValidator,
+  /** --tags / --exclude-tags で一部のフローだけを対象にしている(カバレッジは全体の一部) */
+  partial = false,
 ): Promise<number> {
   const collectedSecrets: string[] = [];
   let result: DryRunResult;
@@ -61,10 +67,29 @@ export async function executeDryRun(
   const variants = options.mask ? expandSecretVariants(collectedSecrets) : [];
   const masked = variants.length > 0 ? maskDeep(result, variants) : result;
 
+  // OpenAPI: 計画の集計は、マスク前の展開結果(URL に秘密値が入らない照合用)から作り、出力側のマスクは summary にも掛ける
+  let planned: OpenApiRunSummary | undefined;
+  if (openapi !== undefined) {
+    for (const flow of result.flows) {
+      for (const step of flow.steps) {
+        if (step.kind !== "http") {
+          openapi.exclude(flow.name, step.name, step.kind === "sse" ? "sse" : "websocket");
+        } else if (step.request !== undefined) {
+          openapi.plan(step.request.method, step.request.url);
+        }
+      }
+    }
+    const summary = openapi.summarize({
+      partial,
+      planned: true,
+    });
+    planned = variants.length > 0 ? maskDeep(summary, variants) : summary;
+  }
+
   if (useJson) {
-    process.stdout.write(`${formatDryRunJson(buildDryRunReport(masked))}\n`);
+    process.stdout.write(`${formatDryRunJson(buildDryRunReport(masked, planned))}\n`);
   } else {
-    process.stdout.write(formatDryRunText(masked));
+    process.stdout.write(formatDryRunText(masked, planned));
   }
   return hasDryRunFailure(result) ? 3 : 0;
 }

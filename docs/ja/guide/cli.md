@@ -36,6 +36,10 @@ klaus run <files...> [options]
 | `--dry-run` | 何も送信せず、各ステップの展開後リクエストと、安全柵が拒否するかどうかを出力する(後述の「ドライラン(--dry-run)」を参照)。`--record`・`--replay`・`--report` とは併用不可 | — |
 | `-u`, `--update-snapshots` | `assert.snapshot` の、異なる・未記録の基準を書き換え、古いエントリを取り除く(後述の「スナップショット」を参照)。`--dry-run`・`--replay`・`--ci` とは併用不可。`klaus.config.yaml` では設定できない | — |
 | `--ci` | `assert.snapshot` の基準が無いとき、書き込まずに失敗にする | 環境変数 `CI` が空・`0`・`false` 以外なら有効 |
+| `--openapi <path>` | すべての HTTP レスポンスを OpenAPI 3.0/3.1 の文書に照らして検証し、オペレーションのカバレッジを報告する(繰り返し指定可。後述の「OpenAPI の検証」を参照)。既定値は `klaus.config.yaml` の `run.openapi` | — |
+| `--openapi-base-url <url>` | リクエストの照合で、この URL も OpenAPI 文書のサーバーとして扱う。`--openapi` が必要 | — |
+| `--openapi-strict` | 照合できないリクエスト、文書に書かれていないステータスコード、検証できないレスポンスを失敗にする。`--openapi` が必要。`--dry-run` とは併用不可 | — |
+| `--openapi-coverage-min <percent>` | オペレーションのカバレッジがこの割合(0-100)未満なら実行を失敗(exit 4)にする。`--openapi` が必要。`--dry-run` とは併用不可 | — |
 
 `--report` はカンマ区切りのフォーマット一覧を受け取る(各要素は trim され、`junit`・`tap`・`html`・`github` のいずれかでなければならない)。未知のフォーマットや空要素を1つでも渡すと stderr にエラーを出して exit 1。`--report` はフォーマットの重複(例: `--report junit,junit`)や、`--report-file` の解決先パスがフォーマット間で同一になる場合も同様に stderr にエラーを出して exit 1 で拒否する(どちらも同一ファイルへの書き込みが競合するため)。`--report` に N 個のフォーマットを渡した場合、`--report-file` は**同じ順序でちょうど N 回**指定する(1個目の `--report-file` が1個目のフォーマットとペアになる)か、**一度も指定しない**(この場合フォーマットごとの既定ファイル名 — `junit` は `klaus-report.xml`、`tap` は `klaus-report.tap`、`html` は `klaus-report.html`、`github` は `klaus-report.md`(例外は [GitHub レポート](#github-レポート) を参照) — に書き出される)かのいずれかにする。それ以外の回数(例: 2フォーマットに対して `--report-file` を1回だけ)はエラーとして拒否され、exit 1 でどのファイルも書き出さない。これは単一フォーマットの従来挙動をそのまま一般化したものであり、`--report junit` 単体は変わらず `klaus-report.xml` が既定値になる。`--json` と `--text`、または `-e`/`--env` と `--env-file` を同時に指定した場合も同様に stderr にエラーを出して exit 1(何も実行しない)。この `-e`/`--env` と `--env-file` の併用エラーは、**コマンドラインで明示的に指定した** `-e`/`--env` に対してのみ発生する。`klaus.config.yaml` の `run.env` による既定値は、明示指定された `--env-file` と衝突せずそちらに道を譲る([CLI オプションの既定値](config.md)参照)。
 
@@ -54,7 +58,7 @@ klaus run <files...> [options]
 
 `--var` の値は <code v-pre>{{env.X}}</code>(OS 環境変数参照)と異なり、シークレットとして登録されず、出力でもマスクされない。真のシークレットを渡したい場合は OS 環境変数経由で <code v-pre>{{env.X}}</code> として参照し、[実行履歴](history.md)に記載のマスキングの恩恵を受けること。
 
-`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` / `--jobs` は `klaus.config.yaml` で既定値を設定できる。`--var`・`--env-file`・`--data`・`--tags`・`--exclude-tags`・`--dry-run` は設定できない。詳細は [CLI オプションの既定値](config.md) を参照。
+`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` / `--jobs` / `--openapi` は `klaus.config.yaml` で既定値を設定できる。`--var`・`--env-file`・`--data`・`--tags`・`--exclude-tags`・`--dry-run`・`--openapi-base-url`・`--openapi-strict`・`--openapi-coverage-min` は設定できない。詳細は [CLI オプションの既定値](config.md) を参照。
 
 ### タグによるフロー選択(--tags / --exclude-tags)
 
@@ -160,6 +164,56 @@ exit code は、安全柵に拒否されるステップ、または実行時に�
 - 古いエントリ(どのステップも生成しなかったキー)は、フローの全ステップが実行された(スキップがなく、すべての snapshot ステップが比較まで到達した)後にだけ判定する。部分的な実行で基準が消えることはない。`--data` なしで、データ駆動の実行で作られた `#<n>` のキーを含むファイルに対して実行すると、それらは古いエントリとして報告されるので、その状態で `-u` を併用しないこと。
 - `--dry-run` はスナップショットファイルに一切触れない。
 
+### OpenAPI の検証(--openapi)
+
+`--openapi <path>` は、実行中のすべての HTTP レスポンスを OpenAPI 文書に照らして検証し、実行がどのオペレーションを呼んだかを報告する。複数の文書は繰り返し指定する。[`klaus.config.yaml`](config.md) の `run.openapi` に書けば既定値にできる(明示した `--openapi` は設定ファイルの一覧を置き換える)。フロー自体の変更は不要。
+
+| オプション | 説明 |
+|---|---|
+| `--openapi <path>` | OpenAPI 3.0 または 3.1 の文書(YAML または JSON。繰り返し指定可) |
+| `--openapi-base-url <url>` | リクエストの照合で、この URL も文書のサーバーとして扱う(文書が本番 URL を持つときにステージングの URL を指すなど)。絶対 `http(s)` URL |
+| `--openapi-strict` | どのオペレーションにも照合できないリクエスト、文書に書かれていないステータスコード、検証できないレスポンスを失敗にする |
+| `--openapi-coverage-min <percent>` | リクエストに照合されたオペレーションの割合がこの値(0-100)未満なら、実行を失敗(exit 4)にする |
+
+`--openapi-base-url`・`--openapi-strict`・`--openapi-coverage-min` は `--openapi` が必要(無ければ exit 1)。`--dry-run` とは `--openapi-strict` と `--openapi-coverage-min` を併用できない(exit 1)。
+
+**文書。** 読むのはローカルファイルだけ。別のローカルの `.yaml` / `.yml` / `.json` への `$ref` は解決する(含んでいるファイルからの相対パス。フラグメントは JSON Pointer のみ)。リモートの `$ref`(`https://...`)は拒否する。すべての `$ref` は実行前に確認し、循環するスキーマにも対応する。読めない・パースできない文書、Swagger 2.0 の文書、解決できない `$ref`、上限(1 ファイル 8 MiB、合計 32 MiB・100 ファイル)を超えるファイルは exit 2 で、何も実行しない。メッセージにはファイル名と、構文エラーなら行・列を載せ、参照先ファイルの内容は載せない。文書の中身は一切実行しない。
+
+**リクエストとオペレーションの照合。** リクエスト URL(クエリ・フラグメントを除く)を、各オペレーションのサーバー、パステンプレート、メソッドの順に照合する。
+
+- サーバーは `servers`(文書・パス項目・オペレーションのいずれかのレベル。無ければ `/`)と `--openapi-base-url`。サーバー変数に対応し、`enum` を持つ変数はその値に、それ以外は 1 つのパスセグメント(既定値が `/` を含むなら複数)に一致する。`/v1` のような相対のサーバー URL は任意のオリジンに一致する。スキームとホストは大文字小文字を区別せず、既定のポートは無視する。
+- パステンプレートはセグメントごとに照合し、具体的なパスがテンプレートのパスより優先される(`/users/me` が `/users/{id}` より先)。候補になるのは、リクエストのメソッドを持つオペレーションだけ。末尾のスラッシュは無視する。
+- 複数の文書は、コマンドラインの順で最初に一致したものを使う。
+- どこにも一致しないリクエストはカバレッジの `unmatched` に載る。`--openapi-strict` を付けない限り、何も失敗にしない。
+
+**検証する内容**(照合できたレスポンスについて):
+
+1. **ステータス**: 完全一致のコード、次に `2XX`(該当する範囲)、次に `default`。文書に書かれていないステータスは報告され(`undocumented`)、`--openapi-strict` のときだけ失敗になる。そのステータスについて、他の検証はしない。
+2. **必須ヘッダー**: `required: true` のレスポンスヘッダーはすべて存在すること(大文字小文字を区別しない。`Content-Type` は対象外)。ヘッダーの値は検証しない。
+3. **content-type**: レスポンスが `content` を定義していて本文がある場合、`Content-Type`(パラメーターは無視)が宣言されたメディアタイプ(`application/json`、`text/*`、`*/*` など)のいずれかに一致すること。本文が空の場合と `HEAD` では、3 と 4 を省く。
+4. **本文**: JSON のメディアタイプ(`application/json` と `+json` 全般)では、同梱の Ajv(JSON Schema 2020-12)でスキーマに照らして検証する。JSON として不正な本文は違反になる。それ以外のメディアタイプは、content-type 以上の検証はしない。
+
+違反があるとステップは失敗になる(`kind: "openapi"` のアサーション、exit 4)。違反ごとに場所(`status`・`content-type`・`header`・`body`)と、本文なら `/items/0/id` のような JSON Pointer を持つ。保持するのは最大 20 件で、総数は `violationCount` に入る。レスポンスの値は違反に載せない。
+
+**スキーマのキーワード。** OpenAPI 3.1 のスキーマは JSON Schema 2020-12 なので、書かれたとおりに使う(`$ref` の兄弟キーワードも有効)。`$id`・`$schema`・`$anchor`・`$dynamicAnchor` は取り除き、`$dynamicRef` と `$recursiveRef` は警告を出して無視する。OpenAPI 3.0 では、`type` と並ぶ `nullable: true`(`enum` にも null を加える)と、真偽値の `exclusiveMinimum` / `exclusiveMaximum` を変換する。`$ref` の兄弟は、3.0 の仕様どおり無視する。どちらのバージョンでも次のとおり。
+
+- `format` は、既知のものも未知のものも検証しない(`date-time`・`uuid`・未知の format でレスポンスを失敗にしない)。
+- `readOnly` はレスポンスに影響しない。`writeOnly` のプロパティは、レスポンスに含まれないため `required` から外す。
+- `discriminator`・`xml`・`externalDocs`・`example` は注釈なので無視する。それ以外のキーワード(`pattern`・`enum`・`allOf` / `oneOf` / `anyOf`・`additionalProperties` など)は、書かれたとおりに検証する。
+- Ajv がコンパイルできないスキーマは警告にして、そのレスポンスは検証しない(`skipped`。`--openapi-strict` では失敗)。
+
+リクエストの検証(パラメーター・リクエストボディ)は行わない。
+
+**カバレッジ。** 実行結果に `openapi` の集計が付く。文書、オペレーションの数と照合できた数(`operations.total` / `covered` / `percent`)、カバーしたオペレーションごとに観測したステータスコードと文書に書かれたレスポンスのキー、未カバーのオペレーション、照合できなかったリクエスト(メソッドと、クエリを除いた URL)、検証の対象外にしたステップ、仕様に違反したレスポンスの数。JSON 出力、text のサマリー前の `openapi:` 行、HTML レポート、GitHub のサマリーに出る。
+
+- オペレーションは、レスポンスが 1 件でも照合できればカバー済み(ステータスは問わない)。
+- `--tags` / `--exclude-tags` で一部のフローだけを実行すると、カバレッジに `partial: true` が付く(text では `partial run`)。その一部だけのカバレッジという意味。
+- SSE ステップ、WebSocket ステップ、リダイレクトを追ったステップ(レスポンスが最初のリクエストのものではない)は検証せず、`excluded` に載せる。
+- `--openapi-coverage-min` を下回ると、stderr にエラーを出し、`coverageMin.met` を `false` にして、全ステップが成功していても実行を失敗(exit 4)で終える。
+- `--jobs`・`--data`(カバレッジはすべてのユニットの和集合)、`--replay`(再生したレスポンスも実際のものと同じく検証する)と併用できる。リトライしたステップは、すべての試行を数える。
+- `--dry-run` では何も送らず、何も検証しない。展開後のリクエスト URL を照合し、`planned: true` でカバレッジを報告する。ベースが未解決の変数のままの URL は、パスで照合する。
+- スキーマのコンパイルは実行ごとに 1 回、オペレーション単位で遅延して行う。
+
 ## 出力モード
 
 - **自動判定**: stdout が TTY なら text、非 TTY(パイプ / エージェント実行 / CI)なら JSON。`--json` で非 TTY でも JSON を強制、`--text` で TTY でなくても text を強制できる(両者は同時指定不可)
@@ -235,6 +289,7 @@ request/response スナップショットや assertions などの詳細を持つ
 - **historyRef**: 履歴記録が有効な実行(`--no-history` を付けていない)では、各ステップ(passed 含む)に `historyRef: { date, runId, step }` が付く。全文が必要な場合は `klaus history show <runId> --step <step>` で取得する(詳細は [klaus history](#klaus-history) / [実行履歴](history.md) を参照)。`historyRef.date` はそのステップが書き込まれた履歴ファイルの UTC 日付(ステップの `startedAt` から導出)。`--no-history` 実行時は `historyRef` を省略する
 - SSE / WebSocket ステップでは `response.body` は無く、受信データは `events`(SSE)/ `wsMessages`(WS)フィールドに入る
 - **snapshots**: トップレベルの集計 `snapshots: { matched, written, updated, mismatched, missing, obsolete, files, obsoleteEntries }`。snapshot アサーションを持つステップがある、スナップショットファイルに古いエントリがある、またはスナップショットファイルを書き込んだ場合にだけ付く(`files` は書き込んだファイルで、カレントディレクトリからの相対パス)。`assertions` の snapshot アサーションは `kind: "snapshot"`、`state`(`matched` / `written` / `updated` / `mismatch` / `missing`)、`snapshotKey`、`snapshotFile` を持ち、不一致なら `differences`(`[{ "path": "$.body.name", "kind": "changed", "before": "a", "after": "b" }]`、最大 20 件)と、総数の `differenceCount` も持つ。成功したステップは 1 行の要約なので、書き込んだ基準は `snapshots.written` / `snapshots.files` と、text 出力ではその `PASS` 行の `[snapshot written]` で分かる。`klaus snapshot accept` が書き込む候補は履歴に残り、この出力には含まれない
+- **openapi**: `--openapi` のときだけ付くトップレベルの `openapi` オブジェクト(`--dry-run --json` にも付き、`planned: true`): `documents`(`file`・`title`・`version`・`operations`)、`operations`(`total`・`covered`・`percent`)、`covered`(`operation`・`document`・`statuses`・`documented`)、`uncovered`、`unmatched`(`method`・`url`・`count`)、`excluded`(`flow`・`step`・`reason`: `sse` / `websocket` / `redirected`)、`violations`、`partial`、`planned`、任意で `coverageMin`(`percent`・`met`)と `truncated`(一覧を 1000 件で切り詰めた)。`assertions` の OpenAPI アサーションは `kind: "openapi"` と `openapi` オブジェクトを持つ。`state`(`valid` / `invalid` / `undocumented` / `unmatched` / `skipped`)、`operation`(`GET /users/{id}`)、`document`、`status`、`invalid` なら `violations`(`[{ "location": "body", "path": "/id", "message": "must be integer" }]`、最大 20 件)と、総数の `violationCount`。成功したステップは 1 行の要約なので、成功した実行が何をカバーしたかは `openapi` の集計でだけ分かる
 - **redirects / droppedHeaders**: リダイレクトを追った(`http.followRedirects`)ステップには、ステータスに関わらず `redirects`(最初のリクエストの後に辿った URL。最後が最終応答)が付き、別オリジンへの遷移で資格情報を落とした場合は `droppedHeaders`(`[{ "hop": 1, "headers": ["authorization"] }]`。ヘッダー名のみ)も付く。URL は他の URL と同じくマスクされる。text 出力の `FAIL` / `ERROR` では同じ情報を 1〜2 行にまとめて表示する
 - **warnings**: トップレベルの `"warnings": ["..."]`。1 件以上あるときだけ付く。`http.tls.insecure is enabled: TLS certificate verification is DISABLED for this run` や履歴の書き込み失敗など、ステップの成否には影響しない警告を重複なく載せる。同じ警告は従来どおり stderr にも `klaus: warning:` 行で出る。text 出力ではサマリーの前に `warning:` 行として出し、HTML・GitHub レポートにも載せる
 
@@ -285,6 +340,7 @@ request/response スナップショットや assertions などの詳細を持つ
 3. 実行後、runtime エラー(status "error")を含むフローがあれば **3**、なければアサーション失敗(status "failed")があれば **4**、全成功で **0**。3 と 4 が混在する場合は 3 を優先
 4. 履歴 JSONL の書き込み失敗は stderr への警告のみで、ステップ結果・exit code には影響しない
 5. `--dry-run` では何も送信せずアサーションも走らないため、4 は返らない。返るのは 0(すべて送信される)、1(`--record` / `--replay` / `--report` との併用などの引数エラー、またはタグ指定で 0 件)、2(パースエラー)、3(安全柵が拒否するステップ、または実行時にも失敗する展開エラー)のいずれか([ドライラン](#ドライラン-dry-run)を参照)
+6. `--openapi` では、読めない・不正な OpenAPI 文書は定義ファイルのエラー(exit 2、何も実行しない)、文書に違反するレスポンスはそのステップの失敗(4)、カバレッジが `--openapi-coverage-min` を下回れば、全ステップが成功していても実行は失敗(4)になる([OpenAPI の検証](#openapi-の検証-openapi)を参照)
 
 エージェント(Claude Code 等)は exit code だけで故障箇所を判別できる: 2 なら定義を直す、3 なら対象 API の起動状態を見る、4 ならアサーション内容とレスポンスを比較する。
 

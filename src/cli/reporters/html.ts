@@ -9,7 +9,7 @@ import {
   stringifyDetail,
 } from "./report-shared.js";
 import { sanitizeForXml } from "./sanitize.js";
-import { formatSnapshotSummary, summarizeSteps, truncate } from "./text.js";
+import { formatOpenApiSummary, formatSnapshotSummary, summarizeSteps, truncate } from "./text.js";
 
 /** formatHtml のオプション */
 export interface FormatHtmlOptions extends MaskedReportOptions {
@@ -106,6 +106,39 @@ function redirectBlocks(step: StepResult): string {
   return blocks.join("");
 }
 
+/** OpenAPI のカバレッジ(--openapi を指定した実行にだけ出す)。集計行と、未カバー・照合できなかったもの・対象外の一覧 */
+function openApiHtml(result: RunResult): string {
+  const openapi = result.openapi;
+  if (!openapi) return "";
+  const lines = formatOpenApiSummary(openapi)
+    .map((line) => `<p class="meta">${escapeHtml(line)}</p>`)
+    .join("");
+  const list = (title: string, items: string[]): string =>
+    items.length === 0
+      ? ""
+      : `<details><summary>${escapeHtml(title)} (${items.length})</summary><ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></details>`;
+  const coveredRows = openapi.covered
+    .map(
+      (c) =>
+        `<tr><td>${escapeHtml(c.operation)}</td><td>${escapeHtml(c.statuses.join(", "))}</td><td>${escapeHtml(c.documented.join(", "))}</td></tr>`,
+    )
+    .join("");
+  const coveredTable =
+    openapi.covered.length === 0
+      ? ""
+      : `<details><summary>Covered operations (${openapi.covered.length})</summary><table><thead><tr><th>Operation</th><th>Observed statuses</th><th>Documented</th></tr></thead><tbody>${coveredRows}</tbody></table></details>`;
+  return `<div class="openapi"><h2>OpenAPI</h2>${lines}${list(
+    "Uncovered operations",
+    openapi.uncovered.map((u) => u.operation),
+  )}${coveredTable}${list(
+    "Unmatched requests",
+    openapi.unmatched.map((u) => `${u.method} ${u.url} (x${u.count})`),
+  )}${list(
+    "Not validated",
+    openapi.excluded.map((e) => `${e.flow} / ${e.step} (${e.reason})`),
+  )}</div>\n`;
+}
+
 /** failed/error ステップの詳細(失敗アサーション + 切り詰め済みの request/response) */
 function stepDetail(step: StepResult): string {
   const blocks: string[] = [];
@@ -138,6 +171,23 @@ function stepDetail(step: StepResult): string {
         total > differences.length ? ` (${total - differences.length} more not shown)` : "";
       blocks.push(
         `<h3>Snapshot differences${escapeHtml(more)}</h3><table><thead><tr><th>Path</th><th>Kind</th><th>Baseline</th><th>This response</th></tr></thead><tbody>${diffRows}</tbody></table>`,
+      );
+    }
+    // OpenAPI の違反は、場所・パス・内容を表にする(全件は JSON 出力にある)
+    for (const a of failed) {
+      const violations = a.openapi?.violations ?? [];
+      if (violations.length === 0) continue;
+      const violationRows = violations
+        .map(
+          (v) =>
+            `<tr><td>${escapeHtml(v.location)}</td><td><code>${escapeHtml(v.path ?? "")}</code></td><td>${escapeHtml(v.message)}</td></tr>`,
+        )
+        .join("");
+      const total = a.openapi?.violationCount ?? violations.length;
+      const more =
+        total > violations.length ? ` (${total - violations.length} more not shown)` : "";
+      blocks.push(
+        `<h3>OpenAPI violations${escapeHtml(more)}</h3><table><thead><tr><th>Location</th><th>Path</th><th>Message</th></tr></thead><tbody>${violationRows}</tbody></table>`,
       );
     }
   } else if (step.status === "failed") {
@@ -232,7 +282,7 @@ export function formatHtml(runResult: RunResult, options?: FormatHtmlOptions): s
 <h1>klaus report ${badge(result.status)}</h1>
 <p class="meta">${metaItems}</p>
 <ul class="counts">${countItems}</ul>
-${snapshotsHtml}${warningsHtml}${result.flows.map(flowHtml).join("\n")}
+${snapshotsHtml}${warningsHtml}${openApiHtml(result)}${result.flows.map(flowHtml).join("\n")}
 </body>
 </html>
 `;

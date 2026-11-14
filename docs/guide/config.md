@@ -54,6 +54,7 @@ http:
 | `run.history` | `klaus run --no-history` (equivalent to disabling with `false`) | boolean |
 | `run.mask` | `klaus run --no-mask` (equivalent to disabling with `false`) | boolean |
 | `run.jobs` | `klaus run --jobs <n>` | number (1-32) |
+| `run.openapi` | `klaus run --openapi <path>` | string, or a list of strings (see below) |
 | `ui.port` | `klaus ui --port <n>` | number (1-65535) |
 | `ui.host` | `klaus ui --host <host>` | string |
 | `ui.open` | `klaus ui --no-open` (equivalent to disabling with `false`) | boolean |
@@ -63,6 +64,8 @@ http:
 | `http.tls.ca` / `http.tls.cert` / `http.tls.key` / `http.tls.insecure` | none (config only) | file paths / boolean |
 
 The `run.*` keys apply to `klaus run` only; `klaus req` reads only the `guard` and `http` sections of this file. All keys are optional. Unknown keys cause a schema validation error (see [Error handling](#error-handling) below).
+
+`run.openapi` takes one OpenAPI document or a list of them (`klaus run --openapi`, see [OpenAPI validation](cli.md#openapi-validation-openapi)). Relative paths are resolved from the directory of `klaus.config.yaml`, not from the current directory, and a `--openapi` on the command line replaces the configured list instead of adding to it. The other OpenAPI options (`--openapi-base-url`, `--openapi-strict`, `--openapi-coverage-min`) are not configurable: they change what makes a run fail, so they are chosen per invocation.
 
 `run.reportFile` only supports a single value (unlike the CLI's repeatable `--report-file`). If `run.report` lists more than one format (e.g. `junit,tap`) and `run.reportFile` is also set, that counts as one `--report-file` for N formats — the same count-mismatch error as passing too few `--report-file` flags on the CLI (see [CLI Reference](cli.md#klaus-run)). To set per-format paths for a multi-format `run.report`, pass `--report-file` on the command line instead (CLI values always take precedence over `klaus.config.yaml`, per the priority rule above).
 

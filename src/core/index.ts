@@ -110,6 +110,8 @@ export {
   normalizeOrigin,
   parseRequestTarget,
 } from "./mock.js";
+export type { OpenApiCheckInput, OpenApiLoadOptions, OpenApiResponseInput } from "./openapi.js";
+export { MAX_OPENAPI_VIOLATIONS, OpenApiValidator } from "./openapi.js";
 export {
   findUnsafeSymlinkInWritePath,
   isPathWithinDir,

@@ -124,3 +124,7 @@ Output mode is determined the same way as the other commands in the [CLI Referen
 | 2 | the spec is invalid (parsing or `$ref` resolution failed), or a generated file failed schema validation |
 
 When the spec is invalid, text mode writes only to stderr (nothing is printed to stdout). With `--json`, or when stdout is non-TTY (pipes, agent execution, CI), a JSON error report containing `errors` is written to stdout instead.
+
+## Validating responses against the spec
+
+The same document can also check responses: `klaus run <files> --openapi <spec>` validates every response of a run against it and reports operation coverage. Unlike `klaus generate`, it reads local files only and does not call `swagger-parser`. See [OpenAPI validation](cli.md#openapi-validation-openapi).

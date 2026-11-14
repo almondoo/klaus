@@ -25,6 +25,45 @@ import { summarizeSteps, truncate } from "./text.js";
  * - version: このスキーマの後方互換が壊れる変更(フィールド削除・型変更等)をする場合は値を上げること
  */
 
+/** openapi アサーションの詳細(kind が "openapi" のアサーションにだけ付く) */
+const openApiDetailSchema = z.strictObject({
+  state: z
+    .enum(["valid", "invalid", "undocumented", "unmatched", "skipped"])
+    .describe(
+      '"valid" (matches the specification), "invalid" (violates it; the assertion failed), "undocumented" (the status code is not documented; a failure only with --openapi-strict), "unmatched" (no operation matches the request; only reported as an assertion with --openapi-strict), "skipped" (the response could not be validated, e.g. its schema cannot be compiled; a failure only with --openapi-strict).',
+    ),
+  operation: z
+    .string()
+    .optional()
+    .describe("The matched operation, e.g. `GET /users/{id}`. Absent when unmatched."),
+  document: z
+    .string()
+    .optional()
+    .describe("The OpenAPI document of the matched operation, relative to the current directory."),
+  status: z.number().optional().describe("The HTTP status code of the response."),
+  violations: z
+    .array(
+      z.strictObject({
+        location: z
+          .enum(["status", "content-type", "header", "body"])
+          .describe("Which part of the response violates the specification."),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "For `body`: a JSON Pointer to the offending value (`/items/0/id`; empty for the root). For `header`: the header name.",
+          ),
+        message: z.string().describe("What is wrong (values from the response are not echoed)."),
+      }),
+    )
+    .optional()
+    .describe("The violations, at most 20."),
+  violationCount: z
+    .number()
+    .optional()
+    .describe("The total number of violations (greater than `violations.length` when capped)."),
+});
+
 /** アサーション1件の評価結果(src/core/types.ts の AssertionResult と同形)。expected/actual は任意の値を取りうる */
 const assertionResultSchema = z.strictObject({
   ok: z.boolean().describe("Whether this assertion passed."),
@@ -83,7 +122,100 @@ const assertionResultSchema = z.strictObject({
     .describe(
       "Snapshot mismatches only: the total number of differences (greater than `differences.length` when the list was capped).",
     ),
+  openapi: openApiDetailSchema
+    .optional()
+    .describe(
+      'OpenAPI assertions only (kind "openapi"): the matched operation and the violations.',
+    ),
 });
+
+/** run 全体の OpenAPI の検証・カバレッジ(--openapi を指定した実行にだけ付く) */
+export const jsonOpenApiSummarySchema = z.strictObject({
+  documents: z
+    .array(
+      z.strictObject({
+        file: z.string().describe("The OpenAPI document, relative to the current directory."),
+        title: z.string().optional().describe("info.title of the document."),
+        version: z.string().optional().describe("info.version of the document."),
+        operations: z.number().describe("The number of operations in the document."),
+      }),
+    )
+    .describe("The OpenAPI documents given to --openapi, in order."),
+  operations: z
+    .strictObject({
+      total: z.number().describe("The number of operations across all documents."),
+      covered: z
+        .number()
+        .describe(
+          "Operations that at least one response was matched to (planned ones for --dry-run).",
+        ),
+      percent: z
+        .number()
+        .describe(
+          "covered / total as a percentage, to one decimal place (100 when there are no operations).",
+        ),
+    })
+    .describe("Operation coverage."),
+  covered: z
+    .array(
+      z.strictObject({
+        operation: z.string().describe("e.g. `GET /users/{id}`."),
+        document: z.string().describe("The OpenAPI document of the operation."),
+        statuses: z
+          .array(z.number())
+          .describe("The status codes observed for this operation (empty for --dry-run)."),
+        documented: z
+          .array(z.string())
+          .describe("The response keys the specification documents (`200`, `2XX`, `DEFAULT`)."),
+      }),
+    )
+    .describe("The covered operations."),
+  uncovered: z
+    .array(z.strictObject({ operation: z.string(), document: z.string() }))
+    .describe("Operations that no request was matched to."),
+  unmatched: z
+    .array(
+      z.strictObject({
+        method: z.string(),
+        url: z.string().describe("The request URL without query and fragment."),
+        count: z.number().describe("How many times this request was sent."),
+      }),
+    )
+    .describe("Requests that matched no operation (not failures unless --openapi-strict)."),
+  excluded: z
+    .array(
+      z.strictObject({
+        flow: z.string(),
+        step: z.string(),
+        reason: z
+          .enum(["sse", "websocket", "redirected"])
+          .describe("Why the step is not validated."),
+      }),
+    )
+    .describe("Steps that are not validated: SSE, WebSocket, and steps that followed redirects."),
+  violations: z.number().describe("The number of responses that violate the specification."),
+  partial: z
+    .boolean()
+    .describe(
+      "True when only some flows were run (--tags / --exclude-tags): the coverage is a part of the whole.",
+    ),
+  planned: z
+    .boolean()
+    .describe(
+      "True for --dry-run: nothing was sent, so coverage is what the flows would exercise.",
+    ),
+  coverageMin: z
+    .strictObject({
+      percent: z.number().describe("The --openapi-coverage-min value."),
+      met: z
+        .boolean()
+        .describe("False when the coverage is below it (the run fails with exit code 4)."),
+    })
+    .optional()
+    .describe("Present only with --openapi-coverage-min."),
+  truncated: z.boolean().optional().describe("True when a list above was cut at 1000 entries."),
+});
+export type JsonOpenApiSummary = z.infer<typeof jsonOpenApiSummarySchema>;
 
 /** run 全体のスナップショット集計。snapshot アサーションが 1 件でもあった実行にだけ付く */
 export const jsonSnapshotSummarySchema = z.strictObject({
@@ -310,6 +442,11 @@ export const jsonReportSchema = z
       .describe(
         "Snapshot (assert.snapshot) totals for the run. Present only when a step had a snapshot assertion, or a snapshot file had obsolete entries, or snapshot files were written.",
       ),
+    openapi: jsonOpenApiSummarySchema
+      .optional()
+      .describe(
+        "OpenAPI validation and coverage (`klaus run --openapi`). Present only when --openapi was given.",
+      ),
     warnings: z
       .array(z.string())
       .optional()
@@ -473,6 +610,7 @@ export function formatJson(runResult: RunResult, options: FormatJsonOptions): st
     summary: buildSummary(runResult),
     flows: runResult.flows.map((flow) => buildFlow(flow, runResult.runId, options.historyEnabled)),
     ...(runResult.snapshots !== undefined ? { snapshots: runResult.snapshots } : {}),
+    ...(runResult.openapi !== undefined ? { openapi: runResult.openapi } : {}),
     ...(runResult.warnings !== undefined && runResult.warnings.length > 0
       ? { warnings: runResult.warnings }
       : {}),

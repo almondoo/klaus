@@ -220,6 +220,44 @@ klaus: parse error: snapshot file "flows/__snapshots__/a.yaml.snap.json" is corr
 
 **Fix**: resolve the conflict or delete the file, then run again (a missing file is simply a missing baseline), or run with `--update-snapshots` to recreate it.
 
+## OpenAPI validation (`--openapi`)
+
+### "OpenAPI: METHOD /path -> STATUS violates the specification: ..."
+
+**Symptom** (the step fails, exit code 4)
+
+```
+OpenAPI: GET /users/{id} -> 200 violates the specification: body /id: must be integer; body: must have required property 'name'
+```
+
+**Cause**: the response does not match what the OpenAPI document describes for that operation and status: the body breaks the schema (`body /id` is a JSON Pointer to the offending value; a bare `body` is the root), the content type is not declared, or a required response header is missing. The JSON output lists up to 20 violations under `openapi.violations`.
+
+**Fix**: if the API is wrong, fix the API. If the document is out of date, update it. If the schema is stricter than the API really needs to be, loosen it. See [OpenAPI validation](cli.md#openapi-validation-openapi) for what is checked.
+
+### "klaus: parse error: ... remote $ref is not supported ..." / "... $ref \"X\" cannot be resolved"
+
+**Symptom** (exit code 2, nothing is run)
+
+```
+klaus: parse error: remote $ref is not supported (only local files can be referenced): https://example.com/schemas.json#/User
+```
+
+**Cause**: `--openapi` reads local files only. A `$ref` that starts with a URL scheme is refused, a `$ref` to a local file must point to a `.yaml`, `.yml`, or `.json` file, and every `$ref` must resolve before anything runs.
+
+**Fix**: download the referenced file next to the document and reference it by relative path, or bundle the document into one file first.
+
+### "klaus: OpenAPI coverage N% is below --openapi-coverage-min M%"
+
+**Symptom** (exit code 4, even though every step passed)
+
+```
+klaus: OpenAPI coverage 33.3% is below --openapi-coverage-min 50%
+```
+
+**Cause**: fewer operations were matched by a request than the threshold asks for. The `openapi.uncovered` list (and the `openapi: uncovered:` line in text output) names the operations nothing called; `openapi.unmatched` lists requests that matched no operation, for example because the base URL differs from the document's `servers`.
+
+**Fix**: add steps for the uncovered operations, or, if requests are going to a different host than the document's servers, pass `--openapi-base-url`. With `--tags` the coverage covers only the selected flows (`partial`).
+
 ## `klaus ui` errors
 
 ### "Forbidden: environment \"X\" is protected and cannot be edited via this API (edit the file directly)"

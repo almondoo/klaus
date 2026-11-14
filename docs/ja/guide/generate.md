@@ -124,3 +124,7 @@ steps:
 | 2 | spec が不正(パース・$ref 解決に失敗)、または生成物がスキーマ検証を通らない |
 
 spec が不正な場合、text モードでは stderr にのみメッセージを出す(stdout には何も出さない)。`--json` 指定時、または非 TTY(パイプ・エージェント実行・CI)の場合は、stdout に `errors` を含むエラーレポート(JSON)を出す。
+
+## 仕様に対するレスポンスの検証
+
+同じ文書でレスポンスの検証もできる。`klaus run <files> --openapi <spec>` は、実行中のすべてのレスポンスを文書に照らして検証し、オペレーションのカバレッジを報告する。`klaus generate` と違い、読むのはローカルファイルだけで、`swagger-parser` は使わない。[OpenAPI の検証](cli.md#openapi-の検証-openapi)を参照。

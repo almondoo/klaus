@@ -22,6 +22,8 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
   - `--dry-run`: send nothing; print each step's expanded request plus whether the guards would refuse it (`guard.status`: allowed / refused / undetermined); variables that depend on an earlier step's capture stay as `{{name}}` and are listed in `unresolved`; exits 3 if any step would be refused or fails to expand; cannot combine with `--record`/`--replay`/`--report`; use it to check a flow against `guard.allowedHosts` and `$protected` before running
   - `-u, --update-snapshots`: for `assert.snapshot`, rewrite baselines that differ or are missing and remove obsolete entries — the explicit way to accept a changed response, so use it only when the change is intended; it is never read from `klaus.config.yaml` and cannot combine with `--dry-run`/`--replay`/`--ci`
   - `--ci`: for `assert.snapshot`, a missing baseline fails instead of being recorded (also the default when the `CI` environment variable is truthy)
+  - `--openapi <path>` (repeatable; default from `run.openapi` in `klaus.config.yaml`): validate every HTTP response against an OpenAPI 3.0/3.1 document (YAML/JSON, local files and local `$ref`s only) and report operation coverage; a violation (status not described, content-type not declared, required header missing, body breaks the schema) fails the step (`kind: "openapi"`, exit 4), and an unreadable document exits 2 before anything runs
+  - `--openapi-base-url <url>` (an extra server URL when matching requests), `--openapi-strict` (unmatched requests, undocumented statuses, and unvalidatable responses fail), `--openapi-coverage-min <percent>` (exit 4 when fewer operations were called); all need `--openapi`, and the last two cannot combine with `--dry-run` (which only reports the planned coverage)
   - `--record <dir>`: record real HTTP request/response pairs (masked) to a cassette in `<dir>` while still hitting the network
   - `--replay <dir>`: replay HTTP responses from the cassette in `<dir>` instead of the network, for deterministic offline runs; unrecorded requests fail with exit code 3; mutually exclusive with `--record`
 - `klaus req <method> <url>`: send one ad-hoc HTTP request without a flow file — use this instead of `curl` when exploring an API, because it is guarded (`guard.allowedHosts`, `$protected`), secret-masked, and leaves a history entry that `klaus history show` can read
@@ -67,7 +69,8 @@ Non-TTY output (pipes, CI, agent execution, etc.) is automatically JSON. Result 
 1. Explore the API with `klaus req` (or a flow without `assert`). Pass secrets as `{{env.X}}` so they are masked in history.
 2. `klaus promote <runId...>` (take the run IDs from `historyRef` / `klaus history`) to turn the evidence into a flow, set the `TODO_*` environment variables it lists, then `klaus validate` and `klaus run` the generated file to confirm it passes. Review the inferred assertions, capture links, and the replaced sensitive values before committing the file.
 3. For responses that should not change, add `assert.snapshot` (with `ignore` for volatile fields), run once locally to record the baseline, and commit the `__snapshots__` file. A later change then fails with a diff; if the change is intended, accept it with `klaus run -u` or `klaus snapshot accept <runId>` and review the git diff.
-4. After changing the API or the flow, run it again and use `klaus diff --flow "<flow name>" --ignore-path '$.id'` (add the other volatile fields) to see exactly what changed; exit 4 means the runs differ.
+4. To check responses against the API's OpenAPI document, add `--openapi <spec>` (no flow change needed). The JSON `openapi` summary lists the `uncovered` operations and the `unmatched` requests (often a base URL that differs from the document's `servers`: pass `--openapi-base-url`); `--openapi-coverage-min` turns low coverage into exit 4. With `--tags` the coverage is `partial`.
+5. After changing the API or the flow, run it again and use `klaus diff --flow "<flow name>" --ignore-path '$.id'` (add the other volatile fields) to see exactly what changed; exit 4 means the runs differ.
 
 ## YAML schema essentials
 
@@ -94,9 +97,9 @@ Non-TTY output (pipes, CI, agent execution, etc.) is automatically JSON. Result 
 |---|---|
 | 0 | all passed |
 | 1 | general error (invalid CLI arguments, unexpected exception) |
-| 2 | definition file parse error |
+| 2 | definition file parse error (also an unreadable `--openapi` document) |
 | 3 | runtime error (connection failure, timeout, capture failure, etc.) |
-| 4 | assertion failure |
+| 4 | assertion failure (also an OpenAPI violation, or coverage below `--openapi-coverage-min`) |
 
 Decision rule: all files are parse-validated before execution; if even one fails, exit 2 (nothing is run). After execution, exit 3 if any flow has a runtime error (status "error"), otherwise exit 4 if there's an assertion failure (status "failed"), otherwise exit 0 for all passed (when both 3 and 4 apply, 3 takes priority).
 

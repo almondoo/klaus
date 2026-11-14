@@ -8,7 +8,7 @@ import {
   truncateWithEllipsis,
 } from "./report-shared.js";
 import { sanitizeForXml } from "./sanitize.js";
-import { formatSnapshotSummary, summarizeSteps } from "./text.js";
+import { formatOpenApiSummary, formatSnapshotSummary, summarizeSteps } from "./text.js";
 
 /**
  * Markdown サマリー全体のバイト数上限。GitHub のステップサマリーは 1 ステップあたり 1 MiB 上限で、
@@ -113,6 +113,12 @@ export function formatGithubSummary(runResult: RunResult, options?: MaskedReport
     parts.push(
       `${snapshotLines.map((line) => `- ${cell(line, MAX_MESSAGE_LENGTH)}`).join("\n")}\n`,
     );
+  }
+
+  // OpenAPI のカバレッジ(未カバーのオペレーション・照合できなかったリクエストを含む)
+  const openapiLines = formatOpenApiSummary(result.openapi);
+  if (openapiLines.length > 0) {
+    parts.push(`${openapiLines.map((line) => `- ${cell(line, MAX_MESSAGE_LENGTH)}`).join("\n")}\n`);
   }
 
   // 警告(tls.insecure の使用など)。ステップの成否には影響しないが、レポートの読み手にも見えるようにする

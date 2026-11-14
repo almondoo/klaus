@@ -85,10 +85,23 @@ export async function loadCliConfig(cwd: string): Promise<CliConfig | undefined>
 
   try {
     const raw: unknown = parseYaml(content);
-    return configSchema.parse(raw);
+    return resolveOpenApiPaths(configSchema.parse(raw), dirname(path));
   } catch (error) {
     throw toParseError(error, path);
   }
+}
+
+/**
+ * `run.openapi` を設定ファイルのディレクトリ基準の絶対パスにする(core も run も設定ファイルの場所を知らないため、
+ * 読み込み時に解決する)。常に配列で返す。`run.openapi` が無ければ config をそのまま返す。
+ */
+function resolveOpenApiPaths(config: CliConfig, baseDir: string): CliConfig {
+  const openapi = config.run?.openapi;
+  if (openapi === undefined || config.run === undefined) return config;
+  const paths = (Array.isArray(openapi) ? openapi : [openapi]).map((entry) =>
+    resolve(baseDir, entry),
+  );
+  return { ...config, run: { ...config.run, openapi: paths } };
 }
 
 /**
@@ -130,6 +143,7 @@ export interface RunOptionSources {
   history?: CliOptionSource;
   mask?: CliOptionSource;
   jobs?: CliOptionSource;
+  openapi?: CliOptionSource;
 }
 
 /**
@@ -174,6 +188,10 @@ export function applyConfigToRunOptions(
       : {}),
     ...(runConfig.mask !== undefined && sources.mask !== "cli" ? { mask: runConfig.mask } : {}),
     ...(runConfig.jobs !== undefined && sources.jobs !== "cli" ? { jobs: runConfig.jobs } : {}),
+    // --openapi を指定したときは設定ファイルの値を置き換える(足さない)。設定ファイルの値は読み込み時に絶対パスにしてある
+    ...(runConfig.openapi !== undefined && sources.openapi !== "cli"
+      ? { openapi: Array.isArray(runConfig.openapi) ? runConfig.openapi : [runConfig.openapi] }
+      : {}),
   };
 }
 

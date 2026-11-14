@@ -1,7 +1,13 @@
 import { z } from "zod";
-import type { DryRunResult, DryRunStepResult, RequestSnapshot } from "../../core/index.js";
+import type {
+  DryRunResult,
+  DryRunStepResult,
+  OpenApiRunSummary,
+  RequestSnapshot,
+} from "../../core/index.js";
+import { jsonOpenApiSummarySchema } from "./json.js";
 import { sanitizeForTerminal } from "./sanitize.js";
-import { formatFlowHeader } from "./text.js";
+import { formatFlowHeader, formatOpenApiSummary } from "./text.js";
 
 /**
  * `klaus run --dry-run --json` の出力ペイロード(v1)。zod スキーマとして定義し、型は z.infer で導出する
@@ -115,6 +121,11 @@ export const dryRunReportSchema = z
     flows: z
       .array(dryRunFlowSchema)
       .describe("Per-flow results, in the same order as `klaus run`."),
+    openapi: jsonOpenApiSummarySchema
+      .optional()
+      .describe(
+        "Planned OpenAPI coverage (`--openapi`): which operations the flows would exercise. `planned` is true and no response is validated. Present only when --openapi was given.",
+      ),
   })
   .describe(
     "klaus `run --dry-run --json` output (v1). Nothing is sent, no history is written, no assertions are evaluated.",
@@ -153,7 +164,7 @@ export function hasDryRunFailure(result: DryRunResult): boolean {
  * DryRunResult を CLI の JSON 出力形式(v1)に整形する。
  * 呼び出し側は、シークレットをマスク済みの DryRunResult を渡すこと。
  */
-export function buildDryRunReport(result: DryRunResult): DryRunReport {
+export function buildDryRunReport(result: DryRunResult, openapi?: OpenApiRunSummary): DryRunReport {
   const steps = result.flows.flatMap((flow) => flow.steps);
   return {
     version: 1,
@@ -182,6 +193,7 @@ export function buildDryRunReport(result: DryRunResult): DryRunReport {
         error: step.error,
       })),
     })),
+    ...(openapi !== undefined ? { openapi } : {}),
   };
 }
 
@@ -232,7 +244,7 @@ function formatStepText(step: DryRunStepResult): string[] {
  * 展開後リクエストと判定結果を出す。最後に件数のサマリー行を付ける。
  * 呼び出し側は、シークレットをマスク済みの DryRunResult を渡すこと。
  */
-export function formatDryRunText(result: DryRunResult): string {
+export function formatDryRunText(result: DryRunResult, openapi?: OpenApiRunSummary): string {
   const lines: string[] = [];
   for (const flow of result.flows) {
     lines.push("", formatFlowHeader(flow.name, flow.file, flow.iteration));
@@ -250,5 +262,6 @@ export function formatDryRunText(result: DryRunResult): string {
       `${summary.refused} refused, ${summary.undetermined} undetermined, ` +
       `${summary.unresolved} with unresolved variables, ${summary.errors} with errors`,
   );
+  lines.push(...formatOpenApiSummary(openapi));
   return `${lines.join("\n")}\n`;
 }

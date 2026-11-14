@@ -21,6 +21,7 @@ Documentation site: https://almondoo.github.io/klaus/
 - **Ad-hoc requests**: `klaus req` sends a single request with the same guards and secret masking as `klaus run` and records it in the history, so agents can use it instead of `curl`
 - **Record, diff, promote, mock**: `klaus diff` compares two recorded runs, `klaus promote` turns recorded runs into a re-runnable flow with inferred assertions, and `klaus mock` serves a recorded cassette as a local mock server
 - **Snapshots**: `assert.snapshot` compares a response with a baseline file (secrets masked, volatile fields ignorable). A changed response fails with a structural diff, and accepting it is explicit (`klaus run -u`, `klaus snapshot accept`); in CI a missing baseline fails instead of being recorded
+- **OpenAPI validation**: `klaus run --openapi spec.yaml` checks every response against an OpenAPI 3.0/3.1 document (status, content type, required headers, body schema) and reports which operations the run covered; `--openapi-coverage-min` makes low coverage fail the run
 - **Reports**: `--report` writes `junit`, `tap`, `html` (a single self-contained file), and `github` (a job summary with annotations for GitHub Actions)
 - **Local-first**: Execution history is appended to `.klaus/history/*.jsonl`. No cloud sync or account mechanism
 

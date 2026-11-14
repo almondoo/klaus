@@ -1,0 +1,58 @@
+# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
+name: ユーザー API の仕様検証(OpenAPI)
+# --openapi の見本。フロー自体には仕様に関する記述はなく、実行時に OpenAPI 文書を渡すと、
+# すべての HTTP ステップの応答が仕様(ステータス・content-type・必須ヘッダー・本文のスキーマ)に
+# 照らして検証され、どのオペレーションを呼んだか(カバレッジ)が報告される。
+#   klaus run flows/users-openapi-flow.yaml --openapi openapi/users-api.yaml
+#   klaus run flows/users-openapi-flow.yaml --openapi openapi/users-api.yaml --openapi-coverage-min 60
+#   klaus run flows/users-openapi-flow.yaml --openapi openapi/users-api.yaml --openapi-strict
+# mock-server.mjs を別のポートで動かしているときは --openapi-base-url http://127.0.0.1:<port> を足す(仕様の servers は :3000)。
+# openapi/users-api.yaml には /login と /me もあるが、このフローは呼ばないため「未カバー」として報告される。
+# 毎回渡したくなければ klaus.config.yaml の run.openapi に書く(docs/guide/config.md)。
+env: local          # examples/environments/local.yaml を参照(--env で上書き可)
+steps:
+  - name: list-users
+    request:
+      method: GET
+      url: "{{baseUrl}}/users"
+      query:
+        limit: "2"
+    assert:
+      status: 200
+
+  - name: create-user
+    request:
+      method: POST
+      url: "{{baseUrl}}/users"
+      headers:
+        Content-Type: application/json
+      body:
+        name: Erin
+        email: erin@example.com
+    capture:
+      userId: "$.id"
+    assert:
+      status: 201
+
+  - name: get-user
+    request:
+      method: GET
+      url: "{{baseUrl}}/users/{{userId}}"
+    assert:
+      status: 200
+
+  - name: delete-user
+    request:
+      method: DELETE
+      url: "{{baseUrl}}/users/{{userId}}"
+    assert:
+      status: 204
+
+  # 仕様に書かれた 404(本文の定義なし)。ステータスが仕様にあるので違反にはならない。
+  # 仕様に無いステータスは、--openapi-strict を付けたときだけ失敗になる
+  - name: get-missing-user
+    request:
+      method: GET
+      url: "{{baseUrl}}/users/does-not-exist"
+    assert:
+      status: 404

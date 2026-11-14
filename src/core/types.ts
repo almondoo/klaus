@@ -30,6 +30,56 @@ export interface AssertionResult {
   message: string;
   /** kind が "snapshot" のときの詳細(状態・差分・承認用の候補) */
   snapshot?: SnapshotAssertionDetail;
+  /** kind が "openapi" のときの詳細(照合したオペレーション・違反の一覧) */
+  openapi?: OpenApiAssertionDetail;
+}
+
+/** OpenAPI 検証の1ステップ分の判定状態。skipped は検証できなかった(スキーマをコンパイルできない等) */
+export type OpenApiState = "valid" | "invalid" | "undocumented" | "unmatched" | "skipped";
+
+/** OpenAPI 検証の違反1件。path は location が body のときだけ付く JSON Pointer(`/items/0/id`。ルートは空文字) */
+export interface OpenApiViolation {
+  location: "status" | "content-type" | "header" | "body";
+  path?: string;
+  message: string;
+}
+
+/** openapi アサーションの結果の詳細。AssertionResult.openapi に入り、履歴にも残る */
+export interface OpenApiAssertionDetail {
+  state: OpenApiState;
+  /** 照合したオペレーション(例: `GET /users/{id}`)。unmatched のときは無い */
+  operation?: string;
+  /** 照合した OpenAPI 文書(cwd からの相対パス) */
+  document?: string;
+  status?: number;
+  /** 違反(先頭 MAX 件まで) */
+  violations?: OpenApiViolation[];
+  /** 違反の総数(violations が切り詰められていれば violations.length より大きい) */
+  violationCount?: number;
+}
+
+/** 実行全体の OpenAPI カバレッジ集計(--openapi を指定した実行にだけ付く) */
+export interface OpenApiRunSummary {
+  documents: { file: string; title?: string; version?: string; operations: number }[];
+  operations: { total: number; covered: number; percent: number };
+  /** 1 件以上の応答を照合できたオペレーションと、観測したステータスコード・仕様に書かれたステータスキー */
+  covered: { operation: string; document: string; statuses: number[]; documented: string[] }[];
+  /** 応答を 1 件も照合できなかったオペレーション */
+  uncovered: { operation: string; document: string }[];
+  /** どのオペレーションにも照合できなかったリクエスト(クエリ・フラグメントは除く) */
+  unmatched: { method: string; url: string; count: number }[];
+  /** 検証の対象外にしたステップ(SSE / WebSocket / リダイレクトを追ったもの) */
+  excluded: { flow: string; step: string; reason: "sse" | "websocket" | "redirected" }[];
+  /** 仕様に違反した応答の件数(state が invalid のアサーション数) */
+  violations: number;
+  /** --tags / --exclude-tags で一部のフローだけを実行した(カバレッジは全体の一部) */
+  partial: boolean;
+  /** --dry-run の計画(実際には送っていない。応答の検証はしない) */
+  planned: boolean;
+  /** --openapi-coverage-min の判定(指定したときだけ) */
+  coverageMin?: { percent: number; met: boolean };
+  /** 一覧を件数上限で切り詰めた */
+  truncated?: boolean;
 }
 
 /** スナップショットの1ステップ分の判定状態 */
@@ -160,4 +210,6 @@ export interface RunResult {
   warnings?: string[];
   /** スナップショットの集計。snapshot アサーションを持つステップまたは古いエントリが無ければ省略する */
   snapshots?: SnapshotRunSummary;
+  /** OpenAPI の検証・カバレッジ。--openapi を指定した実行にだけ付く */
+  openapi?: OpenApiRunSummary;
 }

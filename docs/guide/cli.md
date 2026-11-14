@@ -36,6 +36,10 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 | `--dry-run` | Send nothing: print each step's expanded request and whether the guards would refuse it (see "Dry run (`--dry-run`)" below). Cannot be combined with `--record`, `--replay`, or `--report` | — |
 | `-u`, `--update-snapshots` | Rewrite `assert.snapshot` baselines that differ or are missing, and remove obsolete entries (see "Snapshots" below). Cannot be combined with `--dry-run`, `--replay`, or `--ci`; it cannot be set from `klaus.config.yaml` | — |
 | `--ci` | Fail instead of recording when an `assert.snapshot` baseline is missing | on when the `CI` environment variable is set to anything other than empty, `0`, or `false` |
+| `--openapi <path>` | Validate every HTTP response against an OpenAPI 3.0/3.1 document and report operation coverage (repeatable; see "OpenAPI validation" below). Default from `run.openapi` in `klaus.config.yaml` | — |
+| `--openapi-base-url <url>` | Also match requests against this URL as a server of the OpenAPI documents. Requires `--openapi` | — |
+| `--openapi-strict` | Fail on unmatched requests, undocumented status codes, and responses that cannot be validated. Requires `--openapi`; cannot be combined with `--dry-run` | — |
+| `--openapi-coverage-min <percent>` | Fail the run (exit 4) when the operation coverage is below this percentage (0-100). Requires `--openapi`; cannot be combined with `--dry-run` | — |
 
 `--report` takes a comma-separated list of formats (entries are trimmed; each must be `junit`, `tap`, `html`, or `github`). Passing an unknown or empty format entry prints an error to stderr and exits with 1. `--report` also rejects a duplicated format (e.g. `--report junit,junit`) and rejects `--report-file` values that resolve to the same output path across formats, both with an error to stderr and exit 1, since either would make two writes race on one file. With N formats given to `--report`, `--report-file` must be passed either **exactly N times** (in the same order, pairing the 1st `--report-file` with the 1st format and so on) or **not at all** (in which case each format is written to its own default filename: `klaus-report.xml` for `junit`, `klaus-report.tap` for `tap`, `klaus-report.html` for `html`, `klaus-report.md` for `github`; see [GitHub Report](#github-report) for the one exception). Any other count — e.g. one `--report-file` for two formats — is rejected with an error and exits with 1 without writing any file. This generalizes the single-format behavior: `--report junit` alone still defaults to `klaus-report.xml`, unchanged from before. Passing `--json` and `--text` together, or `-e`/`--env` and `--env-file` together, also prints an error to stderr and exits with 1 (nothing is run). This `-e`/`--env` + `--env-file` conflict only fires for an `-e`/`--env` **typed on the command line**; a `run.env` default coming from `klaus.config.yaml` yields to an explicit `--env-file` instead of conflicting with it (see [Default CLI options](config.md)).
 
@@ -54,7 +58,7 @@ Passing `--allow-protected` lifts both. The refusal happens right before sending
 
 `--var` values are **not** registered as secrets and are **not** masked in output, unlike <code v-pre>{{env.X}}</code> (OS environment variable references). If a value is a real secret, pass it through an OS environment variable and reference it as <code v-pre>{{env.X}}</code> instead, so it benefits from the masking described in [Execution History](history.md).
 
-`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` / `--jobs` can have their defaults set via `klaus.config.yaml`. `--var`, `--env-file`, `--data`, `--tags`, `--exclude-tags`, and `--dry-run` cannot — see [Default CLI options](config.md).
+`--env` / `--report` / `--report-file` / `--no-history` / `--no-mask` / `--jobs` / `--openapi` can have their defaults set via `klaus.config.yaml`. `--var`, `--env-file`, `--data`, `--tags`, `--exclude-tags`, `--dry-run`, `--openapi-base-url`, `--openapi-strict`, and `--openapi-coverage-min` cannot — see [Default CLI options](config.md).
 
 ### Tag-based flow selection (`--tags` / `--exclude-tags`)
 
@@ -160,6 +164,56 @@ A step with `assert.snapshot` ([details](flow-definition.md#snapshot-baseline-co
 - Obsolete entries (keys in the file that no step produced) are only judged after every step of the flow ran: nothing skipped, and every snapshot step reached its comparison. A partial run never deletes baselines. Running without `--data` against a file that holds `#<n>` keys from a data-driven run reports them as obsolete, so do not combine that with `-u`.
 - `--dry-run` never touches snapshot files.
 
+### OpenAPI validation (`--openapi`)
+
+`--openapi <path>` checks every HTTP response of the run against an OpenAPI document and reports which operations the run exercised. Pass it more than once for several documents; set `run.openapi` in [`klaus.config.yaml`](config.md) to make it the default (an explicit `--openapi` replaces the configured list). The flows themselves need no change.
+
+| Option | Description |
+|---|---|
+| `--openapi <path>` | OpenAPI 3.0 or 3.1 document, YAML or JSON (repeatable) |
+| `--openapi-base-url <url>` | Also treat this URL as a server of the documents when matching requests, for example the staging URL when the document lists production. Absolute `http(s)` URL |
+| `--openapi-strict` | Make requests that match no operation, status codes the document does not describe, and responses that cannot be validated into failures |
+| `--openapi-coverage-min <percent>` | Fail the run (exit 4) when fewer than this percentage (0-100) of the operations were matched by a request |
+
+`--openapi-base-url`, `--openapi-strict`, and `--openapi-coverage-min` need `--openapi` (otherwise exit 1). With `--dry-run`, `--openapi-strict` and `--openapi-coverage-min` are rejected (exit 1).
+
+**Documents.** Only local files are read. A `$ref` to another local `.yaml`, `.yml`, or `.json` file is resolved (relative to the file that contains it, JSON Pointer fragments only); a remote `$ref` (`https://...`) is refused. Every `$ref` is checked before anything runs, and circular schemas are supported. A document that cannot be read or parsed, a Swagger 2.0 document, a `$ref` that cannot be resolved, or a file over the limits (8 MiB per file, 32 MiB and 100 files in total) exits with 2 and runs nothing; the message names the file and, for syntax errors, the line and column, never the contents of a referenced file. Nothing in a document is executed.
+
+**Matching a request to an operation.** The request URL (without query and fragment) is matched against each operation's servers, then its path template and method:
+
+- Servers come from `servers` (document, path item, or operation level; `/` when absent) plus `--openapi-base-url`. Server variables are supported: a variable with an `enum` matches those values, any other matches one path segment (several when its default contains `/`). A relative server URL such as `/v1` matches any origin. Scheme and host are compared case-insensitively and default ports are ignored.
+- Path templates match segment by segment, and a concrete path wins over a templated one (`/users/me` before `/users/{id}`); only operations with the request's method are candidates. A trailing slash is ignored.
+- With several documents, the first one (in command-line order) that matches is used.
+- A request that matches nothing is listed under `unmatched` in the coverage. It does not fail anything unless `--openapi-strict` is given.
+
+**What is validated** for a matched response:
+
+1. **Status**: the exact code, then `2XX` (the matching range), then `default`. A status the document does not describe is reported (`undocumented`) and fails only with `--openapi-strict`; nothing else is checked for it.
+2. **Required headers**: every response header with `required: true` must be present (case-insensitive; `Content-Type` is ignored). Header values are not validated.
+3. **Content type**: when the response defines `content` and has a body, the `Content-Type` (parameters ignored) must match one of the declared media types (`application/json`, `text/*`, `*/*`, ...). An empty body, and `HEAD` requests, skip steps 3 and 4.
+4. **Body**: for JSON media types (`application/json` and any `+json`), the body is validated against the schema with the bundled Ajv (JSON Schema 2020-12). A body that is not valid JSON is a violation. Other media types are not validated beyond the content type.
+
+Violations make the step fail (an assertion with `kind: "openapi"`, exit 4). Each violation has a location (`status`, `content-type`, `header`, `body`) and, for the body, a JSON Pointer such as `/items/0/id`; at most 20 are kept, with the total in `violationCount`. Values from the response are never echoed in a violation.
+
+**Schema keywords.** OpenAPI 3.1 schemas are JSON Schema 2020-12 and are used as written (`$ref` siblings included); `$id`, `$schema`, `$anchor`, and `$dynamicAnchor` are dropped, `$dynamicRef` and `$recursiveRef` are ignored with a warning. For OpenAPI 3.0 the following are converted: `nullable: true` next to `type` (null is also added to `enum`), and boolean `exclusiveMinimum` / `exclusiveMaximum`; siblings of a `$ref` are ignored, as the 3.0 specification says. In both versions:
+
+- `format` is never validated, known or not (a response is not failed for `date-time`, `uuid`, or an unknown format).
+- `readOnly` has no effect on responses. A `writeOnly` property is removed from `required`, since a response does not contain it.
+- `discriminator`, `xml`, `externalDocs`, and `example` are annotations and are ignored. Every other keyword (`pattern`, `enum`, `allOf` / `oneOf` / `anyOf`, `additionalProperties`, ...) is validated as written.
+- A schema Ajv cannot compile is reported as a warning and the response is not validated (`skipped`; a failure with `--openapi-strict`).
+
+Request validation (parameters and request bodies) is not done.
+
+**Coverage.** The run result gets an `openapi` summary: the documents, the number of operations and how many were matched (`operations.total` / `covered` / `percent`), for each covered operation the observed status codes next to the response keys the document describes, the uncovered operations, the unmatched requests (method and URL without query), the steps that are not validated, and the number of violating responses. It is shown in the JSON output, as `openapi:` lines before the text summary, in the HTML report, and in the GitHub summary.
+
+- An operation is covered when at least one response was matched to it, whatever its status.
+- `--tags` / `--exclude-tags` that select only some flows mark the coverage `partial: true` (the text says `partial run`): it is the coverage of that part only.
+- SSE steps, WebSocket steps, and steps that followed redirects (the response is not for the first request) are not validated; they are listed under `excluded`.
+- `--openapi-coverage-min` below the threshold prints an error to stderr, sets `coverageMin.met` to `false`, and ends the run as failed (exit 4) even when every step passed.
+- It works with `--jobs` and `--data` (coverage is the union over all units) and with `--replay` (replayed responses are validated like live ones). Retried steps count every attempt.
+- With `--dry-run` nothing is sent and nothing is validated: the expanded request URLs are matched, and the coverage is reported with `planned: true`. A URL whose base is still an unresolved variable is matched by its path.
+- Schemas are compiled once per run, lazily per operation.
+
 ## Output Modes
 
 - **Auto-detection**: text if stdout is a TTY, JSON if non-TTY (pipe / agent execution / CI). `--json` forces JSON even when non-TTY, and `--text` forces text even when not a TTY (the two cannot be combined)
@@ -235,6 +289,7 @@ full detail (request/response snapshots, assertions, etc).
 - **historyRef**: when history recording is enabled (i.e. `--no-history` was not passed), every step (including passed ones) gets a `historyRef: { date, runId, step }`. Fetch the full detail with `klaus history show <runId> --step <step>` (see [klaus history](#klaus-history) / [Execution History](history.md)). `historyRef.date` is the UTC date of the history file the step was written to (derived from the step's `startedAt`). `historyRef` is omitted entirely when run with `--no-history`
 - For SSE / WebSocket steps, `response.body` is absent; received data instead goes into the `events` (SSE) / `wsMessages` (WS) fields
 - **snapshots**: a top-level `snapshots: { matched, written, updated, mismatched, missing, obsolete, files, obsoleteEntries }` summary, present only when a step has a snapshot assertion, a snapshot file has obsolete entries, or snapshot files were written (`files` lists them, relative to the current directory). A snapshot assertion in `assertions` has `kind: "snapshot"`, `state` (`matched` / `written` / `updated` / `mismatch` / `missing`), `snapshotKey`, `snapshotFile`, and for a mismatch `differences` (`[{ "path": "$.body.name", "kind": "changed", "before": "a", "after": "b" }]`, at most 20) with the total in `differenceCount`. Passed steps are one-line summaries, so a baseline that was written shows up in `snapshots.written` / `snapshots.files` and, in text output, as `[snapshot written]` on its `PASS` line. The candidate that `klaus snapshot accept` writes is kept in history, never in this output
+- **openapi**: a top-level `openapi` object, present only with `--openapi` (also in `--dry-run --json`, with `planned: true`): `documents` (`file`, `title`, `version`, `operations`), `operations` (`total`, `covered`, `percent`), `covered` (`operation`, `document`, `statuses`, `documented`), `uncovered`, `unmatched` (`method`, `url`, `count`), `excluded` (`flow`, `step`, `reason`: `sse` / `websocket` / `redirected`), `violations`, `partial`, `planned`, optionally `coverageMin` (`percent`, `met`) and `truncated` (a list was cut at 1000 entries). An OpenAPI assertion in `assertions` has `kind: "openapi"` and an `openapi` object: `state` (`valid` / `invalid` / `undocumented` / `unmatched` / `skipped`), `operation` (`GET /users/{id}`), `document`, `status`, and for `invalid`, `violations` (`[{ "location": "body", "path": "/id", "message": "must be integer" }]`, at most 20) with the total in `violationCount`. Passed steps are one-line summaries, so only the `openapi` summary shows what a passing run covered
 - **redirects / droppedHeaders**: a step that followed redirects (`http.followRedirects`) carries `redirects` (the URLs visited after the first request, the last being the final response) whatever its status, and `droppedHeaders` (`[{ "hop": 1, "headers": ["authorization"] }]`, header names only) when credentials were dropped on a cross-origin hop. URLs are masked like any other. `FAIL` and `ERROR` lines in text output show the same information in one or two compact lines
 - **warnings**: top-level `"warnings": ["..."]`, present only when there is at least one. It carries warnings that do not change a step's outcome, such as `http.tls.insecure is enabled: TLS certificate verification is DISABLED for this run` or a history write failure, without duplicates. The same warning still goes to stderr as a `klaus: warning:` line; text output prints it as a `warning:` line before the summary, and the HTML and GitHub reports show it too
 
@@ -285,6 +340,7 @@ Details of the decision rules:
 3. After execution: if any flow contains a runtime error (status "error"), exit **3**; otherwise if there's an assertion failure (status "failed"), exit **4**; if everything passed, exit **0**. When both 3 and 4 apply, 3 takes priority
 4. A failure to write the history JSONL only produces a warning on stderr — it does not affect step results or the exit code
 5. With `--dry-run` nothing is sent, so assertions never run and 4 does not occur: 0 (everything would be sent), 1 (an argument error such as combining with `--record` / `--replay` / `--report`, or an empty tag selection), 2 (a parse error), or 3 (a step the guards would refuse, or an expansion error a real run would hit too); see [Dry run](#dry-run-dry-run)
+6. With `--openapi`, an unreadable or invalid OpenAPI document is a definition error (exit 2, nothing runs), a response that violates the document fails its step (4), and a coverage below `--openapi-coverage-min` ends the run as failed (4) even when every step passed; see [OpenAPI validation](#openapi-validation-openapi)
 
 An agent (such as Claude Code) can identify where things went wrong from the exit code alone: 2 means fix the definition, 3 means check whether the target API is up, and 4 means compare the assertion against the response.
 

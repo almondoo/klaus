@@ -930,6 +930,12 @@ export const configSchema = z.strictObject({
         .max(32)
         .optional()
         .describe("Default value for `klaus run --jobs <n>` (1-32)."),
+      openapi: z
+        .union([z.string(), z.array(z.string()).min(1)])
+        .optional()
+        .describe(
+          "Default value for `klaus run --openapi <path>`: an OpenAPI 3.0/3.1 document (YAML or JSON), or a list of them. Paths are relative to this file. Passing --openapi on the command line replaces this value.",
+        ),
     })
     .optional()
     .describe("Default values for `klaus run` options."),

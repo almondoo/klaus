@@ -211,6 +211,33 @@ program
     "send nothing: print each step's expanded request (template variables that depend on earlier captures stay as {{name}}) and whether the guards would refuse it; exits 3 if any step would be refused. Writes no history; cannot be combined with --record, --replay, or --report",
   )
   .option(
+    "--openapi <path>",
+    "validate every HTTP response against this OpenAPI 3.0/3.1 document (YAML or JSON; local files only) and report operation coverage; a violation fails the step (exit code 4). Repeatable. Default from run.openapi in klaus.config.yaml; with --dry-run, only the planned coverage is reported",
+    (value: string, previous: string[]) => [...previous, value],
+    [] as string[],
+  )
+  .option(
+    "--openapi-base-url <url>",
+    "treat this URL as a server of the OpenAPI documents when matching requests to operations (in addition to their servers; requires --openapi)",
+  )
+  .option(
+    "--openapi-strict",
+    "fail on requests that match no operation, on status codes the specification does not document, and on responses that cannot be validated (requires --openapi; cannot be combined with --dry-run)",
+  )
+  .option(
+    "--openapi-coverage-min <percent>",
+    "fail the run (exit code 4) when fewer than this percentage of the OpenAPI operations were matched by a request (0-100; requires --openapi; cannot be combined with --dry-run)",
+    (value: string) => {
+      const parsed = Number(value);
+      if (value.trim() === "" || Number.isNaN(parsed) || parsed < 0 || parsed > 100) {
+        throw new InvalidArgumentError(
+          `invalid --openapi-coverage-min value (expected a number 0-100): ${value}`,
+        );
+      }
+      return parsed;
+    },
+  )
+  .option(
     "--actor <name>",
     "name recorded as history actor.name for this run (the actor kind — human/agent/ci — is still detected from environment variables)",
     parseActorOption,
@@ -247,6 +274,7 @@ ${exitCodesHelpLine}
           history: command.getOptionValueSource("history"),
           mask: command.getOptionValueSource("mask"),
           jobs: command.getOptionValueSource("jobs"),
+          openapi: command.getOptionValueSource("openapi"),
         },
         configResult.config,
       );

@@ -220,6 +220,44 @@ klaus: parse error: snapshot file "flows/__snapshots__/a.yaml.snap.json" is corr
 
 **対処**: コンフリクトを解消するかファイルを削除してから再実行する(ファイルが無いのは、基準が無いというだけのこと)。または `--update-snapshots` で作り直す。
 
+## OpenAPI の検証(`--openapi`)
+
+### 「OpenAPI: METHOD /path -> STATUS violates the specification: ...」
+
+**症状**(ステップが失敗し、exit code 4)
+
+```
+OpenAPI: GET /users/{id} -> 200 violates the specification: body /id: must be integer; body: must have required property 'name'
+```
+
+**原因**: レスポンスが、そのオペレーションとステータスについて OpenAPI 文書に書かれた内容と一致しない。本文がスキーマに違反している(`body /id` は問題の値を指す JSON Pointer で、`body` だけならルート)、content-type が宣言されていない、必須のレスポンスヘッダーが無い、のいずれか。JSON 出力では `openapi.violations` に最大 20 件が載る。
+
+**対処**: API が間違っているなら API を直す。文書が古いなら文書を更新する。スキーマが API に必要以上に厳しいなら緩める。検証する内容は [OpenAPI の検証](cli.md#openapi-の検証-openapi)を参照。
+
+### 「klaus: parse error: ... remote $ref is not supported ...」/「... $ref "X" cannot be resolved」
+
+**症状**(exit code 2、何も実行しない)
+
+```
+klaus: parse error: remote $ref is not supported (only local files can be referenced): https://example.com/schemas.json#/User
+```
+
+**原因**: `--openapi` が読むのはローカルファイルだけ。URL スキームで始まる `$ref` は拒否し、ローカルファイルへの `$ref` は `.yaml` / `.yml` / `.json` のファイルを指す必要があり、すべての `$ref` は実行前に解決できる必要がある。
+
+**対処**: 参照先のファイルを文書の隣にダウンロードして相対パスで参照するか、先に文書を 1 ファイルにバンドルする。
+
+### 「klaus: OpenAPI coverage N% is below --openapi-coverage-min M%」
+
+**症状**(全ステップが成功していても exit code 4)
+
+```
+klaus: OpenAPI coverage 33.3% is below --openapi-coverage-min 50%
+```
+
+**原因**: リクエストに照合されたオペレーションが、しきい値より少ない。`openapi.uncovered` の一覧(text 出力では `openapi: uncovered:` の行)が、どのリクエストも呼ばなかったオペレーションを示す。`openapi.unmatched` は、どのオペレーションにも照合できなかったリクエストの一覧で、たとえばベース URL が文書の `servers` と違う場合に出る。
+
+**対処**: 未カバーのオペレーションのステップを足す。リクエストの宛先が文書の servers と違うホストなら、`--openapi-base-url` を渡す。`--tags` を使った場合、カバレッジは選んだフローだけのもの(`partial`)になる。
+
 ## `klaus ui` のエラー
 
 ### 「Forbidden: environment "X" is protected and cannot be edited via this API (edit the file directly)」

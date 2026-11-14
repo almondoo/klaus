@@ -54,6 +54,7 @@ http:
 | `run.history` | `klaus run --no-history`(`false` で無効化に相当) | boolean |
 | `run.mask` | `klaus run --no-mask`(`false` で無効化に相当) | boolean |
 | `run.jobs` | `klaus run --jobs <n>` | number(1〜32) |
+| `run.openapi` | `klaus run --openapi <path>` | 文字列、または文字列のリスト(下記参照) |
 | `ui.port` | `klaus ui --port <n>` | number(1〜65535) |
 | `ui.host` | `klaus ui --host <host>` | string |
 | `ui.open` | `klaus ui --no-open`(`false` で無効化に相当) | boolean |
@@ -63,6 +64,8 @@ http:
 | `http.tls.ca` / `http.tls.cert` / `http.tls.key` / `http.tls.insecure` | なし(config 専用) | ファイルパス / boolean |
 
 `run.*` のキーは `klaus run` にのみ適用される。`klaus req` がこのファイルから読むのは `guard` と `http` のセクションだけ。いずれのキーも省略可能。未知のキーを含む場合はスキーマ検証エラーになる([実行結果](#エラー時の扱い)を参照)。
+
+`run.openapi` には OpenAPI 文書 1 つ、またはそのリストを書く(`klaus run --openapi`。[OpenAPI の検証](cli.md#openapi-の検証-openapi)を参照)。相対パスは、カレントディレクトリではなく `klaus.config.yaml` のあるディレクトリから解決する。コマンドラインの `--openapi` は、設定ファイルのリストに加えるのではなく置き換える。ほかの OpenAPI オプション(`--openapi-base-url`・`--openapi-strict`・`--openapi-coverage-min`)は設定できない。実行が失敗する条件を変えるものなので、呼び出しごとに選ぶ。
 
 `run.reportFile` は単一値のみ対応する(CLI の繰り返し指定可能な `--report-file` とは異なる)。`run.report` に複数フォーマット(例: `junit,tap`)を指定した状態で `run.reportFile` も設定した場合、それは「N フォーマットに対して `--report-file` を1個指定した」ことになり、CLI で `--report-file` の指定回数が足りないときと同じ個数不一致エラーになる([CLI リファレンス](cli.md#klaus-run)参照)。複数フォーマットの `run.report` に対してフォーマットごとの出力先を指定したい場合は、コマンドラインで `--report-file` を渡すこと(前述の優先順位のとおり CLI の値が `klaus.config.yaml` より常に優先される)。
 

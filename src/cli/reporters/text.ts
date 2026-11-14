@@ -1,4 +1,5 @@
 import type {
+  OpenApiRunSummary,
   RunResult,
   StepCompleteContext,
   StepResult,
@@ -200,6 +201,58 @@ export function formatSnapshotSummary(runResult: RunResult): string[] {
   ];
 }
 
+/** text / GitHub サマリーに載せる、一覧の先頭の件数 */
+const OPENAPI_LIST_LIMIT = 10;
+
+function limitedList(items: string[]): string {
+  const shown = items.slice(0, OPENAPI_LIST_LIMIT).join(", ");
+  const rest = items.length - OPENAPI_LIST_LIMIT;
+  return rest > 0 ? `${shown} (+${rest} more)` : shown;
+}
+
+/**
+ * OpenAPI の集計行(--openapi を指定しない実行では空)。カバレッジ・違反数・未カバーのオペレーション・
+ * 照合できなかったリクエスト・検証の対象外にしたステップを、先頭の数件ずつ載せる(全件は JSON 出力にある)。
+ * 値(オペレーション・URL・ステップ名)は仕様やフロー由来のためサニタイズする。
+ */
+export function formatOpenApiSummary(openapi: OpenApiRunSummary | undefined): string[] {
+  if (!openapi) return [];
+  const { total, covered, percent } = openapi.operations;
+  const labels: string[] = [];
+  if (openapi.planned) labels.push("planned, nothing was sent");
+  if (openapi.partial) labels.push("partial run: only the selected flows");
+  const violations = openapi.violations > 0 ? `, ${openapi.violations} violation(s)` : "";
+  const label = labels.length > 0 ? ` [${labels.join("; ")}]` : "";
+  const lines = [
+    `openapi: ${covered}/${total} operations covered (${percent}%)${violations}${label}`,
+  ];
+  if (openapi.coverageMin !== undefined && !openapi.coverageMin.met) {
+    lines.push(
+      `openapi: coverage ${percent}% is below --openapi-coverage-min ${openapi.coverageMin.percent}%`,
+    );
+  }
+  if (openapi.uncovered.length > 0) {
+    lines.push(
+      `openapi: uncovered: ${sanitizeForTerminal(limitedList(openapi.uncovered.map((u) => u.operation)))}`,
+    );
+  }
+  if (openapi.unmatched.length > 0) {
+    lines.push(
+      `openapi: unmatched requests: ${sanitizeForTerminal(
+        limitedList(openapi.unmatched.map((u) => `${u.method} ${u.url}`)),
+      )}`,
+    );
+  }
+  if (openapi.excluded.length > 0) {
+    lines.push(
+      `openapi: not validated: ${sanitizeForTerminal(
+        limitedList(openapi.excluded.map((e) => `${e.flow} / ${e.step} (${e.reason})`)),
+      )}`,
+    );
+  }
+  return lines;
+}
+
 export interface TextReporter {
   onStepStart(context: StepStartContext): void;
   onStepComplete(context: StepCompleteContext): void;
@@ -242,7 +295,10 @@ export function createTextReporter(
         (message) =>
           `${colorize("warning:", "yellow", useColor)} ${truncate(sanitizeForTerminal(message))}\n`,
       );
-      const snapshotLines = formatSnapshotSummary(runResult).map((line) => `${line}\n`);
+      const snapshotLines = [
+        ...formatSnapshotSummary(runResult),
+        ...formatOpenApiSummary(runResult.openapi),
+      ].map((line) => `${line}\n`);
       write(
         `\n${warnings.join("")}${warnings.length > 0 ? "\n" : ""}${snapshotLines.join("")}${formatSummary(runResult)}\n`,
       );

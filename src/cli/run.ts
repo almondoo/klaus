@@ -10,6 +10,7 @@ import {
   loadFlow,
   maskDeep,
   maskString,
+  OpenApiValidator,
   ParseError,
   parseReportFormatList,
   REPORT_FORMATS,
@@ -35,6 +36,15 @@ import { createTextReporter, resolveUseColor, type TextReporter } from "./report
 export function isCiEnvironment(env: NodeJS.ProcessEnv): boolean {
   const value = env.CI?.trim().toLowerCase();
   return value !== undefined && value !== "" && value !== "0" && value !== "false";
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 /** --report のフォーマットごとの既定ファイル名(--report-file を1回も指定しなかった場合に使う) */
@@ -242,6 +252,17 @@ export interface RunCommandOptions {
    */
   ci?: boolean | undefined;
   /**
+   * --openapi <path>(複数指定可。klaus.config.yaml の run.openapi が既定値)。OpenAPI 3.0 / 3.1 の仕様(YAML / JSON)に
+   * 照らして HTTP ステップの応答を検証し、カバレッジを報告する。--dry-run では検証せず、カバレッジを「計画」として報告する
+   */
+  openapi?: string[];
+  /** --openapi-base-url <url>: 仕様の servers に加えて、リクエスト URL の接頭辞として照合する(--openapi が必要) */
+  openapiBaseUrl?: string;
+  /** --openapi-strict: 照合できないリクエスト・仕様にない応答・検証できない応答を失敗にする(--openapi が必要。--dry-run とは併用不可) */
+  openapiStrict?: boolean;
+  /** --openapi-coverage-min <percent>: オペレーションのカバレッジがこれ未満なら失敗にする(exit 4。--openapi が必要。--dry-run とは併用不可) */
+  openapiCoverageMin?: number;
+  /**
    * klaus.config.yaml の `guard`(送信先ホストの許可リスト等)。CLI フラグは設けない
    * (エージェントが引数で安全柵を外せないようにするため)。index.ts が config から設定して渡す
    */
@@ -408,6 +429,38 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     }
   }
 
+  // OpenAPI のオプションの整合性。--openapi が無いのに関連オプションだけを渡した場合は、黙って無視せず引数の誤りにする
+  const usesOpenApi = options.openapi !== undefined && options.openapi.length > 0;
+  if (!usesOpenApi) {
+    for (const [flag, given] of [
+      ["--openapi-base-url", options.openapiBaseUrl !== undefined],
+      ["--openapi-strict", options.openapiStrict === true],
+      ["--openapi-coverage-min", options.openapiCoverageMin !== undefined],
+    ] as const) {
+      if (given) {
+        process.stderr.write(`klaus: ${flag} requires --openapi\n`);
+        return 1;
+      }
+    }
+  }
+  if (options.dryRun === true && usesOpenApi) {
+    for (const [flag, given] of [
+      ["--openapi-strict", options.openapiStrict === true],
+      ["--openapi-coverage-min", options.openapiCoverageMin !== undefined],
+    ] as const) {
+      if (given) {
+        process.stderr.write(`klaus: --dry-run cannot be combined with ${flag}\n`);
+        return 1;
+      }
+    }
+  }
+  if (options.openapiBaseUrl !== undefined && !isHttpUrl(options.openapiBaseUrl)) {
+    process.stderr.write(
+      `klaus: --openapi-base-url must be an absolute http(s) URL (got "${options.openapiBaseUrl}")\n`,
+    );
+    return 1;
+  }
+
   // スナップショットの書き換えは、実際に送った応答に対してだけ意味がある(replay の応答は基準にしない)。
   // --ci は「書き込まない」、--update-snapshots は「書き込む」で意味が衝突する
   if (options.updateSnapshots === true) {
@@ -529,9 +582,38 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     return 1;
   }
 
+  // OpenAPI の仕様の読み込み(実行前。読めない・壊れた仕様は exit 2 で、何も実行しない)。
+  // 仕様の警告(未対応のキーワードなど)は、実行前に stderr へ出す
+  // --tags / --exclude-tags で一部のフローだけを実行する場合、カバレッジは全体の一部になる
+  const partial = filteredFlows.length < loadedFlows.length;
+  let openapi: OpenApiValidator | undefined;
+  const printedOpenApiWarnings = new Set<string>();
+  const printOpenApiWarnings = (validator: OpenApiValidator): void => {
+    for (const warning of validator.warnings) {
+      if (printedOpenApiWarnings.has(warning)) continue;
+      printedOpenApiWarnings.add(warning);
+      process.stderr.write(`klaus: warning: ${warning}\n`);
+    }
+  };
+  if (usesOpenApi) {
+    try {
+      openapi = await OpenApiValidator.load(options.openapi as string[], {
+        baseUrl: options.openapiBaseUrl,
+        strict: options.openapiStrict === true,
+      });
+    } catch (error) {
+      if (error instanceof ParseError) {
+        process.stderr.write(`klaus: parse error: ${error.message}\n`);
+        return 2;
+      }
+      throw error;
+    }
+    printOpenApiWarnings(openapi);
+  }
+
   // --dry-run: ここまで(読み込み・検証・絞り込み)は通常の実行と同じで、以降は送信せずに展開・判定だけを行う
   if (options.dryRun === true) {
-    return executeDryRun(filteredFlows, dataRows, options, useJson);
+    return executeDryRun(filteredFlows, dataRows, options, useJson, openapi, partial);
   }
 
   // 3. 実行(テキストモードは onStepStart/onStepComplete で逐次出力する)
@@ -593,6 +675,7 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
       update: options.updateSnapshots === true,
       ci: options.ci ?? isCiEnvironment(process.env),
     },
+    openapi,
     dataRows,
     jobs,
     onStepStart: stepHandler ? (context) => stepHandler.onStepStart(context) : undefined,
@@ -625,6 +708,30 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
       return 2;
     }
     throw error;
+  }
+
+  // OpenAPI: カバレッジを結果に載せる。実行中に増えた警告(遅延コンパイルなど)も含める。
+  // --openapi-coverage-min を下回ったら、実行全体を failed にする(通ったステップがあっても exit 4)
+  if (openapi !== undefined) {
+    printOpenApiWarnings(openapi);
+    const summary = openapi.summarize({
+      partial,
+      planned: false,
+      coverageMin: options.openapiCoverageMin,
+    });
+    const warnings = [...new Set([...(runResult.warnings ?? []), ...openapi.warnings])];
+    const belowMin = summary.coverageMin !== undefined && !summary.coverageMin.met;
+    if (belowMin) {
+      process.stderr.write(
+        `klaus: OpenAPI coverage ${summary.operations.percent}% is below --openapi-coverage-min ${summary.coverageMin?.percent}%\n`,
+      );
+    }
+    runResult = {
+      ...runResult,
+      openapi: summary,
+      ...(warnings.length > 0 ? { warnings } : {}),
+      ...(belowMin && runResult.status === "passed" ? { status: "failed" as const } : {}),
+    };
   }
 
   // 4. 出力

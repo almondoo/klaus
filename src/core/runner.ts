@@ -27,6 +27,7 @@ import type { HttpRequestOptions, HttpResponse, RawHttpResponse } from "./http.j
 import { sendRawRequest, sendRequest } from "./http.js";
 import { type FollowResult, HttpSession, mergeHttpConfig } from "./http-session.js";
 import { loadFlow } from "./loader.js";
+import type { OpenApiValidator } from "./openapi.js";
 import { type BodyPayload, expandBodyForm, materializePayload } from "./request-body.js";
 import type {
   AssertDef,
@@ -210,6 +211,12 @@ export interface RunFlowOptions {
    * 指定しない(その場合はフロー 1 回の実行ごとに作って書き込む)
    */
   snapshotStore?: SnapshotStore | undefined;
+  /**
+   * OpenAPI の検証器(CLI の --openapi)。指定すると、HTTP ステップの応答を仕様に照らして検証し(kind "openapi" の
+   * アサーションを足す)、カバレッジを検証器へ集める。SSE / WebSocket とリダイレクトを追ったステップは対象外
+   * (検証器へ対象外として記録する)。実行全体で 1 つの検証器を共有するため、集計は呼び出し元が検証器から取り出す
+   */
+  openapi?: OpenApiValidator | undefined;
 }
 
 const DEFAULT_HISTORY = true;
@@ -768,6 +775,8 @@ async function executeStep(
   cwd: string,
   /** assert.snapshot の評価に使うスナップショットの状態(フロー実行のときだけ渡す) */
   snapshots?: SnapshotRuntime,
+  /** 応答を OpenAPI の仕様に照らす検証器(--openapi 指定時のみ) */
+  openapi?: OpenApiValidator,
 ): Promise<{
   result: StepResult;
   captured: Record<string, unknown>;
@@ -829,6 +838,7 @@ async function executeStep(
 
       // 送信(接続)直前の判定。WebSocket は読み取り専用の保護環境でも常に拒否する(record/replay は WS 非対応)
       assertSendAllowed(stepGuard, "WS", url, headers, false);
+      openapi?.exclude(flowName, step.name, "websocket");
       const wsTarget = session.prepareWebSocket(url, headers, templateContext);
 
       const wsResult = await connectWebSocket({
@@ -916,6 +926,7 @@ async function executeStep(
     }
 
     if (isSseStep(step)) {
+      openapi?.exclude(flowName, step.name, "sse");
       // SSE は HTTP メソッドに従う(record/replay は SSE 非対応のため、ここでは常に実送信になる)
       const sseFollow: Omit<FollowResult<unknown>, "response"> = {
         redirects: [],
@@ -1053,10 +1064,31 @@ async function executeStep(
       assertions.every((assertion) => assertion.ok),
     );
 
+    // OpenAPI: リダイレクトを追った応答は、最初のリクエストに対するものではないため検証せず対象外にする
+    let openapiAssertions: AssertionResult[] = [];
+    if (openapi !== undefined) {
+      if (redirects.length > 0) {
+        openapi.exclude(flowName, step.name, "redirected");
+      } else {
+        openapiAssertions = openapi.check({
+          flow: flowName,
+          step: step.name,
+          method,
+          url,
+          response: {
+            status: response.status,
+            headers: response.headers,
+            body: response.body,
+            bodyText: response.bodyText,
+          },
+        });
+      }
+    }
+
     return finish(
       requestSnapshot,
       response.durationMs,
-      [...assertions, ...snapshotAssertions],
+      [...assertions, ...snapshotAssertions, ...openapiAssertions],
       captured,
       extra,
       extra,
@@ -1397,6 +1429,7 @@ export async function executeFlow(
               session,
               cwd,
               snapshotRuntime,
+              options.openapi,
             );
           } while (
             step.retry &&
