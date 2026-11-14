@@ -153,6 +153,9 @@ export async function handleSnapshotAccept(c: Context, cwd: string): Promise<Res
       return c.json({ error: result.message }, 404);
     case "unsafe":
       return c.text(`Forbidden: ${result.message}`, 403);
+    case "failed-step":
+      // そのステップの他のアサーションが失敗していた(失敗した応答は基準にできない)。状態の衝突として 409 にする
+      return c.json({ error: result.message }, 409);
     default:
       return c.json({ error: result.message }, 422);
   }

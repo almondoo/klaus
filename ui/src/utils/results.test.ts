@@ -10,6 +10,7 @@ import {
   hasPendingSnapshot,
   mismatchesForStep,
   mismatchId,
+  splitAcceptable,
 } from "./results";
 
 const snap = (
@@ -32,6 +33,7 @@ function mismatch(over: Partial<SnapshotMismatch>): SnapshotMismatch {
     message: "m",
     differences: [],
     differenceCount: 0,
+    otherAssertionsFailed: false,
     ...over,
   };
 }
@@ -119,5 +121,19 @@ describe("表示文", () => {
       violations: 1,
     } as OpenApiRunSummary;
     expect(describeOpenApiCoverage(summary)).toBe("オペレーション 3 / 4(75%)を照合、仕様違反 1 件");
+  });
+});
+
+describe("splitAcceptable", () => {
+  it("他のアサーションが失敗している項目は承認できない側に分け、順序は保つ", () => {
+    const items = [
+      mismatch({ key: "a" }),
+      mismatch({ key: "b", otherAssertionsFailed: true }),
+      mismatch({ key: "c" }),
+    ];
+    const { acceptable, blocked } = splitAcceptable(items);
+    expect(acceptable.map((i) => i.key)).toEqual(["a", "c"]);
+    expect(blocked.map((i) => i.key)).toEqual(["b"]);
+    expect(splitAcceptable([])).toEqual({ acceptable: [], blocked: [] });
   });
 });

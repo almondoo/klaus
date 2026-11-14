@@ -97,10 +97,13 @@ export async function handleRunRequest(
     // 成否に影響しない警告(tls.insecure の使用・履歴書き込み失敗など)。重複は除き、run-result にも載せる
     const warnings: string[] = [];
     let openapiSummary: OpenApiRunSummary | undefined;
+    // OpenAPI の検証器はワーカースレッドを持つため、実行の終わり方(成功・失敗・例外・クライアント切断)によらず
+    // 必ず close する(フロー実行は切断後も最後まで続き、その後ここの finally に来る)
+    let openapi: OpenApiValidator | undefined;
     try {
       const flow = await loadFlow(resolvedPath);
       // OpenAPI の検証器は実行ごとに作る(カバレッジはその実行の分だけ集計する)。読めない仕様は実行前のエラーにする
-      const openapi =
+      openapi =
         openapiPaths !== undefined && openapiPaths.length > 0
           ? await OpenApiValidator.load([...openapiPaths], {})
           : undefined;
@@ -164,6 +167,8 @@ export async function handleRunRequest(
         ],
         durationMs: 0,
       };
+    } finally {
+      openapi?.close();
     }
 
     const runResultPayload: RunResultPayload = {

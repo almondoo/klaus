@@ -409,6 +409,8 @@ export interface SnapshotMismatch {
   message: string;
   differences: SnapshotDifference[];
   differenceCount: number;
+  /** 同じステップの snapshot 以外のアサーション(OpenAPI を含む)が失敗していた。true の項目は承認できない(サーバーが 409 で拒否する) */
+  otherAssertionsFailed: boolean;
 }
 
 /** GET /api/snapshots/mismatches のレスポンス。server/routes/snapshots.ts の SnapshotMismatchesPayload と手動同期する */

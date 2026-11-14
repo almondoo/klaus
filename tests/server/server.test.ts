@@ -13,9 +13,9 @@ import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { createParser } from "eventsource-parser";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { HistoryEntry } from "../../src/core/index.js";
-import { appendHistory, readAllHistoryEntries } from "../../src/core/index.js";
+import { appendHistory, OpenApiValidator, readAllHistoryEntries } from "../../src/core/index.js";
 import { createApp } from "../../src/server/app.js";
 import type { StartServerResult } from "../../src/server/index.js";
 import { startServer } from "../../src/server/index.js";
@@ -2621,6 +2621,86 @@ describe("OpenAPI(startServer の openapi オプション)", () => {
     expect(result.flow.steps[0]?.assertions.some((a) => a.kind === "openapi")).toBe(false);
   });
 
+  describe("検証器(ワーカースレッド)の後始末", () => {
+    async function waitUntil(condition: () => boolean, timeoutMs = 5000): Promise<void> {
+      const deadline = Date.now() + timeoutMs;
+      while (!condition()) {
+        if (Date.now() > deadline) throw new Error("condition was not met in time");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+
+    it("成功・失敗・実行前の例外・クライアント切断のどの終わり方でも、実行ごとに作った検証器を必ず close する", async () => {
+      await writeFile(
+        join(dir, "envbad.yaml"),
+        [
+          "name: envbad",
+          "env: no-such-env",
+          "steps:",
+          "  - name: s",
+          "    request:",
+          "      method: GET",
+          `      url: "${fixture.baseUrl}/step1"`,
+          "",
+        ].join("\n"),
+      );
+      await writeFile(
+        join(dir, "slow.yaml"),
+        [
+          "name: slow",
+          "steps:",
+          ...[1, 2, 3].flatMap((n) => [
+            `  - name: d${n}`,
+            "    request:",
+            "      method: GET",
+            `      url: "${fixture.baseUrl}/delay"`,
+          ]),
+          "",
+        ].join("\n"),
+      );
+      const load = vi.spyOn(OpenApiValidator, "load");
+      const close = vi.spyOn(OpenApiValidator.prototype, "close");
+      try {
+        await runFlow(withSpec, { path: "ok.yaml" });
+        await runFlow(withSpec, { path: "bad.yaml" });
+        // 環境ファイルが無く、ステップに入る前に例外になる(検証器は作成済み)
+        const envbad = await runFlow(withSpec, { path: "envbad.yaml" });
+        expect(envbad.flow.status).toBe("error");
+        expect(load).toHaveBeenCalledTimes(3);
+        expect(close).toHaveBeenCalledTimes(3);
+
+        // 実行の途中でクライアントが切断しても、フローは最後まで走り、その後に close される
+        const controller = new AbortController();
+        const res = await fetch(`http://127.0.0.1:${withSpec.port}/api/runs`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Klaus-Token": withSpec.token,
+            Cookie: `klaus_token=${withSpec.token}`,
+          },
+          body: JSON.stringify({ path: "slow.yaml" }),
+          signal: controller.signal,
+        });
+        await res.body?.getReader().read();
+        controller.abort();
+        await waitUntil(() => close.mock.calls.length === 4);
+        expect(load).toHaveBeenCalledTimes(4);
+      } finally {
+        load.mockRestore();
+        close.mockRestore();
+      }
+    });
+
+    it("OpenAPI を使った実行の後でも、サーバーの close が待たされない", async () => {
+      const server = await startServer({ cwd: dir, port: 0, openapi: [join(dir, "api.json")] });
+      const result = await runFlow(server, { path: "bad.yaml" });
+      expect(result.openapi).toBeDefined();
+      const started = Date.now();
+      await server.close();
+      expect(Date.now() - started).toBeLessThan(2000);
+    });
+  });
+
   it("読めない仕様は実行前のエラーとして返り、ステップは送信されない", async () => {
     const broken = await startServer({ cwd: dir, port: 0, openapi: [join(dir, "missing.json")] });
     try {
@@ -2729,6 +2809,25 @@ describe("GET /api/snapshots/mismatches と POST /api/snapshots/accept", () => {
       snapshotEntry("run-envfile", "get", snap, "get", "mismatch", { env: "../x.yaml" }),
       snapshotEntry("run-corrupt", "get", "bad/__snapshots__/c.snap.json", "get", "mismatch"),
       snapshotEntry("run-link", "get", "__snapshots__/link.snap.json", "get", "mismatch"),
+      // 同じステップの他のアサーションが失敗している(その応答は基準にできない)
+      snapshotEntry("run-failed", "get", "__snapshots__/failed.snap.json", "get", "mismatch", {
+        assertions: [
+          { ok: false, kind: "status", message: "expected status 200, got 500" },
+          {
+            ok: false,
+            kind: "snapshot",
+            message: "snapshot mismatch",
+            snapshot: {
+              key: "get",
+              file: "__snapshots__/failed.snap.json",
+              state: "mismatch",
+              differences: [{ path: "$.status", kind: "changed", before: 200, after: 500 }],
+              differenceCount: 1,
+              candidate: { status: 500, body: { error: "boom" } },
+            },
+          },
+        ],
+      }),
     ]) {
       await appendHistory(dir, entry);
     }
@@ -2999,6 +3098,26 @@ describe("GET /api/snapshots/mismatches と POST /api/snapshots/accept", () => {
       expect(await readFile(join(dir, "bad", "__snapshots__", "c.snap.json"), "utf-8")).toBe(
         "{not json",
       );
+    });
+
+    it("409: 同じステップの他のアサーションが失敗している項目は承認できず(失敗した応答を基準にしない)、何も書かれない", async () => {
+      const listed = (await (await list("run-failed")).json()) as {
+        mismatches: Array<{ otherAssertionsFailed: boolean }>;
+      };
+      expect(listed.mismatches.map((m) => m.otherAssertionsFailed)).toEqual([true]);
+      const ok = (await (await list("run-ok")).json()) as {
+        mismatches: Array<{ otherAssertionsFailed: boolean }>;
+      };
+      expect(ok.mismatches.every((m) => m.otherAssertionsFailed === false)).toBe(true);
+
+      const res = await accept({
+        runId: "run-failed",
+        snapshotFile: "__snapshots__/failed.snap.json",
+        key: "get",
+      });
+      expect(res.status).toBe(409);
+      expect(((await res.json()) as { error: string }).error).toContain("other assertions failed");
+      expect(await exists(join(dir, "__snapshots__", "failed.snap.json"))).toBe(false);
     });
 
     it("403: 承認待ちの書き込み先がシンボリックリンクなら core が拒否し、リンク先には書かれない", async () => {

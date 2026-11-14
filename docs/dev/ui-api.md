@@ -21,7 +21,7 @@ UI が使う API。すべて `X-Klaus-Token` ヘッダーが必要。
 | `GET /api/history/diff` | `a` / `b`(run ID。`flow` 指定時は `latest` / `previous` も可)/ `flow`(任意)/ `ignorePath`(JSONPath。繰り返し指定、最大 20 個) | 2 つの run の差分(core の `diffRuns` の結果。`klaus diff --json` から `version` を除いた形)。run ID の形式不正・解釈できない `ignorePath`・指定回数超過は 400、履歴に無い run は 404。履歴はマスク済みのまま比較する |
 | `POST /api/history/promote` | body: `{ runIds, flow?, assert?, baseUrlVar?, chain?, name?, out?, dryRun? }` | 履歴の run から**新規の**フローを生成する(`klaus promote` 相当。`--force` と `--allow-template-literals` は無く、未知のキーは 400)。`dryRun: true` は YAML とサマリーだけ返し何も書かない。保存先は api/ / flows/ とその配下、または既にフローがあるディレクトリに限り、cwd 外・隠し要素・拡張子違い・設定ファイル名・バックスラッシュは 403、既存ファイルは 409(上書きしない)、履歴に無い run は 404、リテラルの `{{` を含む記録などは 422(`code: "template-literal"`) |
 | `GET /api/snapshots/mismatches` | `runId` | run の承認待ちスナップショット(core の `listSnapshotMismatches`)を `{ runId, mismatches, acceptRefusal? }` で返す。保護環境の run などは `acceptRefusal` に理由が入る。run ID 不正は 400、履歴に無い run は 404 |
-| `POST /api/snapshots/accept` | body: `{ runId, snapshotFile, key }` | 承認待ちの 1 件を基準としてスナップショットファイルに書き込む(core の `acceptSnapshot`)。`(snapshotFile, key)` は上の一覧に含まれる組に限る(含まれなければ 404、cwd 外・バックスラッシュを含むパスは 403)。保護環境(または判定不能な環境)の run は 403、core の `unsafe` は 403、壊れた既存ファイルは 422 |
+| `POST /api/snapshots/accept` | body: `{ runId, snapshotFile, key }` | 承認待ちの 1 件を基準としてスナップショットファイルに書き込む(core の `acceptSnapshot`)。`(snapshotFile, key)` は上の一覧に含まれる組に限る(含まれなければ 404、cwd 外・バックスラッシュを含むパスは 403)。保護環境(または判定不能な環境)の run は 403、core の `unsafe` は 403、壊れた既存ファイル(や不正な候補)は 422、同じステップの他のアサーションが失敗していた(`failed-step`)場合は 409 |
 
 ### POST /api/runs の SSE イベント
 

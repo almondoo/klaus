@@ -117,3 +117,21 @@ export function describeOpenApiCoverage(summary: OpenApiRunSummary): string {
   const { total, covered, percent } = summary.operations;
   return `オペレーション ${covered} / ${total}(${percent}%)を照合、仕様違反 ${summary.violations} 件`;
 }
+
+/**
+ * 承認待ちを、承認できるものと、できないもの(同じステップの他のアサーションが失敗していて、
+ * その応答を基準にできないもの)に分ける。
+ */
+export function splitAcceptable(items: readonly SnapshotMismatch[]): {
+  acceptable: SnapshotMismatch[];
+  blocked: SnapshotMismatch[];
+} {
+  return {
+    acceptable: items.filter((item) => !item.otherAssertionsFailed),
+    blocked: items.filter((item) => item.otherAssertionsFailed),
+  };
+}
+
+/** 承認できない項目の説明 */
+export const BLOCKED_ITEM_EXPLANATION =
+  "このステップは他のアサーションも失敗しているため、この応答を基準にはできません。ステップを直して実行し直してください。";

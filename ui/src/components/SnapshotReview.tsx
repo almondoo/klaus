@@ -6,11 +6,13 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAcceptSnapshot, useSnapshotMismatches } from "@/hooks/useSnapshots";
 import {
+  BLOCKED_ITEM_EXPLANATION,
   describeAcceptState,
   groupMismatchesByFile,
   mismatchesForStep,
   mismatchId,
   SNAPSHOT_STATE_LABEL,
+  splitAcceptable,
 } from "@/utils/results";
 import { DifferenceRows } from "./DiffParts";
 
@@ -55,6 +57,8 @@ export function SnapshotReview({ runId, id }: SnapshotReviewProps) {
   if (mismatches.length === 0) return null;
 
   const pending = mismatches.filter((item) => !accepted.has(mismatchId(item)));
+  // 他のアサーションが失敗しているステップの応答は基準にできない(すべて承認でも対象にしない)
+  const split = splitAcceptable(pending);
   const blocked = acceptRefusal !== undefined;
 
   const acceptOne = async (item: SnapshotMismatch): Promise<boolean> => {
@@ -79,7 +83,7 @@ export function SnapshotReview({ runId, id }: SnapshotReviewProps) {
 
   const acceptAll = async () => {
     // 順に書き込む(同じファイルへの書き込みが競合しないように)。失敗した項目は残し、続きを試す
-    for (const item of pending) await acceptOne(item);
+    for (const item of split.acceptable) await acceptOne(item);
     setConfirmingAll(false);
   };
 
@@ -100,7 +104,7 @@ export function SnapshotReview({ runId, id }: SnapshotReviewProps) {
             type="button"
             size="sm"
             variant="secondary"
-            disabled={blocked || accepting}
+            disabled={blocked || accepting || split.acceptable.length === 0}
             onClick={() => setConfirmingAll(true)}
           >
             すべて承認
@@ -136,13 +140,13 @@ export function SnapshotReview({ runId, id }: SnapshotReviewProps) {
             tabIndex={-1}
             className="text-sm font-semibold outline-none"
           >
-            次の {pending.length} 件を基準として書き込みます
+            次の {split.acceptable.length} 件を基準として書き込みます
           </h4>
           <p className="text-xs">
             リポジトリ内の次のファイルが書き換わります(既存のキーは置き換え、無いキーは追加されます)。
           </p>
           <ul className="flex flex-col gap-1.5 text-xs">
-            {groupMismatchesByFile(pending).map((group) => (
+            {groupMismatchesByFile(split.acceptable).map((group) => (
               <li key={group.file}>
                 <code className="font-mono font-semibold break-all">{group.file}</code>
                 <ul className="mt-0.5 flex flex-col gap-0.5 pl-4">
@@ -159,6 +163,15 @@ export function SnapshotReview({ runId, id }: SnapshotReviewProps) {
               </li>
             ))}
           </ul>
+          {split.blocked.length > 0 && (
+            <p className="text-xs">
+              他のアサーションも失敗している次の {split.blocked.length}{" "}
+              件は、基準にできないため書き込みません:{" "}
+              <span className="font-mono break-all">
+                {split.blocked.map((item) => item.key).join(", ")}
+              </span>
+            </p>
+          )}
           <div className="flex gap-2">
             <Button type="button" size="sm" disabled={accepting} onClick={() => void acceptAll()}>
               {accepting ? "書き込み中…" : "書き込みを実行"}
@@ -222,12 +235,25 @@ export function SnapshotReview({ runId, id }: SnapshotReviewProps) {
                   <Button
                     type="button"
                     size="sm"
-                    disabled={blocked || accepting}
+                    disabled={blocked || accepting || item.otherAssertionsFailed}
+                    aria-describedby={
+                      item.otherAssertionsFailed
+                        ? `${headingId}-blocked-${encodeURIComponent(itemId)}`
+                        : undefined
+                    }
                     aria-label={`${label} のキー ${item.key} を、この結果を基準として承認`}
                     onClick={() => void acceptOne(item)}
                   >
                     この結果を基準として承認
                   </Button>
+                  {item.otherAssertionsFailed && (
+                    <p
+                      id={`${headingId}-blocked-${encodeURIComponent(itemId)}`}
+                      className="text-xs text-fail"
+                    >
+                      {BLOCKED_ITEM_EXPLANATION}
+                    </p>
+                  )}
                   {failure && (
                     <p role="alert" className="text-xs text-fail">
                       承認できませんでした: {failure}

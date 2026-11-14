@@ -55,6 +55,7 @@ Details:
 - History is append-only, so an accepted item still appears in the list when you reopen the run; it is marked as accepted only in the screen you accepted it on. Accepting it again just rewrites the same content.
 - **Runs against a protected environment cannot be accepted from the UI** (`$protected: true` or `readonly`), and neither can runs whose environment cannot be verified (for example one started with `--env-file`). The UI can be driven by an agent, and the UI also refuses to edit protected environments, so baselines from protected data are accepted only with `klaus snapshot accept`. The panel shows the reason and the buttons are disabled.
 - A corrupt snapshot file is reported (422) and left as it is; fix or delete it first.
+- A snapshot recorded by a step whose other assertions also failed (for example the status check or an OpenAPI violation) cannot be accepted: the failed response would become the baseline. Its accept button is disabled with an explanation, **すべて承認** skips it and says so in the confirmation, and the API answers 409. Fix the step and run it again.
 
 ## Comparing runs
 
