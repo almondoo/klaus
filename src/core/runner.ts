@@ -27,6 +27,7 @@ import type { HttpRequestOptions, HttpResponse, RawHttpResponse } from "./http.j
 import { sendRawRequest, sendRequest } from "./http.js";
 import { type FollowResult, HttpSession, mergeHttpConfig } from "./http-session.js";
 import { loadFlow } from "./loader.js";
+import { type BodyPayload, expandBodyForm, materializePayload } from "./request-body.js";
 import type { AuthDef, Environment, Flow, HttpConfig, RequestDef, Step } from "./schema.js";
 import { requestSchema } from "./schema.js";
 import { receiveSse } from "./sse.js";
@@ -369,12 +370,16 @@ export interface ExpandedStepRequest {
    * 差し替える。dry-run は取得せず、snapshot のヘッダーにプレースホルダーが入ったままになる
    */
   oauth2?: OAuth2Params;
+  /** multipart / bodyFile のとき、送信直前にファイルを読んで組み立てるための入力(内容は持たない) */
+  payload?: BodyPayload;
 }
 
 /** expandStepRequest の追加入力 */
 export interface ExpandOptions {
   /** http.auth(ステップの request.auth が無いときに使う既定の認証ヘルパー) */
   defaultAuth?: AuthDef | undefined;
+  /** multipart のファイルパートと bodyFile の相対パスの基準(cwd。この配下のファイルだけ送れる)。既定は process.cwd() */
+  cwd?: string | undefined;
 }
 
 /**
@@ -420,12 +425,22 @@ export function expandStepRequest(
   // 認証ヘルパー(request.auth、無ければ http.auth)。basic / bearer はここでヘッダーが確定し、
   // oauth2 は実行時にトークンを取得する(ここではネットワークに出ない)
   const auth = expandAuth(request.auth, options.defaultAuth, templateContext, renderedHeaders);
-  const headers = auth ? { ...renderedHeaders, Authorization: auth.header } : renderedHeaders;
-  const body = buildRequestBody(request, templateContext);
+  const authHeaders = auth ? { ...renderedHeaders, Authorization: auth.header } : renderedHeaders;
+  // form / multipart / bodyFile。ファイルは cwd 配下に限り、履歴にはファイル名とサイズだけを残す
+  const bodyForm = expandBodyForm(request, templateContext, options.cwd ?? process.cwd());
+  const hasContentType = Object.keys(authHeaders).some(
+    (name) => name.toLowerCase() === "content-type",
+  );
+  const headers =
+    bodyForm?.contentType !== undefined && !hasContentType
+      ? { ...authHeaders, "Content-Type": bodyForm.contentType }
+      : authHeaders;
+  const body = bodyForm ? bodyForm.snapshotBody : buildRequestBody(request, templateContext);
   return {
     kind: isSseStep(step) ? "sse" : "http",
     snapshot: { method, url, headers, body },
     ...(auth?.kind === "oauth2" ? { oauth2: auth.params } : {}),
+    ...(bodyForm?.payload ? { payload: bodyForm.payload } : {}),
   };
 }
 
@@ -601,6 +616,8 @@ async function executeStep(
   iteration: number | undefined,
   /** 実行単位の HTTP クライアント(proxy / TLS / cookie jar / リダイレクト)。ステップ間で共有する */
   session: HttpSession,
+  /** multipart / bodyFile のファイルを読む基準ディレクトリ(この配下のファイルだけ送れる) */
+  cwd: string,
 ): Promise<{
   result: StepResult;
   captured: Record<string, unknown>;
@@ -709,7 +726,10 @@ async function executeStep(
 
     // テンプレート展開(未解決変数・OS 環境変数未定義は RuntimeError として catch 節に落ちる)
     // graphql 指定時のみ method 省略可であり、その場合は POST を既定にする
-    const expanded = expandStepRequest(step, templateContext, { defaultAuth: session.defaultAuth });
+    const expanded = expandStepRequest(step, templateContext, {
+      defaultAuth: session.defaultAuth,
+      cwd,
+    });
     let snapshot = expanded.snapshot;
     if (expanded.oauth2) {
       // トークンを取得して Authorization ヘッダーを差し替える。送信するリクエスト本体の安全柵を先に判定し、
@@ -730,7 +750,20 @@ async function executeStep(
       snapshot = { ...snapshot, headers: { ...snapshot.headers, Authorization: authorization } };
     }
     requestSnapshot = snapshot;
-    const { method, url, headers, body } = snapshot;
+    const { method, url, headers, body: snapshotBody } = snapshot;
+    // multipart / bodyFile は、履歴用の表現ではなく実際のバイト列・FormData を送る(送信直前にファイルを読む)。
+    // multipart の Content-Type は boundary つきで undici が付けるため、送信ヘッダーからは外す
+    let body: unknown = snapshotBody;
+    let sendHeaders = headers;
+    if (expanded.payload) {
+      const prepared = await materializePayload(expanded.payload, cwd);
+      body = prepared.body;
+      if (prepared.dropContentType) {
+        sendHeaders = Object.fromEntries(
+          Object.entries(headers).filter(([name]) => name.toLowerCase() !== "content-type"),
+        );
+      }
+    }
 
     if (isSseStep(step)) {
       // SSE は HTTP メソッドに従う(record/replay は SSE 非対応のため、ここでは常に実送信になる)
@@ -740,7 +773,7 @@ async function executeStep(
         droppedHeaders: [],
       };
       const sseResult = await receiveSse(
-        { method, url, headers, body, timeoutMs: request.timeoutMs },
+        { method, url, headers: sendHeaders, body, timeoutMs: request.timeoutMs },
         step.sse,
         async (connectOptions) => {
           // 初回・リダイレクト先を含む各ホップで同じ安全柵の判定を通す
@@ -801,7 +834,7 @@ async function executeStep(
     // リダイレクトを追う場合は、各ホップでも同じ判定(assertSendAllowed)を session.send が再度行う
     const replay = recording?.mode === "replay";
     const followed = await session.send<HttpResponse>(
-      { method, url, headers, body, timeoutMs: request.timeoutMs },
+      { method, url, headers: sendHeaders, body, timeoutMs: request.timeoutMs },
       templateContext,
       (hopMethod, hopUrl, hopHeaders) =>
         assertSendAllowed(stepGuard, hopMethod, hopUrl, hopHeaders, replay),
@@ -1145,6 +1178,7 @@ export async function executeFlow(
               stepGuard,
               options.iteration,
               session,
+              cwd,
             );
           } while (
             step.retry &&
@@ -1495,6 +1529,7 @@ export async function executeSingleRequest(
       stepGuard,
       undefined,
       session,
+      cwd,
     );
   } finally {
     await session.close();

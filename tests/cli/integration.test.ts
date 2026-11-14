@@ -1098,6 +1098,60 @@ describe("cli integration", () => {
     await expect(access(join(dryWorkDir, "klaus-report.xml"))).rejects.toThrow();
   });
 
+  it("(body-1) run: form / multipart / bodyFile をビルド済み CLI から送信でき、cwd の外のファイルは exit 3 で拒否する", async () => {
+    const bodyDir = join(workDir, "body-forms");
+    await mkdir(bodyDir, { recursive: true });
+    await writeFile(join(bodyDir, "hello.txt"), "hello-from-file", "utf-8");
+    const flowPath = join(bodyDir, "bodies.yaml");
+    await writeFile(
+      flowPath,
+      `name: bodies
+steps:
+  - name: form
+    request: { method: POST, url: "${fixture.baseUrl}/req-echo", form: { user: alice, note: "a b&c" } }
+    assert:
+      body:
+        - { path: "$.headers.content-type", equals: "application/x-www-form-urlencoded" }
+        - { path: "$.body", equals: "user=alice&note=a+b%26c" }
+  - name: multipart
+    request:
+      method: POST
+      url: "${fixture.baseUrl}/req-echo"
+      multipart:
+        title: hi
+        upload: { file: hello.txt, contentType: text/plain }
+    assert:
+      body:
+        - { path: "$.headers.content-type", regex: "^multipart/form-data; boundary=" }
+        - { path: "$.body", contains: "hello-from-file" }
+  - name: file
+    request:
+      method: PUT
+      url: "${fixture.baseUrl}/req-echo"
+      headers: { Content-Type: text/plain }
+      bodyFile: hello.txt
+    assert:
+      body:
+        - { path: "$.body", equals: "hello-from-file" }
+`,
+      "utf-8",
+    );
+    const sent = await runCli(["run", flowPath, "--no-history"], bodyDir);
+    expect(sent.status, sent.stdout).toBe(0);
+
+    const escapePath = join(bodyDir, "escape.yaml");
+    await writeFile(
+      escapePath,
+      `name: escape\nsteps:\n  - name: escape\n    request: { method: POST, url: "${fixture.baseUrl}/req-echo", bodyFile: "../../package.json" }\n`,
+      "utf-8",
+    );
+    const escaped = await runCli(["run", escapePath, "--no-history"], bodyDir);
+    expect(escaped.status).toBe(3);
+    expect(JSON.parse(escaped.stdout).flows[0].steps[0].error).toContain(
+      "outside the current directory",
+    );
+  });
+
   it("(dry-3) run --dry-run: --data で行ごとに展開され、--record / --replay / --report との併用は exit 1", async () => {
     const dryWorkDir = join(workDir, "dry-run-data-scenario");
     await mkdir(dryWorkDir, { recursive: true });

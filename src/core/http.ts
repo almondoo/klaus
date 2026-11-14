@@ -1,4 +1,4 @@
-import { type Dispatcher, request } from "undici";
+import { type Dispatcher, FormData, request } from "undici";
 import { RuntimeError } from "./errors.js";
 
 /** リクエスト共通オプション */
@@ -41,11 +41,15 @@ export const DEFAULT_TIMEOUT_MS = 30000;
 function prepareBody(
   body: unknown,
   headers: Record<string, string>,
-): { requestBody: string | undefined; headers: Record<string, string> } {
+): { requestBody: string | Buffer | FormData | undefined; headers: Record<string, string> } {
   if (body === undefined) {
     return { requestBody: undefined, headers };
   }
   if (typeof body === "string") {
+    return { requestBody: body, headers };
+  }
+  // bodyFile(バイト列)と multipart(FormData)は、そのまま送る(JSON 化せず Content-Type も補わない)
+  if (Buffer.isBuffer(body) || body instanceof FormData) {
     return { requestBody: body, headers };
   }
   const hasContentType = Object.keys(headers).some((key) => key.toLowerCase() === "content-type");

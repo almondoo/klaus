@@ -66,10 +66,50 @@ request:
     page: "1"                   #   url のクエリ文字列にマージされる。url に同名キーがあれば query 側で上書き
   body:                         # 任意。object → JSON 送信(Content-Type 未指定なら application/json を自動付与)
     email: "{{testEmail}}"      #        string → そのまま送信
+  # form / multipart / bodyFile: body の代わりに使える(下記を参照)
   timeoutMs: 30000              # 任意。デフォルト 30000。超過は RuntimeError(exit 3)
 ```
 
 レスポンスは Content-Type が JSON なら自動でパースされ、JSONPath アサーション / キャプチャの対象になる。それ以外はテキストとして保持され `bodyText` アサーションの対象になる。`http.followRedirects` を指定しない限りリダイレクトは追わない([http](#http-http-クライアント設定)を参照)。
+
+`url` にすでに書かれたクエリ文字列は、書かれたままの文字列で保つ(再パース・再エンコードしないため、`&`・`+`・`=`・`/` を含む値も書いたとおりにサーバーへ届く)。追加するのは `query` の項目だけで、form-urlencoded でエンコードする。キーが `url` にすでにある項目は、最初の出現を置き換え、以降の同名を取り除く。
+
+### form・multipart・bodyFile
+
+```yaml
+request:
+  method: POST
+  url: "{{baseUrl}}/login"
+  form:                          # application/x-www-form-urlencoded
+    username: "{{user}}"
+    password: "{{env.PASSWORD}}"
+```
+
+```yaml
+request:
+  method: POST
+  url: "{{baseUrl}}/upload"
+  multipart:                     # multipart/form-data
+    title: "Quarterly report"    #   文字列はテキストフィールド
+    attachment:                  #   `file` を持つオブジェクトはファイルのアップロード
+      file: reports/q3.pdf       #     cwd からの相対パス(必須)
+      filename: q3.pdf           #     省略可。既定はファイルのベース名
+      contentType: application/pdf   # 省略可
+```
+
+```yaml
+request:
+  method: PUT
+  url: "{{baseUrl}}/blobs/1"
+  headers: { Content-Type: application/octet-stream }
+  bodyFile: blobs/one.bin        # ファイルのバイト列をそのままボディとして送る
+```
+
+- `body`・`graphql`・`form`・`multipart`・`bodyFile` は同時に指定できない(指定すると検証エラー)。値とファイルパスはテンプレートを使える。
+- `form` は、`Content-Type` を指定していなければ `Content-Type: application/x-www-form-urlencoded` を付ける。`multipart` は常に boundary つきの `Content-Type: multipart/form-data` を付け、multipart のリクエストに指定した `Content-Type` ヘッダーは無視される。`bodyFile` は `Content-Type` を付けないため、API が必要とする場合は `headers` に指定する。
+- ファイルはカレントディレクトリの配下(シンボリックリンクは先に解決する)に限る。`step.use` や `klaus req --body @file` と同じ規則で、フローがマシン上の任意のファイルを送れないようにするためである。cwd の外のパスは安全柵の拒否と同じ扱いで、ステップは `error`(終了コード 3)になり、何も送信されず、拒否は履歴に残る。存在しないファイルやディレクトリも `error`。ファイルは送信の直前に読む。
+- 履歴・`--json` 出力・`--dry-run` には、ファイルパートと `bodyFile` についてファイル名とサイズだけを記録し(例: `{ "bodyFile": "blobs/one.bin", "size": 5 }`)、内容は残さない。`form` の値と multipart のテキストフィールドに含まれる秘密値は、エンコード形も含めてマスクされる。
+- `http.followRedirects` では、`307` / `308` はボディ(ファイルを含む)を再送し、`POST` への `301` / `302` と `303` はボディなしの `GET` になる。
 
 ## auth(認証ヘルパー)
 

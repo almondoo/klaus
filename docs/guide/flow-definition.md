@@ -66,10 +66,50 @@ request:
     page: "1"                   #   Merged into the url's query string. If url already has the same key, query wins
   body:                         # Optional. object → sent as JSON (application/json is auto-set if Content-Type is unspecified)
     email: "{{testEmail}}"      #        string → sent as-is
+  # form / multipart / bodyFile: alternatives to body (see below)
   timeoutMs: 30000              # Optional. Defaults to 30000. Exceeding it is a RuntimeError (exit 3)
 ```
 
 If the Content-Type is JSON, the response is automatically parsed and becomes the target of JSONPath assertions / captures. Otherwise it's kept as text and becomes the target of `bodyText` assertions. Redirects are not followed unless `http.followRedirects` is set (see [http](#http-http-client-settings)).
+
+The query string already written in `url` is kept byte for byte (it is not re-parsed or re-encoded, so a value containing `&`, `+`, `=`, or `/` reaches the server as written). Only the `query` entries are added, form-urlencoded; an entry whose key already appears in `url` replaces the first occurrence and drops later ones.
+
+### form, multipart, and bodyFile
+
+```yaml
+request:
+  method: POST
+  url: "{{baseUrl}}/login"
+  form:                          # application/x-www-form-urlencoded
+    username: "{{user}}"
+    password: "{{env.PASSWORD}}"
+```
+
+```yaml
+request:
+  method: POST
+  url: "{{baseUrl}}/upload"
+  multipart:                     # multipart/form-data
+    title: "Quarterly report"    #   a string is a text field
+    attachment:                  #   an object with `file` uploads a file
+      file: reports/q3.pdf       #     relative to the cwd (required)
+      filename: q3.pdf           #     optional, defaults to the file's base name
+      contentType: application/pdf   # optional
+```
+
+```yaml
+request:
+  method: PUT
+  url: "{{baseUrl}}/blobs/1"
+  headers: { Content-Type: application/octet-stream }
+  bodyFile: blobs/one.bin        # the file's bytes are sent as the body
+```
+
+- `body`, `graphql`, `form`, `multipart`, and `bodyFile` are mutually exclusive (validation error otherwise). Values and file paths support templates.
+- `form` adds `Content-Type: application/x-www-form-urlencoded` unless you set one. `multipart` always sets `Content-Type: multipart/form-data` with its boundary; a `Content-Type` header you set on a multipart request is ignored. `bodyFile` adds no `Content-Type`; set one in `headers` if the API needs it.
+- Files must be inside the current directory (symbolic links are resolved first), the same rule as `step.use` and `klaus req --body @file`, so a flow cannot send arbitrary files from elsewhere on the machine. A path outside the cwd is refused like a guard refusal: the step ends as `error` (exit code 3), nothing is sent, and the refusal is recorded in history. A missing file or a directory is also an `error`. The files are read right before sending.
+- History, `--json` output, and `--dry-run` record only the file name and size for file parts and `bodyFile` (for example `{ "bodyFile": "blobs/one.bin", "size": 5 }`), never the content. Secrets inside `form` values and multipart text fields are masked, including their form-encoded forms.
+- With `http.followRedirects`, `307` / `308` re-send the body (including the file) and `301` / `302` on `POST` and `303` become a body-less `GET`.
 
 ## auth (authentication helpers)
 

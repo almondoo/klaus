@@ -302,10 +302,52 @@ export const requestSchema = z
       .describe(
         "Query string parameters merged into the URL. Values are template-expanded. Overrides any same-named key already present in `url`.",
       ),
-    body: z.unknown().optional().describe("Request body. Mutually exclusive with `graphql`."),
+    body: z
+      .unknown()
+      .optional()
+      .describe(
+        "Request body. Mutually exclusive with `graphql`, `form`, `multipart`, and `bodyFile`.",
+      ),
     graphql: graphqlRequestSchema
       .optional()
-      .describe("GraphQL request definition. Mutually exclusive with `body`."),
+      .describe(
+        "GraphQL request definition. Mutually exclusive with `body`, `form`, `multipart`, and `bodyFile`.",
+      ),
+    form: z
+      .record(z.string(), z.string())
+      .optional()
+      .describe(
+        "Form fields sent as application/x-www-form-urlencoded (Content-Type is added unless you set one). Values are template-expanded. Mutually exclusive with `body`, `graphql`, `multipart`, and `bodyFile`.",
+      ),
+    multipart: z
+      .record(
+        z.string(),
+        z.union([
+          z.string(),
+          z.strictObject({
+            file: z
+              .string()
+              .describe(
+                "Path of the file to upload, relative to the current directory. Must resolve inside the cwd (symbolic links included).",
+              ),
+            filename: z
+              .string()
+              .optional()
+              .describe("File name sent in the part. Defaults to the file's base name."),
+            contentType: z.string().optional().describe("Content-Type of the part."),
+          }),
+        ]),
+      )
+      .optional()
+      .describe(
+        "Parts sent as multipart/form-data. A string value is a text field; an object with `file` uploads a file. The Content-Type header (with its boundary) is set automatically. Mutually exclusive with `body`, `graphql`, `form`, and `bodyFile`.",
+      ),
+    bodyFile: z
+      .string()
+      .optional()
+      .describe(
+        "Path of a file whose bytes are sent as the request body, relative to the current directory. Must resolve inside the cwd (symbolic links included). History records only the file name and size. Mutually exclusive with `body`, `graphql`, `form`, and `multipart`.",
+      ),
     auth: authSchema
       .optional()
       .describe(
@@ -324,6 +366,20 @@ export const requestSchema = z
         code: "custom",
         message: "request.body and request.graphql are mutually exclusive",
         path: ["graphql"],
+      });
+    }
+    // body と graphql の組は上の専用メッセージで報告済み。それ以外を含む組み合わせをここで報告する
+    const bodyForms = (["body", "graphql", "form", "multipart", "bodyFile"] as const).filter(
+      (key) => request[key] !== undefined,
+    );
+    if (
+      bodyForms.length > 1 &&
+      !(bodyForms.length === 2 && bodyForms[0] === "body" && bodyForms[1] === "graphql")
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: `request.${bodyForms.join(", request.")} are mutually exclusive (set only one of body, graphql, form, multipart, bodyFile)`,
+        path: [bodyForms[1] as string],
       });
     }
     if (request.method === undefined && request.graphql === undefined) {

@@ -205,6 +205,8 @@ function dryRunStep(
   priorCaptureNames: ReadonlySet<string>,
   /** http.auth(設定ファイルとフローをマージした既定の認証ヘルパー) */
   defaultAuth: AuthDef | undefined,
+  /** multipart / bodyFile のファイルを検証する基準ディレクトリ */
+  cwd: string,
 ): DryRunStepResult {
   const unresolved = new Set<string>();
   const templateContext: TemplateContext = {
@@ -222,7 +224,7 @@ function dryRunStep(
   };
 
   try {
-    const { snapshot } = expandStepRequest(step, templateContext, { defaultAuth });
+    const { snapshot } = expandStepRequest(step, templateContext, { defaultAuth, cwd });
     return {
       ...common,
       request: snapshot,
@@ -282,7 +284,7 @@ export async function dryRunFlow(
   const priorCaptureNames = new Set<string>();
   const steps: DryRunStepResult[] = [];
   for (const step of flow.steps) {
-    steps.push(dryRunStep(step, baseContext, stepGuard, priorCaptureNames, defaultAuth));
+    steps.push(dryRunStep(step, baseContext, stepGuard, priorCaptureNames, defaultAuth, cwd));
     for (const name of Object.keys(step.capture ?? {})) priorCaptureNames.add(name);
   }
 
