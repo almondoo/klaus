@@ -88,6 +88,7 @@ export {
   formatJsonPath,
   MAX_DESCENDANT_OPERATORS,
   parseJsonPathPattern,
+  replaceIgnoredPaths,
 } from "./json-diff.js";
 export type { FlowIssue, FlowValidationResult } from "./loader.js";
 export {
@@ -187,6 +188,7 @@ export type {
   MessageCountAssertion,
   ReportFormat,
   RequestDef,
+  SnapshotAssertionDef,
   SseOptions,
   Step,
   WsDef,
@@ -213,11 +215,30 @@ export {
   parseReportFormatList,
   REPORT_FORMATS,
   requestSchema,
+  SNAPSHOT_INCLUDE_VALUES,
+  snapshotAssertionSchema,
   sseOptionsSchema,
   stepSchema,
   wsSchema,
   wsSendItemSchema,
 } from "./schema.js";
+export type {
+  AcceptSnapshotResult,
+  AcceptSnapshotTarget,
+  SnapshotMismatch,
+  SnapshotSpec,
+} from "./snapshot.js";
+export {
+  acceptSnapshot,
+  buildSnapshotKey,
+  describeSnapshotDifference,
+  listSnapshotMismatches,
+  normalizeSnapshotSpec,
+  SNAPSHOT_DIR,
+  SNAPSHOT_PLACEHOLDER,
+  SNAPSHOT_SUFFIX,
+  snapshotFilePath,
+} from "./snapshot.js";
 export type { SseResult } from "./sse.js";
 /**
  * 注意: receiveSse は低レベルの受信関数で、安全柵(guard.allowedHosts・$protected)の判定を行わない。

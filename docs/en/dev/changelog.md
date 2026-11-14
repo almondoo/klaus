@@ -5,6 +5,18 @@ The current spec lives in the respective references ([CLI](../../guide/cli.md) /
 
 0.2.0 through 0.14.4 were reconstructed after the fact from the git history (taking the `chore: vX.Y.Z` version-bump commits as boundaries: everything between the previous bump and a given bump belongs to that version). Only user-visible changes (feat / fix) are summarized, briefly; internal refactors, tests, and dependency-update details are left out.
 
+## 0.27.0
+
+Added snapshot assertions (`assert.snapshot`): a response is stored as a baseline and compared on later runs.
+
+- The baseline lives in `__snapshots__/<flow file name>.snap.json` next to the flow file, as pretty-printed, key-sorted JSON (so it diffs well in git). The key is the step name plus the `--data` iteration and `name`. The comparison is a structural JSON diff (the same engine as `klaus diff`), and `ignore` uses the same grammar as `klaus diff --ignore-path`. Matching values are stored as the fixed placeholder `"[ignored]"` so the baseline does not churn
+- **Secrets** are compared and stored after the same masking as history, so a declared secret never lands in a file meant to be committed. `--no-mask` does not affect snapshots. Values that are not declared secrets (personal data in a body, for example) are stored, so `ignore` and a review before committing are needed
+- A missing baseline is written (and passes) on a local run, but **fails in CI (the `CI` environment variable is truthy, or `--ci`)** instead of recording (the Jest / insta policy, so CI never records silently). A mismatch fails with a structural diff (exit 4). `-u` / `--update-snapshots` rewrites, adds, and removes obsolete entries. `-u` cannot be set in `klaus.config.yaml` and cannot be combined with `--dry-run`, `--replay`, or `--ci`
+- Decisions: (1) baselines are written once at the end of the run, because `--jobs` and `--data` iterations touch the same file, and this avoids races and half-written files. (2) `--replay` compares but never writes (a replayed response is not what the real API returns now). (3) Implicit new baselines are refused when the run targets a protected (`$protected`) environment without `-u`, so production data does not end up in a committed file. (4) A response whose step failed other assertions is not made a baseline implicitly. (5) Obsolete entries are judged only when every step of the flow ran, so a run that stopped on a failure cannot delete baselines. (6) A corrupt snapshot file exits 2 before anything runs and its content is never printed (even if a hostile link points at an unrelated file)
+- Writes are confined to a `__snapshots__` directory inside the cwd, with `findUnsafeSymlinkInWritePath` and O_NOFOLLOW, never through a symbolic link (the same policy as `klaus promote`); a temporary file is written and renamed
+- History keeps a (masked) candidate on each snapshot assertion that needs approval. Core `listSnapshotMismatches` / `acceptSnapshot` and the CLI `klaus snapshot list|accept` write that candidate as the baseline without calling the API again. Approving from the UI is a later change that calls these functions
+- The JSON output gains a top-level `snapshots` (totals and the files written), and snapshot assertions carry `state` / `snapshotKey` / `snapshotFile` / `differences` / `differenceCount`. The candidate used for approval is not in the JSON output (it is a copy of the whole response)
+
 ## 0.26.0
 
 Follow-ups to the run report (HTTP client).

@@ -34,6 +34,8 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 | `--exclude-tags <list>` | Comma-separated list of tags; drop flows whose `tags:` includes any of them. Takes precedence over `--tags` | — |
 | `--jobs <n>` | Run this many execution units in parallel (integer 1-32; see "Parallel execution (`--jobs`)" below). Cannot be combined with `--record` | 1 (sequential) |
 | `--dry-run` | Send nothing: print each step's expanded request and whether the guards would refuse it (see "Dry run (`--dry-run`)" below). Cannot be combined with `--record`, `--replay`, or `--report` | — |
+| `-u`, `--update-snapshots` | Rewrite `assert.snapshot` baselines that differ or are missing, and remove obsolete entries (see "Snapshots" below). Cannot be combined with `--dry-run`, `--replay`, or `--ci`; it cannot be set from `klaus.config.yaml` | — |
+| `--ci` | Fail instead of recording when an `assert.snapshot` baseline is missing | on when the `CI` environment variable is set to anything other than empty, `0`, or `false` |
 
 `--report` takes a comma-separated list of formats (entries are trimmed; each must be `junit`, `tap`, `html`, or `github`). Passing an unknown or empty format entry prints an error to stderr and exits with 1. `--report` also rejects a duplicated format (e.g. `--report junit,junit`) and rejects `--report-file` values that resolve to the same output path across formats, both with an error to stderr and exit 1, since either would make two writes race on one file. With N formats given to `--report`, `--report-file` must be passed either **exactly N times** (in the same order, pairing the 1st `--report-file` with the 1st format and so on) or **not at all** (in which case each format is written to its own default filename: `klaus-report.xml` for `junit`, `klaus-report.tap` for `tap`, `klaus-report.html` for `html`, `klaus-report.md` for `github`; see [GitHub Report](#github-report) for the one exception). Any other count — e.g. one `--report-file` for two formats — is rejected with an error and exits with 1 without writing any file. This generalizes the single-format behavior: `--report junit` alone still defaults to `klaus-report.xml`, unchanged from before. Passing `--json` and `--text` together, or `-e`/`--env` and `--env-file` together, also prints an error to stderr and exits with 1 (nothing is run). This `-e`/`--env` + `--env-file` conflict only fires for an `-e`/`--env` **typed on the command line**; a `run.env` default coming from `klaus.config.yaml` yields to an explicit `--env-file` instead of conflicting with it (see [Default CLI options](config.md)).
 
@@ -140,6 +142,24 @@ The text output (TTY, or `--text`) prints the same information per step and ends
 
 Exit code is **3** if any step would be refused by a guard, or fails to expand at run time (the `error` case above, which a real run would also end as a runtime error); otherwise **0**. Validation errors stay at 2. There is no exit code 4 because assertions are not evaluated.
 
+### Snapshots (`--update-snapshots` / `--ci`)
+
+A step with `assert.snapshot` ([details](flow-definition.md#snapshot-baseline-comparison)) compares its masked response with a baseline file next to the flow file. These two flags decide what happens when there is nothing to compare, or the response changed:
+
+| Situation | Default (local run) | `--ci`, or `CI` set | `--update-snapshots` |
+|---|---|---|---|
+| Equals the baseline | passes (`matched`) | same | same |
+| Differs from the baseline | fails with a structural diff, exit 4 (`mismatch`) | same | baseline rewritten, passes (`updated`) |
+| No baseline | baseline written, passes (`written`) | fails, exit 4 (`missing`) | baseline written, passes (`written`) |
+| Entry no step produces any more | warning (`obsolete`) | same | entry removed |
+
+- Baselines are written once, at the end of the run, so a run that is killed halfway leaves the files as they were. The files written are listed in the output (`snapshot file written: ...` in text, `snapshots.files` in JSON): review and commit them.
+- `--update-snapshots` is the explicit act of accepting a changed response. It is never read from `klaus.config.yaml`, and `--ci` cannot be combined with it (exit 1); with `CI=true` in the environment it still works. `klaus snapshot accept <runId>` is the other way to accept ([klaus snapshot](#klaus-snapshot)).
+- A missing baseline is not recorded implicitly in three cases: the step's other assertions failed (the failed response would become the baseline), the run targets a `$protected` environment (production data would end up in a committed file; pass `--update-snapshots` to record it on purpose), and `--replay` (a replayed response is compared but never written, and `--update-snapshots` cannot be combined with it). The result is `missing`; it fails the step except in the first case, where the step already fails.
+- A corrupt snapshot file (not JSON, or the wrong shape) exits with 2 before anything runs, without echoing its content. Fix or delete it, or run with `--update-snapshots` to recreate it.
+- Obsolete entries (keys in the file that no step produced) are only judged after every step of the flow ran: nothing skipped, and every snapshot step reached its comparison. A partial run never deletes baselines. Running without `--data` against a file that holds `#<n>` keys from a data-driven run reports them as obsolete, so do not combine that with `-u`.
+- `--dry-run` never touches snapshot files.
+
 ## Output Modes
 
 - **Auto-detection**: text if stdout is a TTY, JSON if non-TTY (pipe / agent execution / CI). `--json` forces JSON even when non-TTY, and `--text` forces text even when not a TTY (the two cannot be combined)
@@ -214,6 +234,7 @@ full detail (request/response snapshots, assertions, etc).
 - Control-character escaping (as done in text output and JUnit reports) is **not** applied here — values are printed as-is
 - **historyRef**: when history recording is enabled (i.e. `--no-history` was not passed), every step (including passed ones) gets a `historyRef: { date, runId, step }`. Fetch the full detail with `klaus history show <runId> --step <step>` (see [klaus history](#klaus-history) / [Execution History](history.md)). `historyRef.date` is the UTC date of the history file the step was written to (derived from the step's `startedAt`). `historyRef` is omitted entirely when run with `--no-history`
 - For SSE / WebSocket steps, `response.body` is absent; received data instead goes into the `events` (SSE) / `wsMessages` (WS) fields
+- **snapshots**: a top-level `snapshots: { matched, written, updated, mismatched, missing, obsolete, files, obsoleteEntries }` summary, present only when a step has a snapshot assertion, a snapshot file has obsolete entries, or snapshot files were written (`files` lists them, relative to the current directory). A snapshot assertion in `assertions` has `kind: "snapshot"`, `state` (`matched` / `written` / `updated` / `mismatch` / `missing`), `snapshotKey`, `snapshotFile`, and for a mismatch `differences` (`[{ "path": "$.body.name", "kind": "changed", "before": "a", "after": "b" }]`, at most 20) with the total in `differenceCount`. Passed steps are one-line summaries, so a baseline that was written shows up in `snapshots.written` / `snapshots.files` and, in text output, as `[snapshot written]` on its `PASS` line. The candidate that `klaus snapshot accept` writes is kept in history, never in this output
 - **redirects / droppedHeaders**: a step that followed redirects (`http.followRedirects`) carries `redirects` (the URLs visited after the first request, the last being the final response) whatever its status, and `droppedHeaders` (`[{ "hop": 1, "headers": ["authorization"] }]`, header names only) when credentials were dropped on a cross-origin hop. URLs are masked like any other. `FAIL` and `ERROR` lines in text output show the same information in one or two compact lines
 - **warnings**: top-level `"warnings": ["..."]`, present only when there is at least one. It carries warnings that do not change a step's outcome, such as `http.tls.insecure is enabled: TLS certificate verification is DISABLED for this run` or a history write failure, without duplicates. The same warning still goes to stderr as a `klaus: warning:` line; text output prints it as a `warning:` line before the summary, and the HTML and GitHub reports show it too
 
@@ -601,3 +622,33 @@ klaus mock <dir> [options]
 | `--json` | Startup line (stdout) and request logs (stderr) as JSON Lines | — |
 
 The server runs until SIGINT / SIGTERM, then exits 0. Exit codes: **2** when the cassette is missing, invalid, or empty, or `--origin` matches no recorded entry; **1** for invalid option values (such as `--port 99999` or a malformed `--origin`), for the port being in use, and for any other runtime failure.
+
+## klaus snapshot
+
+Review and accept `assert.snapshot` results recorded in history ([snapshot](flow-definition.md#snapshot-baseline-comparison)). Both subcommands read history; only `accept` writes, and it writes only snapshot files.
+
+```
+klaus snapshot list [runId] [options]
+klaus snapshot accept <runId> [options]
+```
+
+| Subcommand | Description |
+|---|---|
+| `list [runId]` | Lists the snapshot mismatches of a run, including baselines that were missing and not written. Without `runId` it uses the latest run in history that has a snapshot assertion. Read-only |
+| `accept <runId>` | Writes each pending snapshot of the run as the new baseline, from the masked response stored in history. All pending snapshots of the run unless `--step` is given |
+
+| Option | Description |
+|---|---|
+| `--step <name>` | Only the snapshots of this step (both subcommands) |
+| `--json` | Force JSON output even on a TTY |
+| `--text` | Force text output even when stdout is not a TTY |
+
+`accept` uses the candidate recorded in history when the run happened, so it does not call the API again and the baseline equals what that run saw. It writes only files named `<dir>/__snapshots__/<name>.snap.json` inside the current directory, never through a symbolic link, and leaves the other keys of a file untouched. Review the `git diff` of the snapshot files afterwards.
+
+`list --json` prints `{ "version": 1, "runId": "...", "mismatches": [{ "flow", "step", "iteration"?, "flowFile"?, "snapshotFile", "key", "state", "message", "differences", "differenceCount" }] }`. `accept --json` prints `{ "version": 1, "runId": "...", "accepted": [{ "key", "snapshotFile", "state": "written" | "updated" }], "failed": [{ "key", "snapshotFile", "kind", "message" }] }`.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | Success (`list` always; `accept` when everything was written) |
+| 1 | Invalid arguments (including `--json` with `--text`), an unknown run ID, no run with snapshot assertions (`list` without a run ID), nothing pending to accept (`accept`), or an unexpected error |
+| 2 | `accept`: a snapshot file is corrupt, or a path cannot be written safely (outside the current directory, not under `__snapshots__`, a symbolic link) |

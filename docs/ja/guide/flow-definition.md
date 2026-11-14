@@ -323,6 +323,8 @@ assert:
       email: { type: string, format: email }
   duration:
     maxMs: 1000
+  snapshot:                   # 保存した基準と比較する(下の「snapshot」を参照)
+    ignore: ["$.id"]
   # SSE 用
   eventCount: { min: 1, max: 10 }
   events:
@@ -343,6 +345,7 @@ assert:
 | ボディ(生テキスト) | `bodyText` | `equals` / `contains` / `regex` |
 | ボディ(JSON Schema) | `bodySchema` | JSON Schema オブジェクト |
 | 所要時間 | `duration` | `maxMs` |
+| 基準との比較(HTTP のみ) | `snapshot` | `true`、または `ignore` / `include` / `headers` / `name`([snapshot](#snapshot-基準との比較)を参照) |
 | SSE イベント数 | `eventCount` | `min` / `max` / `equals` |
 | SSE イベント | `events[]` | `index?` + `path?` + 上記マッチャー |
 | WS メッセージ数 | `messageCount` | `min` / `max` / `equals` |
@@ -370,6 +373,32 @@ assert:
 - スキーマに複数の違反があった場合、**違反ごとに個別の `AssertionResult`** が返る(1件目で打ち切らず一括報告される)。各結果の `message` には ajv の `instancePath`(ルート違反の場合は `(root)`)と違反内容が含まれる
 - body が存在しない SSE / WS ステップでは ok:false になる。body が存在するが JSON としてパースできない HTTP レスポンスは、生の文字列のままスキーマ検証にかけられる(例: `type: object` を要求するスキーマなら失敗し、`type: string` なら通り得る)
 - スキーマ自体が不正で ajv がコンパイルできない場合も、例外にはならず ok:false のアサーション失敗として報告される
+
+### snapshot(基準との比較)
+
+`snapshot` は、保存しておいた基準とレスポンスを比較する。項目ごとのアサーションを書かなくても、API が変わればステップが失敗する(「API のビジュアルリグレッション」)。変わったレスポンスは構造的な差分で示され、変更を受け入れるのは明示的な操作になる。
+
+```yaml
+assert:
+  status: 200
+  snapshot:
+    ignore: ["$.id", "$.items[*].createdAt"]   # 揮発する値。文法は `klaus diff --ignore-path` と同じ
+    include: [status, headers, body]            # 既定は [status, body]
+    headers: [content-type, etag]               # include に headers があるときに残すヘッダー(既定は content-type)
+    name: v2                                    # キーに足す任意のラベル
+```
+
+`snapshot: true` は既定(status と body)を使う。どのキーも省略できる。
+
+- **基準の置き場所**: フローファイルの隣の `__snapshots__/<フローファイル名>.snap.json`(`flows/login.yaml` なら `flows/__snapshots__/login.yaml.snap.json`)。ファイルはキー順にソートして整形した JSON で、スナップショットのキーを `{ status?, headers?, body }` に対応づける。git の差分で読みやすい。JSON のボディは JSON の値として、それ以外のボディは文字列として保存する。キーはステップ名で、`--data` の n 回目の反復なら ` #<n>`、`name` を指定していれば ` :: <name>` が付く(例: `login`、`login #2`、`login #2 :: v2`)。
+- **秘密値**: 基準は、履歴と同じマスクを通したレスポンス(<code v-pre>{{env.X}}</code> で解決した値は `***` になる)から書き、比較もマスク済み同士で行う。宣言された秘密値が、コミットする前提のファイルに残ることはない。`--no-mask` は stdout の出力にだけ効き、スナップショットは変えない。秘密値として宣言されていない値(ボディ中の名前・メールアドレス・id など)はそのまま保存されるので、揮発する値や機微な値は `ignore` に書き、コミット前にファイルを確認すること。
+- **`ignore`**: 一致した値は保存する基準では固定値 `"[ignored]"` に置き換わり、比較もされない。タイムスタンプや生成された id で基準が揺れない。パターンはボディに適用する(`$.items[*].id`、`$..updatedAt`)。`..` は 1 つのパターンに 2 個まで。
+- **`include` / `headers`**: `headers` は名前を挙げたレスポンスヘッダーだけを保存する(大文字小文字を区別せず、ファイル内では小文字)。`include` に `"headers"` が必要。`Date` のような揮発するヘッダーは含めないこと。
+- **比較**: 構造的に行う。オブジェクトのキー順は関係なく、配列の順序は関係する。差分があればステップが失敗し(exit 4)、パスと前後の値を示す(1 ステップあたり最大 20 件)。
+- **基準が無い場合・`--update-snapshots`・`--ci`・古いエントリ**: [スナップショット](cli.md#スナップショット-update-snapshots-ci)を参照。要点は、基準が無ければローカルの実行では書き込み、CI では失敗する。変わった基準は `klaus run -u` で書き換え、記録済みの run の不一致は `klaus snapshot accept <runId>` で受け入れる。
+- **対象**: HTTP ステップのみ。SSE・WebSocket のステップに `snapshot` を書くと、その旨のメッセージで失敗する(黙って無視はしない)。`--dry-run` はスナップショットを読み書きしない。`--replay` では再生したレスポンスを比較するが、基準は書かない。
+- **安全**: スナップショットファイルは、カレントディレクトリ内に解決される `__snapshots__` ディレクトリの下でだけ読み書きし、シンボリックリンクは辿らない(違反するとステップは `error`、exit 3)。カレントディレクトリの外にあるフローファイルはスナップショットを使えない。`$protected` な環境に対する実行で新しい基準を書くには `--update-snapshots` が必要(本番のデータがコミットされるファイルに残ってしまうため)。
+- **`use` とのマージ**: `snapshot` は単一値のフィールドで、参照先ステップと呼び出し側の両方に書くと `status` などと同じく衝突になる。
 
 ### `regex` のパターンはテンプレート展開される
 

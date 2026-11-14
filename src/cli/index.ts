@@ -36,6 +36,7 @@ import { registerPromoteCommand } from "./promote.js";
 import { type ReqCommandOptions, reqCommand } from "./req.js";
 import { type RunCommandOptions, runCommand } from "./run.js";
 import { schemaCommand } from "./schema.js";
+import { registerSnapshotCommand } from "./snapshot.js";
 import { type UiCommandOptions, uiCommand } from "./ui.js";
 import { type ValidateCommandOptions, validateCommand } from "./validate.js";
 
@@ -213,6 +214,14 @@ program
     "--actor <name>",
     "name recorded as history actor.name for this run (the actor kind — human/agent/ci — is still detected from environment variables)",
     parseActorOption,
+  )
+  .option(
+    "-u, --update-snapshots",
+    "assert.snapshot: rewrite baselines that differ or are missing, and remove obsolete entries (the explicit way to accept a changed response). Never read from klaus.config.yaml; cannot be combined with --dry-run, --replay, or --ci",
+  )
+  .option(
+    "--ci",
+    "assert.snapshot: fail instead of writing when a baseline is missing (also the default when the CI environment variable is set to a truthy value)",
   )
   .addHelpText(
     "after",
@@ -481,6 +490,7 @@ historyCommand
 registerDiffCommand(program);
 registerPromoteCommand(program);
 registerMockCommand(program);
+registerSnapshotCommand(program);
 
 // このモジュールが直接実行された(node dist/cli.js ...)場合のみパースする。
 // テストから import した際に process.argv(vitest 自身の起動引数)を誤ってパースしないためのガード。

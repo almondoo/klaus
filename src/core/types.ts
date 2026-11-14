@@ -28,6 +28,60 @@ export interface AssertionResult {
   expected?: unknown;
   actual?: unknown;
   message: string;
+  /** kind が "snapshot" のときの詳細(状態・差分・承認用の候補) */
+  snapshot?: SnapshotAssertionDetail;
+}
+
+/** スナップショットの1ステップ分の判定状態 */
+export type SnapshotState = "matched" | "written" | "updated" | "mismatch" | "missing";
+
+/** スナップショットの差分1件(JSON 構造差分。path は `$.body.items[0].id` のような JSONPath 風) */
+export interface SnapshotDifference {
+  path: string;
+  kind: "added" | "removed" | "changed" | "type-changed" | "too-deep";
+  before?: unknown;
+  after?: unknown;
+}
+
+/** 保存する(または比較する)スナップショット1件の内容。マスク済み・ignore 適用済み */
+export interface SnapshotEntry {
+  status?: number;
+  headers?: Record<string, string>;
+  body?: unknown;
+}
+
+/** snapshot アサーションの結果の詳細。AssertionResult.snapshot に入り、履歴にも残る */
+export interface SnapshotAssertionDetail {
+  /** スナップショットのキー(ステップ名 + --data の反復番号 + name) */
+  key: string;
+  /** スナップショットファイルの cwd からの相対パス(POSIX 区切り) */
+  file: string;
+  state: SnapshotState;
+  /** mismatch のときの構造差分(先頭 MAX 件まで) */
+  differences?: SnapshotDifference[];
+  /** mismatch のときの差分の総数(differences が切り詰められていれば differences.length より大きい) */
+  differenceCount?: number;
+  /**
+   * mismatch / missing のときだけ入る、書き込む内容そのもの(マスク済み)。
+   * 履歴から承認(acceptSnapshot)するときの書き込み元になる。JSON レポートには出さない
+   */
+  candidate?: SnapshotEntry;
+}
+
+/** 実行全体のスナップショット集計(snapshot アサーションが 1 件でもあった実行にだけ付く) */
+export interface SnapshotRunSummary {
+  matched: number;
+  written: number;
+  updated: number;
+  mismatched: number;
+  /** 基準が無く、書き込まれなかったもの(CI・--replay・保護環境など) */
+  missing: number;
+  /** 実行終了時点で、どのステップからも生成されなかったエントリの総数 */
+  obsolete: number;
+  /** この実行で書き込んだ(または古いエントリを取り除いた)スナップショットファイル(cwd 相対) */
+  files: string[];
+  /** 古いエントリがあったファイルとそのキー(--update-snapshots で取り除く) */
+  obsoleteEntries: { file: string; keys: string[] }[];
 }
 
 /** リクエストの実測内容(履歴・レポート用に正規化したもの) */
@@ -104,4 +158,6 @@ export interface RunResult {
    * 何も無ければ省略する(stderr への通知とは別に、機械可読な出力にも載せるため)
    */
   warnings?: string[];
+  /** スナップショットの集計。snapshot アサーションを持つステップまたは古いエントリが無ければ省略する */
+  snapshots?: SnapshotRunSummary;
 }

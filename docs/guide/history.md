@@ -59,6 +59,8 @@ One line = one step execution. `runId` lets you group steps from the same run.
 
 **Skipped steps are recorded too** (`status: "skipped"`, no request/response, empty assertions). Steps that resulted in a runtime error are not recorded in the history, with one exception: a step refused by a guardrail (`guard.allowedHosts`, or `$protected`) is recorded for auditing, with `status: "error"`, the masked request that would have been sent, the refusal reason in `error`, and the audit fields.
 
+**Snapshot results** are recorded as an assertion with `kind: "snapshot"` and a `snapshot` object: `key`, `file` (the snapshot file), `state` (`matched` / `written` / `updated` / `mismatch` / `missing`), and, for a mismatch, `differences` (at most 20) and `differenceCount`. A `mismatch` or `missing` result also keeps `candidate`, the masked `{ status?, headers?, body }` that would be written as the baseline. `klaus snapshot accept <runId>` writes exactly that candidate, so accepting a change never calls the API again ([klaus snapshot](cli.md#klaus-snapshot)). The candidate is built after the same secret masking as the rest of the entry.
+
 Newly written entries always include `status`. Older entries without a `status` field can still be read by deriving pass/fail from `assertions`, as before (backward compatible).
 
 ## Audit Fields

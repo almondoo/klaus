@@ -90,6 +90,25 @@ describe("formatGithubSummary", () => {
     expect(formatGithubSummary(run)).not.toContain("Warning");
   });
 
+  it("スナップショットの集計と書き込んだファイルを、件数表の後に箇条書きで出す(無ければ出さない)", () => {
+    const md = formatGithubSummary({
+      ...run,
+      snapshots: {
+        matched: 2,
+        written: 1,
+        updated: 0,
+        mismatched: 1,
+        missing: 0,
+        obsolete: 3,
+        files: ["flows/__snapshots__/a.yaml.snap.json"],
+        obsoleteEntries: [],
+      },
+    });
+    expect(md).toContain("- snapshots: 2 matched, 1 written, 1 mismatched, 3 obsolete");
+    expect(md).toContain("- snapshot file written: flows/\\_\\_snapshots\\_\\_/a.yaml.snap.json");
+    expect(formatGithubSummary(run)).not.toContain("snapshots:");
+  });
+
   it("サイズ上限を超える場合は詳細を打ち切って注記し、失敗表は残す", () => {
     const flows = Array.from({ length: 40 }, (_, i) =>
       buildFlow({

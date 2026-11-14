@@ -31,6 +31,12 @@ import { formatJUnit } from "./reporters/junit.js";
 import { formatTap } from "./reporters/tap.js";
 import { createTextReporter, resolveUseColor, type TextReporter } from "./reporters/text.js";
 
+/** 環境変数 CI が真か(設定されていて、空・"0"・"false" のいずれでもない) */
+export function isCiEnvironment(env: NodeJS.ProcessEnv): boolean {
+  const value = env.CI?.trim().toLowerCase();
+  return value !== undefined && value !== "" && value !== "0" && value !== "false";
+}
+
 /** --report のフォーマットごとの既定ファイル名(--report-file を1回も指定しなかった場合に使う) */
 const DEFAULT_REPORT_FILENAMES: Record<ReportFormat, string> = {
   junit: "klaus-report.xml",
@@ -225,6 +231,17 @@ export interface RunCommandOptions {
    */
   dryRun?: boolean;
   /**
+   * --update-snapshots / -u 指定時、assert.snapshot の不一致・未記録の基準を書き換え、古いエントリを取り除く
+   * (明示的な承認の操作)。呼び出しごとに明示させるため、klaus.config.yaml からは設定できない。
+   * --dry-run・--replay・--ci とは併用できない
+   */
+  updateSnapshots?: boolean;
+  /**
+   * --ci 指定時、assert.snapshot の基準が無いときに書き込まず失敗にする。未指定(undefined)なら環境変数 CI が
+   * 真(空・"0"・"false" 以外)かどうかで決める。明示的に false を渡せば環境変数を無視する(テスト用)
+   */
+  ci?: boolean | undefined;
+  /**
    * klaus.config.yaml の `guard`(送信先ホストの許可リスト等)。CLI フラグは設けない
    * (エージェントが引数で安全柵を外せないようにするため)。index.ts が config から設定して渡す
    */
@@ -383,6 +400,25 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     }
     if (options.report !== undefined) {
       process.stderr.write("klaus: --dry-run cannot be combined with --report\n");
+      return 1;
+    }
+    if (options.updateSnapshots === true) {
+      process.stderr.write("klaus: --dry-run cannot be combined with --update-snapshots\n");
+      return 1;
+    }
+  }
+
+  // スナップショットの書き換えは、実際に送った応答に対してだけ意味がある(replay の応答は基準にしない)。
+  // --ci は「書き込まない」、--update-snapshots は「書き込む」で意味が衝突する
+  if (options.updateSnapshots === true) {
+    if (options.replay !== undefined) {
+      process.stderr.write(
+        "klaus: --update-snapshots cannot be combined with --replay (snapshots are never written from replayed responses)\n",
+      );
+      return 1;
+    }
+    if (options.ci === true) {
+      process.stderr.write("klaus: --update-snapshots cannot be combined with --ci\n");
       return 1;
     }
   }
@@ -553,6 +589,10 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     variables: options.var,
     allowProtected: options.allowProtected,
     history: options.history,
+    snapshots: {
+      update: options.updateSnapshots === true,
+      ci: options.ci ?? isCiEnvironment(process.env),
+    },
     dataRows,
     jobs,
     onStepStart: stepHandler ? (context) => stepHandler.onStepStart(context) : undefined,

@@ -357,6 +357,54 @@ describe("strict object schemas / unknown keys", () => {
   });
 });
 
+describe("assertSchema / snapshot", () => {
+  const parseAssert = (snapshot: unknown) =>
+    flowSchema.safeParse({
+      name: "f",
+      steps: [{ name: "s", request: { method: "GET", url: "http://x" }, assert: { snapshot } }],
+    });
+
+  it("true とオブジェクト(ignore / include / headers / name)を受け入れる", () => {
+    expect(parseAssert(true).success).toBe(true);
+    expect(
+      parseAssert({
+        ignore: ["$.id", "$.items[*].createdAt", "$..updatedAt"],
+        include: ["status", "headers", "body"],
+        headers: ["content-type", "etag"],
+        name: "v2",
+      }).success,
+    ).toBe(true);
+  });
+
+  it("false・未知のキー・空の include・不正な include 値・空の name は検証エラーになる", () => {
+    for (const invalid of [
+      false,
+      { unknown: 1 },
+      { include: [] },
+      { include: ["cookies"] },
+      { name: "" },
+    ]) {
+      expect(parseAssert(invalid).success, JSON.stringify(invalid)).toBe(false);
+    }
+  });
+
+  it("ignore に解釈できない JSONPath があると、どのパターンかを示して検証エラーになる", () => {
+    const result = parseAssert({ ignore: ["$.ok", "items.id"] });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.issues[0]?.path.join(".")).toContain("ignore.1");
+    expect(result.error.issues[0]?.message).toContain("JSONPath pattern");
+  });
+
+  it("headers は include に headers があるときだけ指定できる", () => {
+    const result = parseAssert({ headers: ["etag"] });
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.error.issues[0]?.message).toContain('requires "headers" in snapshot.include');
+    expect(parseAssert({ include: ["headers"], headers: ["etag"] }).success).toBe(true);
+  });
+});
+
 describe("environmentSchema", () => {
   it("Record<string,string> を受け入れる", () => {
     const result = environmentSchema.parse({ baseUrl: "http://localhost:3000", token: "abc" });

@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { parseAllowedHostEntry } from "./guard.js";
+import { parseJsonPathPattern } from "./json-diff.js";
 
 /**
  * フロー定義 YAML / 環境ファイル YAML の zod スキーマ。
@@ -228,6 +229,61 @@ export const captureSchema = z.union([
 ]);
 export type CaptureDef = z.infer<typeof captureSchema>;
 
+/**
+ * スナップショットアサーション。`true` は既定(status と body を比較)、オブジェクトで比較対象・除外・名前を指定する。
+ * ignore の文法は `klaus diff --ignore-path` と同じ JSONPath の一部(`$` `.name` `['name']` `[0]` `.*` `[*]` `..name`)。
+ */
+export const SNAPSHOT_INCLUDE_VALUES = ["status", "headers", "body"] as const;
+export const snapshotAssertionSchema = z.union([
+  z.literal(true),
+  z
+    .strictObject({
+      ignore: z
+        .array(
+          z.string().refine((pattern) => parseJsonPathPattern(pattern) !== undefined, {
+            message:
+              "must be a JSONPath pattern: `$`, `.name`, `['name']`, `[0]`, `.*`, `[*]`, `..name` (at most 2 `..`, 256 characters)",
+          }),
+        )
+        .optional()
+        .describe(
+          'JSONPath patterns (same grammar as `klaus diff --ignore-path`, relative to the response body) for volatile values such as ids and timestamps. Matching values are stored as the placeholder "[ignored]" and are not compared.',
+        ),
+      include: z
+        .array(z.enum(SNAPSHOT_INCLUDE_VALUES))
+        .min(1)
+        .optional()
+        .describe(
+          'Parts of the response to snapshot: "status", "headers", "body". Defaults to ["status", "body"].',
+        ),
+      headers: z
+        .array(z.string().min(1))
+        .min(1)
+        .optional()
+        .describe(
+          'Response header names (case-insensitive) to store and compare when `include` contains "headers". Defaults to ["content-type"]. Requires "headers" in `include`.',
+        ),
+      name: z
+        .string()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe(
+          "Extra label appended to the snapshot key (the key is the step name, plus the --data iteration, plus this name).",
+        ),
+    })
+    .superRefine((snapshot, ctx) => {
+      if (snapshot.headers !== undefined && !(snapshot.include ?? []).includes("headers")) {
+        ctx.addIssue({
+          code: "custom",
+          message: 'snapshot.headers requires "headers" in snapshot.include',
+          path: ["headers"],
+        });
+      }
+    }),
+]);
+export type SnapshotAssertionDef = z.infer<typeof snapshotAssertionSchema>;
+
 /** ステップのアサーション定義全体 */
 export const assertSchema = z.strictObject({
   status: z
@@ -273,6 +329,11 @@ export const assertSchema = z.strictObject({
     .optional()
     .describe(
       "JSON Schema (draft 2020-12) object to validate the JSON-parsed response body against. Each violation is reported as a separate assertion result.",
+    ),
+  snapshot: snapshotAssertionSchema
+    .optional()
+    .describe(
+      "Snapshot (baseline) assertion for HTTP steps: `true`, or an object with `ignore` / `include` / `headers` / `name`. The masked response is compared with a baseline stored in `__snapshots__/<flow file>.snap.json` next to the flow file. A missing baseline is written (and the step passes) except in CI or with --ci, where it fails; a changed response fails with a structural diff; `klaus run --update-snapshots` (-u) rewrites baselines explicitly. Not supported for SSE / WebSocket steps.",
     ),
 });
 export type AssertDef = z.infer<typeof assertSchema>;

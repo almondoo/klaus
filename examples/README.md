@@ -17,7 +17,9 @@ examples/
 │   ├── users-check.yaml        # 単発チェック: query / headers / body(JSONPath) / bodySchema の一通りの書き方
 │   ├── graphql-check.yaml      # 単発チェック: request.graphql(GraphQL クエリ + variables)
 │   ├── sse-events-check.yaml   # 単発チェック: sse:(Server-Sent Events の受信・eventCount/events)
-│   └── ws-echo-check.yaml      # 単発チェック: ws:(WebSocket の送受信・messageCount/messages)
+│   ├── ws-echo-check.yaml      # 単発チェック: ws:(WebSocket の送受信・messageCount/messages)
+│   ├── users-snapshot.yaml     # 単発チェック: assert.snapshot(応答を基準と比較。基準は api/__snapshots__/ にコミット済み)
+│   └── __snapshots__/          # スナップショットの基準ファイル(上の users-snapshot.yaml.snap.json)
 ├── flows/
 │   ├── auth-flow.yaml          # シナリオフロー: login → token キャプチャ → 認証付きリクエスト
 │   └── users-crud-flow.yaml    # シナリオフロー: ユーザー作成 → 取得 → 削除(POST/GET/DELETE + capture)

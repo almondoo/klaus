@@ -182,6 +182,44 @@ The command exits with code 2 and sends nothing.
 
 **Fix**: copy the file into the working directory (or run `klaus req` from a directory that contains it), or pass the body inline with `--body '<json>'`. See [klaus req](cli.md#request-body-body).
 
+## Snapshot assertions (`assert.snapshot`)
+
+### "snapshot \"X\" differs from the baseline (N differences): ..."
+
+**Symptom** (the step fails, exit code 4)
+
+```
+snapshot "get-user" differs from the baseline (1 difference): $.body.name "alice" -> "bob"
+```
+
+**Cause**: the response no longer equals the baseline stored in `__snapshots__/<flow file>.snap.json`. The paths start with `$.status`, `$.headers`, or `$.body`; the JSON output lists up to 20 of them under `differences`.
+
+**Fix**: if the change is a bug, fix the API. If it is expected, accept it with `klaus run <file> --update-snapshots` or `klaus snapshot accept <runId>` and review the `git diff` of the snapshot file. If the differing value is volatile (an id, a timestamp), add its path to `snapshot.ignore`. See [snapshot](flow-definition.md#snapshot-baseline-comparison).
+
+### "snapshot \"X\" has no baseline, and a baseline is not recorded in CI ..."
+
+**Symptom** (the step fails, exit code 4)
+
+```
+snapshot "get-user" has no baseline, and a baseline is not recorded in CI (run it locally and commit "flows/__snapshots__/a.yaml.snap.json", or pass --update-snapshots)
+```
+
+**Cause**: the run has `--ci`, or the `CI` environment variable is set, and the flow has no baseline for this step. The same result (with a different reason in the message) happens when the run targets a `$protected` environment or uses `--replay`, because a baseline is not recorded implicitly there.
+
+**Fix**: run the flow once locally, review, and commit the snapshot file. To record from a protected environment on purpose, pass `--update-snapshots`. Do not commit a snapshot that was recorded from production data you do not want in the repository. See [Snapshots](cli.md#snapshots-update-snapshots-ci).
+
+### "snapshot file \"X\" is corrupt: ..."
+
+**Symptom** (exit code 2, nothing is run)
+
+```
+klaus: parse error: snapshot file "flows/__snapshots__/a.yaml.snap.json" is corrupt: the file is not valid JSON. Fix it, delete it, or run with --update-snapshots to recreate it
+```
+
+**Cause**: the snapshot file is not a JSON object of `{ status?, headers?, body }` entries, for example after an unresolved merge conflict. klaus never prints the file's content in this message.
+
+**Fix**: resolve the conflict or delete the file, then run again (a missing file is simply a missing baseline), or run with `--update-snapshots` to recreate it.
+
 ## `klaus ui` errors
 
 ### "Forbidden: environment \"X\" is protected and cannot be edited via this API (edit the file directly)"

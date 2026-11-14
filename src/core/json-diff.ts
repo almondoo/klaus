@@ -366,3 +366,67 @@ export function diffJson(
   }
   return out;
 }
+
+/** オブジェクトに own プロパティとして値を入れる(`__proto__` という名前のキーでもプロトタイプを書き換えない) */
+function setOwnProperty(target: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true,
+  });
+}
+
+/**
+ * 除外パターンに一致するノードを placeholder に置き換えた、value の複製を返す(元の value は変更しない)。
+ * スナップショットで、揮発する値(id・タイムスタンプ等)を保存する baseline に固定値で残し、
+ * 比較でも同じ置換を通すために使う。パターンの意味・一致規則は diffJson の ignorePaths と同じ。
+ * 反復(明示スタック)で走査するため深い入れ子でもスタックを溢れさせない。パターンが空なら value をそのまま返す。
+ * 入れ子が MAX_COMPARE_DEPTH を超える部分は置換せず、そのまま(複製せずに)残す。
+ */
+export function replaceIgnoredPaths(
+  value: unknown,
+  patterns: readonly JsonPathPattern[],
+  placeholder: unknown,
+): unknown {
+  if (patterns.length === 0) return value;
+  const isIgnored = (node: PathNode | undefined): boolean => {
+    const path = pathOf(node);
+    return patterns.some((pattern) => matchPattern(pattern.segments, path));
+  };
+  if (isIgnored(undefined)) return placeholder;
+  const rootType = jsonTypeOf(value);
+  if (rootType !== "array" && rootType !== "object") return value;
+
+  const clone = (source: unknown): unknown =>
+    Array.isArray(source) ? new Array(source.length) : {};
+  const root = clone(value);
+  const stack: Array<{ source: unknown; target: unknown; node: PathNode | undefined }> = [
+    { source: value, target: root, node: undefined },
+  ];
+  while (stack.length > 0) {
+    const { source, target, node } = stack.pop() as (typeof stack)[number];
+    const depth = node?.depth ?? 0;
+    const entries: Array<[string | number, unknown]> = Array.isArray(source)
+      ? source.map((item, index): [number, unknown] => [index, item])
+      : Object.entries(source as Record<string, unknown>);
+    for (const [segment, child] of entries) {
+      const childNode: PathNode = { parent: node, segment, depth: depth + 1 };
+      let replacement: unknown;
+      if (isIgnored(childNode)) {
+        replacement = placeholder;
+      } else {
+        const childType = jsonTypeOf(child);
+        if ((childType === "array" || childType === "object") && depth + 1 < MAX_COMPARE_DEPTH) {
+          replacement = clone(child);
+          stack.push({ source: child, target: replacement, node: childNode });
+        } else {
+          replacement = child;
+        }
+      }
+      if (Array.isArray(target)) target[segment as number] = replacement;
+      else setOwnProperty(target as Record<string, unknown>, segment as string, replacement);
+    }
+  }
+  return root;
+}

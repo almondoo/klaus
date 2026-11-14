@@ -324,12 +324,13 @@ const SCALAR_ASSERT_FIELDS = [
   "eventCount",
   "messageCount",
   "bodySchema",
+  "snapshot",
 ] as const;
 
 /**
  * 参照先ステップの assert と呼び出し側ステップの assert を加算マージする。
  * - 配列フィールド(headers/body/events/messages): 参照先→呼び出し側の順に連結する
- * - スカラー・単一オブジェクトフィールド(status/bodyText/duration/eventCount/messageCount/bodySchema):
+ * - スカラー・単一オブジェクトフィールド(status/bodyText/duration/eventCount/messageCount/bodySchema/snapshot):
  *   両方で定義されていたら「単体チェックの保証を弱める置換」とみなし、フィールド名を conflicts に集める
  *   (この場合 assert は返さない。呼び出し側で FlowIssue に変換する)
  */
@@ -358,6 +359,7 @@ function mergeAssert(
   const eventCount = referenced?.eventCount ?? caller?.eventCount;
   const messageCount = referenced?.messageCount ?? caller?.messageCount;
   const bodySchema = referenced?.bodySchema ?? caller?.bodySchema;
+  const snapshot = referenced?.snapshot ?? caller?.snapshot;
 
   const assert: AssertDef = {
     ...(headers !== undefined ? { headers } : {}),
@@ -370,6 +372,7 @@ function mergeAssert(
     ...(eventCount !== undefined ? { eventCount } : {}),
     ...(messageCount !== undefined ? { messageCount } : {}),
     ...(bodySchema !== undefined ? { bodySchema } : {}),
+    ...(snapshot !== undefined ? { snapshot } : {}),
   };
   return { assert, conflicts: [] };
 }

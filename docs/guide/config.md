@@ -121,6 +121,7 @@ The following options cannot be set in `klaus.config.yaml` (the schema has no fi
 | `--allow-protected` | Setting this to `true` by default via config would erode the guardrail that refuses execution against `$protected: true` environments |
 | `--allow-hosts` (no such option exists) | `guard.allowedHosts` can only be changed by editing `klaus.config.yaml`; a per-invocation flag would let an agent lift the restriction it is meant to enforce |
 | `--dry-run` | Printing the expanded requests instead of sending them changes what a run does as much as `--record` / `--replay` do, so it must be made explicit on every invocation |
+| `--update-snapshots` / `-u` | Rewriting snapshot baselines is the explicit act of accepting a changed response; a persistent default would make every run accept whatever the API returns |
 | `--record` / `--replay` | These record/replay modes change the execution side effects (whether real network access happens) significantly, so they must be made explicit on every invocation |
 | `--json` / `--text` | The output mode depends on the caller (a human reading it vs. an agent or script parsing it), so it should be made explicit on every command-line invocation |
 | `--var` / `--env-file` / `--data` | All three are ad-hoc, per-invocation overrides by nature (a one-off variable, a one-off environment file path, or a one-off data file for a data-driven run); giving them a persistent default in config would defeat that purpose |

@@ -8,9 +8,17 @@ import { closeServer, listenEphemeral, reserveClosedPort } from "../support/net.
 const projectRoot = join(__dirname, "..", "..");
 const cliPath = join(projectRoot, "dist", "cli.js");
 
+/** /snap が返す本文(スナップショットのテストが差し替える) */
+let snapBody: unknown = { id: 1, name: "alice", at: "t1" };
+
 /** 成功/失敗/接続不能を再現するための最小限のローカル HTTP サーバー */
 async function startFixtureServer() {
   const server = createServer((req, res) => {
+    if (req.url === "/snap") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(snapBody));
+      return;
+    }
     if (req.url === "/ok" && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
@@ -1312,5 +1320,79 @@ steps:
     expect(parsed.warnings).toEqual([expect.stringContaining("http.tls.insecure is enabled")]);
     // stderr にも従来どおり出る
     expect(result.stderr).toContain("http.tls.insecure is enabled");
+  });
+
+  it("(ab) assert.snapshot: 書き込み(exit 0)→ 一致 → 不一致(exit 4・差分つき JSON)→ snapshot accept → -u の exit code と JSON", async () => {
+    const snapDir = join(workDir, "snapshot-scenario");
+    await mkdir(snapDir, { recursive: true });
+    await writeFile(
+      join(snapDir, "snap.yaml"),
+      `name: snap flow\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/snap"\n    assert:\n      snapshot:\n        ignore: ["$.at"]\n`,
+      "utf-8",
+    );
+    // 周囲の CI 環境変数に依存させない(CI=true だと基準が無いときに失敗する)
+    const env = { ...process.env, CI: "false" };
+
+    const written = await runCli(["run", "snap.yaml"], snapDir, cliPath, env);
+    expect(written.status).toBe(0);
+    expect(JSON.parse(written.stdout).snapshots).toMatchObject({
+      written: 1,
+      files: ["__snapshots__/snap.yaml.snap.json"],
+    });
+
+    snapBody = { id: 1, name: "alice", at: "t2" };
+    const matched = await runCli(["run", "snap.yaml", "--no-history"], snapDir, cliPath, env);
+    expect(matched.status).toBe(0);
+    expect(JSON.parse(matched.stdout).snapshots).toMatchObject({ matched: 1 });
+
+    snapBody = { id: 1, name: "bob", at: "t3" };
+    const mismatch = await runCli(["run", "snap.yaml"], snapDir, cliPath, env);
+    expect(mismatch.status).toBe(4);
+    const report = JSON.parse(mismatch.stdout);
+    expect(report.snapshots.mismatched).toBe(1);
+    expect(report.flows[0].steps[0].assertions[0]).toMatchObject({
+      kind: "snapshot",
+      state: "mismatch",
+      differences: [{ path: "$.body.name", before: "alice", after: "bob" }],
+    });
+
+    // CI 指定で、基準の無い別フローは書かずに失敗する
+    await writeFile(
+      join(snapDir, "fresh.yaml"),
+      `name: fresh\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/snap"\n    assert:\n      snapshot: true\n`,
+      "utf-8",
+    );
+    const missing = await runCli(
+      ["run", "fresh.yaml", "--no-history", "--ci"],
+      snapDir,
+      cliPath,
+      env,
+    );
+    expect(missing.status).toBe(4);
+    expect(JSON.parse(missing.stdout).snapshots).toMatchObject({ missing: 1, written: 0 });
+
+    // 承認(accept)してから再実行すると一致する
+    const accepted = await runCli(["snapshot", "accept", report.runId], snapDir, cliPath, env);
+    expect(accepted.status).toBe(0);
+    expect(JSON.parse(accepted.stdout).accepted).toEqual([
+      { key: "get", snapshotFile: "__snapshots__/snap.yaml.snap.json", state: "updated" },
+    ]);
+    const rerun = await runCli(["run", "snap.yaml", "--no-history"], snapDir, cliPath, env);
+    expect(rerun.status).toBe(0);
+
+    // -u の併用エラーは exit 1、-u 単体は exit 0 で更新
+    const conflict = await runCli(["run", "snap.yaml", "-u", "--ci"], snapDir, cliPath, env);
+    expect(conflict.status).toBe(1);
+    snapBody = { id: 2, name: "carol", at: "t4" };
+    const updated = await runCli(["run", "snap.yaml", "--no-history", "-u"], snapDir, cliPath, env);
+    expect(updated.status).toBe(0);
+    expect(JSON.parse(updated.stdout).snapshots).toMatchObject({ updated: 1 });
+
+    // 壊れたスナップショットは exit 2、承認対象の無い run の accept は exit 1
+    await writeFile(join(snapDir, "__snapshots__", "snap.yaml.snap.json"), "{broken", "utf-8");
+    const corrupt = await runCli(["run", "snap.yaml", "--no-history"], snapDir, cliPath, env);
+    expect(corrupt.status).toBe(2);
+    const nothing = await runCli(["snapshot", "accept", "no-such-run"], snapDir, cliPath, env);
+    expect(nothing.status).toBe(1);
   });
 });

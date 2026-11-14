@@ -20,6 +20,7 @@ Documentation site: https://almondoo.github.io/klaus/
 - **Dry run**: `klaus run --dry-run` prints each step's expanded request and whether the guards would refuse it, without sending anything
 - **Ad-hoc requests**: `klaus req` sends a single request with the same guards and secret masking as `klaus run` and records it in the history, so agents can use it instead of `curl`
 - **Record, diff, promote, mock**: `klaus diff` compares two recorded runs, `klaus promote` turns recorded runs into a re-runnable flow with inferred assertions, and `klaus mock` serves a recorded cassette as a local mock server
+- **Snapshots**: `assert.snapshot` compares a response with a baseline file (secrets masked, volatile fields ignorable). A changed response fails with a structural diff, and accepting it is explicit (`klaus run -u`, `klaus snapshot accept`); in CI a missing baseline fails instead of being recorded
 - **Reports**: `--report` writes `junit`, `tap`, `html` (a single self-contained file), and `github` (a job summary with annotations for GitHub Actions)
 - **Local-first**: Execution history is appended to `.klaus/history/*.jsonl`. No cloud sync or account mechanism
 
@@ -98,6 +99,7 @@ The full syntax for templates, assertions, and SSE / GraphQL / WebSocket flows i
 | `klaus diff [runA] [runB]` | Compares two recorded runs from history (exit 4 when they differ) |
 | `klaus promote <runId...>` | Turns recorded runs into a re-runnable flow YAML with inferred assertions |
 | `klaus mock <dir>` | Serves a recorded cassette as a local mock server |
+| `klaus snapshot list\|accept` | Lists the snapshot mismatches of a recorded run, or accepts them as the new baseline |
 
 See the [CLI reference](https://almondoo.github.io/klaus/guide/cli) for the full option list of each subcommand.
 

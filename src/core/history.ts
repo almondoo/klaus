@@ -187,6 +187,8 @@ function maskAssertions(
     expected: maskDeep(assertion.expected, secrets),
     actual: maskDeep(assertion.actual, secrets),
     message: maskString(assertion.message, secrets),
+    // スナップショットの差分・候補は応答由来の値を含むため、他のフィールドと同じ規則でマスクする
+    ...(assertion.snapshot !== undefined ? { snapshot: maskDeep(assertion.snapshot, secrets) } : {}),
   }));
 }
 

@@ -144,4 +144,53 @@ describe("formatHtml", () => {
     expect(html).toContain('<div class="warnings">');
     expect(html).not.toContain("<script");
   });
+
+  it("スナップショットの不一致は差分の表(基準・今回)で出し、集計行にコミット対象のファイルを載せる", () => {
+    const run = buildRunResult([
+      buildFlow({
+        status: "failed",
+        steps: [
+          buildStep({
+            name: "get",
+            status: "failed",
+            assertions: [
+              {
+                ok: false,
+                kind: "snapshot",
+                message: "snapshot differs",
+                snapshot: {
+                  key: "get",
+                  file: "__snapshots__/a.yaml.snap.json",
+                  state: "mismatch",
+                  differences: [
+                    { path: "$.body.name", kind: "changed", before: "a", after: `<b>` },
+                  ],
+                  differenceCount: 3,
+                },
+              },
+            ],
+          }),
+        ],
+      }),
+    ]);
+    const html = formatHtml({
+      ...run,
+      snapshots: {
+        matched: 0,
+        written: 1,
+        updated: 0,
+        mismatched: 1,
+        missing: 0,
+        obsolete: 0,
+        files: ["__snapshots__/new.yaml.snap.json"],
+        obsoleteEntries: [],
+      },
+    });
+    expect(html).toContain("Snapshot differences (2 more not shown)");
+    expect(html).toContain("<code>$.body.name</code>");
+    expect(html).toContain("&lt;b&gt;");
+    expect(html).not.toContain("<b>");
+    expect(html).toContain("snapshots: 0 matched, 1 written, 1 mismatched");
+    expect(html).toContain("snapshot file written: __snapshots__/new.yaml.snap.json");
+  });
 });

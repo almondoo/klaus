@@ -182,6 +182,44 @@ exit code 2 で終了し、何も送信しない。
 
 **対処**: ファイルをカレントディレクトリへコピーする(またはそのファイルを含むディレクトリから `klaus req` を実行する)か、`--body '<json>'` でボディを直接渡す。[klaus req](cli.md#リクエストボディ-body)を参照。
 
+## スナップショットアサーション(`assert.snapshot`)
+
+### 「snapshot "X" differs from the baseline (N differences): ...」
+
+**症状**(ステップが失敗し、exit code 4)
+
+```
+snapshot "get-user" differs from the baseline (1 difference): $.body.name "alice" -> "bob"
+```
+
+**原因**: レスポンスが、`__snapshots__/<フローファイル名>.snap.json` に保存された基準と一致しなくなった。パスは `$.status`、`$.headers`、`$.body` のいずれかで始まる。JSON 出力では `differences` に最大 20 件が載る。
+
+**対処**: 変更が不具合なら API を直す。意図した変更なら、`klaus run <file> --update-snapshots` または `klaus snapshot accept <runId>` で受け入れ、スナップショットファイルの `git diff` を確認する。差が出る値が揮発するもの(id・タイムスタンプ)なら、そのパスを `snapshot.ignore` に加える。[snapshot](flow-definition.md#snapshot-基準との比較)を参照。
+
+### 「snapshot "X" has no baseline, and a baseline is not recorded in CI ...」
+
+**症状**(ステップが失敗し、exit code 4)
+
+```
+snapshot "get-user" has no baseline, and a baseline is not recorded in CI (run it locally and commit "flows/__snapshots__/a.yaml.snap.json", or pass --update-snapshots)
+```
+
+**原因**: 実行に `--ci` が付いている、または環境変数 `CI` が設定されていて、そのステップの基準がフローに無い。`$protected` な環境に対する実行や `--replay` でも、基準を暗黙には記録しないため同じ結果(メッセージの理由は異なる)になる。
+
+**対処**: ローカルで一度実行し、内容を確認してスナップショットファイルをコミットする。保護環境から意図して記録するなら `--update-snapshots` を付ける。リポジトリに残したくない本番のデータから記録したスナップショットはコミットしないこと。[スナップショット](cli.md#スナップショット-update-snapshots-ci)を参照。
+
+### 「snapshot file "X" is corrupt: ...」
+
+**症状**(exit code 2、何も実行しない)
+
+```
+klaus: parse error: snapshot file "flows/__snapshots__/a.yaml.snap.json" is corrupt: the file is not valid JSON. Fix it, delete it, or run with --update-snapshots to recreate it
+```
+
+**原因**: スナップショットファイルが、`{ status?, headers?, body }` のエントリを持つ JSON オブジェクトになっていない(例: マージコンフリクトが解消されていない)。このメッセージにファイルの内容は出さない。
+
+**対処**: コンフリクトを解消するかファイルを削除してから再実行する(ファイルが無いのは、基準が無いというだけのこと)。または `--update-snapshots` で作り直す。
+
 ## `klaus ui` のエラー
 
 ### 「Forbidden: environment "X" is protected and cannot be edited via this API (edit the file directly)」

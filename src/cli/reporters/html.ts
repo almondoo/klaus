@@ -9,7 +9,7 @@ import {
   stringifyDetail,
 } from "./report-shared.js";
 import { sanitizeForXml } from "./sanitize.js";
-import { summarizeSteps, truncate } from "./text.js";
+import { formatSnapshotSummary, summarizeSteps, truncate } from "./text.js";
 
 /** formatHtml のオプション */
 export interface FormatHtmlOptions extends MaskedReportOptions {
@@ -123,6 +123,23 @@ function stepDetail(step: StepResult): string {
     blocks.push(
       `<h3>Failed assertions</h3><table><thead><tr><th>Kind</th><th>Message</th><th>Expected</th><th>Actual</th></tr></thead><tbody>${rows}</tbody></table>`,
     );
+    // スナップショットの不一致は、基準との構造差分を表にする(全件は JSON 出力にある)
+    for (const a of failed) {
+      const differences = a.snapshot?.differences ?? [];
+      if (differences.length === 0) continue;
+      const diffRows = differences
+        .map(
+          (d) =>
+            `<tr><td><code>${escapeHtml(d.path)}</code></td><td>${escapeHtml(d.kind)}</td><td><code>${escapeHtml(stringifyDetail(d.before))}</code></td><td><code>${escapeHtml(stringifyDetail(d.after))}</code></td></tr>`,
+        )
+        .join("");
+      const total = a.snapshot?.differenceCount ?? differences.length;
+      const more =
+        total > differences.length ? ` (${total - differences.length} more not shown)` : "";
+      blocks.push(
+        `<h3>Snapshot differences${escapeHtml(more)}</h3><table><thead><tr><th>Path</th><th>Kind</th><th>Baseline</th><th>This response</th></tr></thead><tbody>${diffRows}</tbody></table>`,
+      );
+    }
   } else if (step.status === "failed") {
     blocks.push(`<h3>Failure</h3><pre>${escapeHtml(stepFailureMessages(step).join("\n"))}</pre>`);
   }
@@ -196,6 +213,9 @@ export function formatHtml(runResult: RunResult, options?: FormatHtmlOptions): s
   ]
     .map(([label, value, cls]) => `<li><b class="${cls}">${value}</b>${label}</li>`)
     .join("");
+  const snapshotsHtml = formatSnapshotSummary(result)
+    .map((line) => `<p class="meta">${escapeHtml(line)}</p>`)
+    .join("");
   const warningsHtml =
     result.warnings !== undefined && result.warnings.length > 0
       ? `<div class="warnings"><h2>Warnings</h2><ul>${result.warnings.map((message) => `<li>${escapeHtml(message)}</li>`).join("")}</ul></div>\n`
@@ -212,7 +232,7 @@ export function formatHtml(runResult: RunResult, options?: FormatHtmlOptions): s
 <h1>klaus report ${badge(result.status)}</h1>
 <p class="meta">${metaItems}</p>
 <ul class="counts">${countItems}</ul>
-${warningsHtml}${result.flows.map(flowHtml).join("\n")}
+${snapshotsHtml}${warningsHtml}${result.flows.map(flowHtml).join("\n")}
 </body>
 </html>
 `;

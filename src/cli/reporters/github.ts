@@ -8,7 +8,7 @@ import {
   truncateWithEllipsis,
 } from "./report-shared.js";
 import { sanitizeForXml } from "./sanitize.js";
-import { summarizeSteps } from "./text.js";
+import { formatSnapshotSummary, summarizeSteps } from "./text.js";
 
 /**
  * Markdown サマリー全体のバイト数上限。GitHub のステップサマリーは 1 ステップあたり 1 MiB 上限で、
@@ -106,6 +106,14 @@ export function formatGithubSummary(runResult: RunResult, options?: MaskedReport
   parts.push(
     `| Flows | Steps | Passed | Failed | Error | Skipped |\n| ---: | ---: | ---: | ---: | ---: | ---: |\n| ${result.flows.length} | ${steps.length} | ${counts.passed} | ${counts.failed} | ${counts.error} | ${counts.skipped} |\n`,
   );
+
+  // スナップショットの集計(書き込んだファイルはコミット対象として列挙する)
+  const snapshotLines = formatSnapshotSummary(result);
+  if (snapshotLines.length > 0) {
+    parts.push(
+      `${snapshotLines.map((line) => `- ${cell(line, MAX_MESSAGE_LENGTH)}`).join("\n")}\n`,
+    );
+  }
 
   // 警告(tls.insecure の使用など)。ステップの成否には影響しないが、レポートの読み手にも見えるようにする
   if (result.warnings !== undefined && result.warnings.length > 0) {

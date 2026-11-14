@@ -34,6 +34,8 @@ klaus run <files...> [options]
 | `--exclude-tags <list>` | カンマ区切りのタグ一覧。フローの `tags:` にいずれか1つでも含まれるものを除外する。`--tags` より優先される | — |
 | `--jobs <n>` | 実行ユニットをこの数だけ並列実行する(1-32 の整数。詳細は後述の「並列実行(--jobs)」を参照)。`--record` とは併用不可 | 1(逐次実行) |
 | `--dry-run` | 何も送信せず、各ステップの展開後リクエストと、安全柵が拒否するかどうかを出力する(後述の「ドライラン(--dry-run)」を参照)。`--record`・`--replay`・`--report` とは併用不可 | — |
+| `-u`, `--update-snapshots` | `assert.snapshot` の、異なる・未記録の基準を書き換え、古いエントリを取り除く(後述の「スナップショット」を参照)。`--dry-run`・`--replay`・`--ci` とは併用不可。`klaus.config.yaml` では設定できない | — |
+| `--ci` | `assert.snapshot` の基準が無いとき、書き込まずに失敗にする | 環境変数 `CI` が空・`0`・`false` 以外なら有効 |
 
 `--report` はカンマ区切りのフォーマット一覧を受け取る(各要素は trim され、`junit`・`tap`・`html`・`github` のいずれかでなければならない)。未知のフォーマットや空要素を1つでも渡すと stderr にエラーを出して exit 1。`--report` はフォーマットの重複(例: `--report junit,junit`)や、`--report-file` の解決先パスがフォーマット間で同一になる場合も同様に stderr にエラーを出して exit 1 で拒否する(どちらも同一ファイルへの書き込みが競合するため)。`--report` に N 個のフォーマットを渡した場合、`--report-file` は**同じ順序でちょうど N 回**指定する(1個目の `--report-file` が1個目のフォーマットとペアになる)か、**一度も指定しない**(この場合フォーマットごとの既定ファイル名 — `junit` は `klaus-report.xml`、`tap` は `klaus-report.tap`、`html` は `klaus-report.html`、`github` は `klaus-report.md`(例外は [GitHub レポート](#github-レポート) を参照) — に書き出される)かのいずれかにする。それ以外の回数(例: 2フォーマットに対して `--report-file` を1回だけ)はエラーとして拒否され、exit 1 でどのファイルも書き出さない。これは単一フォーマットの従来挙動をそのまま一般化したものであり、`--report junit` 単体は変わらず `klaus-report.xml` が既定値になる。`--json` と `--text`、または `-e`/`--env` と `--env-file` を同時に指定した場合も同様に stderr にエラーを出して exit 1(何も実行しない)。この `-e`/`--env` と `--env-file` の併用エラーは、**コマンドラインで明示的に指定した** `-e`/`--env` に対してのみ発生する。`klaus.config.yaml` の `run.env` による既定値は、明示指定された `--env-file` と衝突せずそちらに道を譲る([CLI オプションの既定値](config.md)参照)。
 
@@ -140,6 +142,24 @@ text 出力(TTY、または `--text`)は同じ情報をステップごとに出�
 
 exit code は、安全柵に拒否されるステップ、または実行時にも展開に失敗するステップ(上の `error` のケース。実際の実行でも実行時エラーになる)があれば **3**、なければ **0**。検証エラーは引き続き 2。アサーションは評価しないため exit code 4 は無い。
 
+### スナップショット(--update-snapshots / --ci)
+
+`assert.snapshot`([詳細](flow-definition.md#snapshot-基準との比較))を持つステップは、マスク済みのレスポンスを、フローファイルの隣の基準ファイルと比較する。比較する基準が無いとき、またはレスポンスが変わったときの動作は、この 2 つのフラグで決まる。
+
+| 状況 | 既定(ローカルの実行) | `--ci`、または `CI` が設定済み | `--update-snapshots` |
+|---|---|---|---|
+| 基準と一致 | 成功(`matched`) | 同じ | 同じ |
+| 基準と異なる | 構造的な差分つきで失敗、exit 4(`mismatch`) | 同じ | 基準を書き換えて成功(`updated`) |
+| 基準が無い | 基準を書き込んで成功(`written`) | 失敗、exit 4(`missing`) | 基準を書き込んで成功(`written`) |
+| どのステップも生成しなくなったエントリ | 警告(`obsolete`) | 同じ | エントリを削除 |
+
+- 基準の書き込みは実行の終了時に一度だけ行う。実行が途中で止められても、ファイルは元のまま残る。書き込んだファイルは出力に列挙される(text では `snapshot file written: ...`、JSON では `snapshots.files`)ので、確認してコミットすること。
+- `--update-snapshots` は、変わったレスポンスを受け入れる明示的な操作である。`klaus.config.yaml` からは決して読まず、`--ci` との併用は exit 1。環境変数 `CI=true` の下でも使える。受け入れる方法はもう 1 つあり、`klaus snapshot accept <runId>` で行う([klaus snapshot](#klaus-snapshot))。
+- 基準が無くても暗黙には記録しない場合が 3 つある。そのステップの他のアサーションが失敗した(失敗したレスポンスが基準になってしまうため)、`$protected` な環境に対する実行(本番のデータがコミットされるファイルに残るため。意図して記録するなら `--update-snapshots`)、`--replay`(再生したレスポンスは比較するが書き込まず、`--update-snapshots` とも併用できない)。結果は `missing` で、最初の場合を除きステップは失敗する(最初の場合はステップがすでに失敗している)。
+- 壊れたスナップショットファイル(JSON でない、形が違う)は、何も実行する前に exit 2 で終わる。内容は出力しない。直すか削除するか、`--update-snapshots` で作り直す。
+- 古いエントリ(どのステップも生成しなかったキー)は、フローの全ステップが実行された(スキップがなく、すべての snapshot ステップが比較まで到達した)後にだけ判定する。部分的な実行で基準が消えることはない。`--data` なしで、データ駆動の実行で作られた `#<n>` のキーを含むファイルに対して実行すると、それらは古いエントリとして報告されるので、その状態で `-u` を併用しないこと。
+- `--dry-run` はスナップショットファイルに一切触れない。
+
 ## 出力モード
 
 - **自動判定**: stdout が TTY なら text、非 TTY(パイプ / エージェント実行 / CI)なら JSON。`--json` で非 TTY でも JSON を強制、`--text` で TTY でなくても text を強制できる(両者は同時指定不可)
@@ -214,6 +234,7 @@ request/response スナップショットや assertions などの詳細を持つ
 - 制御文字の可視エスケープ(text 出力や JUnit レポートで行われるもの)はここには適用されず、生の値のまま出力される
 - **historyRef**: 履歴記録が有効な実行(`--no-history` を付けていない)では、各ステップ(passed 含む)に `historyRef: { date, runId, step }` が付く。全文が必要な場合は `klaus history show <runId> --step <step>` で取得する(詳細は [klaus history](#klaus-history) / [実行履歴](history.md) を参照)。`historyRef.date` はそのステップが書き込まれた履歴ファイルの UTC 日付(ステップの `startedAt` から導出)。`--no-history` 実行時は `historyRef` を省略する
 - SSE / WebSocket ステップでは `response.body` は無く、受信データは `events`(SSE)/ `wsMessages`(WS)フィールドに入る
+- **snapshots**: トップレベルの集計 `snapshots: { matched, written, updated, mismatched, missing, obsolete, files, obsoleteEntries }`。snapshot アサーションを持つステップがある、スナップショットファイルに古いエントリがある、またはスナップショットファイルを書き込んだ場合にだけ付く(`files` は書き込んだファイルで、カレントディレクトリからの相対パス)。`assertions` の snapshot アサーションは `kind: "snapshot"`、`state`(`matched` / `written` / `updated` / `mismatch` / `missing`)、`snapshotKey`、`snapshotFile` を持ち、不一致なら `differences`(`[{ "path": "$.body.name", "kind": "changed", "before": "a", "after": "b" }]`、最大 20 件)と、総数の `differenceCount` も持つ。成功したステップは 1 行の要約なので、書き込んだ基準は `snapshots.written` / `snapshots.files` と、text 出力ではその `PASS` 行の `[snapshot written]` で分かる。`klaus snapshot accept` が書き込む候補は履歴に残り、この出力には含まれない
 - **redirects / droppedHeaders**: リダイレクトを追った(`http.followRedirects`)ステップには、ステータスに関わらず `redirects`(最初のリクエストの後に辿った URL。最後が最終応答)が付き、別オリジンへの遷移で資格情報を落とした場合は `droppedHeaders`(`[{ "hop": 1, "headers": ["authorization"] }]`。ヘッダー名のみ)も付く。URL は他の URL と同じくマスクされる。text 出力の `FAIL` / `ERROR` では同じ情報を 1〜2 行にまとめて表示する
 - **warnings**: トップレベルの `"warnings": ["..."]`。1 件以上あるときだけ付く。`http.tls.insecure is enabled: TLS certificate verification is DISABLED for this run` や履歴の書き込み失敗など、ステップの成否には影響しない警告を重複なく載せる。同じ警告は従来どおり stderr にも `klaus: warning:` 行で出る。text 出力ではサマリーの前に `warning:` 行として出し、HTML・GitHub レポートにも載せる
 
@@ -601,3 +622,33 @@ klaus mock <dir> [options]
 | `--json` | 起動行(stdout)とリクエストログ(stderr)を JSON Lines にする | — |
 
 サーバーは SIGINT / SIGTERM まで動き続け、停止すると exit 0 で終わる。終了コードは、カセットが無い・不正・空の場合、または `--origin` に該当する記録が無い場合が **2**。不正なオプション値(`--port 99999` や形式の誤った `--origin` など)、ポート使用中、その他の実行時エラーは **1**。
+
+## klaus snapshot
+
+履歴に記録された `assert.snapshot` の結果を確認し、受け入れる([snapshot](flow-definition.md#snapshot-基準との比較))。どちらのサブコマンドも履歴を読み、書き込むのは `accept` だけで、書くのもスナップショットファイルだけ。
+
+```
+klaus snapshot list [runId] [options]
+klaus snapshot accept <runId> [options]
+```
+
+| サブコマンド | 説明 |
+|---|---|
+| `list [runId]` | run のスナップショットの不一致(基準が無く書き込まれなかったものを含む)を列挙する。`runId` を省略すると、履歴で最新の、snapshot アサーションを持つ run を使う。読み取り専用 |
+| `accept <runId>` | run の承認待ちスナップショットを、履歴に保存されたマスク済みのレスポンスから、新しい基準として書き込む。`--step` がなければ、その run の承認待ちすべて |
+
+| オプション | 説明 |
+|---|---|
+| `--step <name>` | このステップのスナップショットだけ(両サブコマンド) |
+| `--json` | TTY でも JSON 出力を強制する |
+| `--text` | stdout が TTY でなくても text 出力を強制する |
+
+`accept` は、run が実行されたときに履歴へ記録された候補を使う。API をもう一度呼ぶことはなく、基準はその run が見た内容と一致する。書き込むのは、カレントディレクトリ内の `<dir>/__snapshots__/<name>.snap.json` という名前のファイルだけで、シンボリックリンクは辿らず、ファイル内の他のキーには触れない。書き込み後は、スナップショットファイルの `git diff` を確認すること。
+
+`list --json` は `{ "version": 1, "runId": "...", "mismatches": [{ "flow", "step", "iteration"?, "flowFile"?, "snapshotFile", "key", "state", "message", "differences", "differenceCount" }] }` を出力する。`accept --json` は `{ "version": 1, "runId": "...", "accepted": [{ "key", "snapshotFile", "state": "written" | "updated" }], "failed": [{ "key", "snapshotFile", "kind", "message" }] }` を出力する。
+
+| exit code | 意味 |
+|---|---|
+| 0 | 成功(`list` は常に、`accept` はすべて書き込めたとき) |
+| 1 | 引数不正(`--json` と `--text` の併用を含む)、不明な run ID、snapshot アサーションを持つ run が無い(runId なしの `list`)、承認待ちが無い(`accept`)、または予期しないエラー |
+| 2 | `accept`: スナップショットファイルが壊れている、または安全に書き込めないパス(カレントディレクトリの外、`__snapshots__` の下でない、シンボリックリンク) |

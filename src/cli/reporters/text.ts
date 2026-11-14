@@ -4,6 +4,7 @@ import type {
   StepResult,
   StepStartContext,
 } from "../../core/index.js";
+import { describeSnapshotDifference } from "../../core/index.js";
 import { sanitizeForTerminal } from "./sanitize.js";
 
 /** 生の ANSI エスケープシーケンス(依存追加を避けるため自前で持つ) */
@@ -86,6 +87,9 @@ function formatRedirectLines(result: StepResult): string[] {
   return lines;
 }
 
+/** text 出力で 1 つの不一致につき表示する差分の最大件数 */
+const MAX_TEXT_DIFFERENCES = 10;
+
 /** 1 ステップ分の結果行。FAIL の場合は失敗アサーションの詳細を複数行で付加する */
 export function formatStepLine(result: StepResult, useColor: boolean): string {
   const durationMs = Math.round(result.durationMs);
@@ -94,7 +98,12 @@ export function formatStepLine(result: StepResult, useColor: boolean): string {
 
   if (result.status === "passed") {
     const status = result.response?.status ?? "-";
-    return colorize(`  PASS ${name} (${status}, ${durationMs}ms)`, "green", useColor);
+    // 基準を書き込んだ・書き換えたステップは、見落とさないよう行に明記する
+    const written = result.assertions.find(
+      (a) => a.snapshot?.state === "written" || a.snapshot?.state === "updated",
+    );
+    const note = written?.snapshot ? ` [snapshot ${written.snapshot.state}]` : "";
+    return colorize(`  PASS ${name} (${status}, ${durationMs}ms)${note}`, "green", useColor);
   }
 
   if (result.status === "failed") {
@@ -102,7 +111,24 @@ export function formatStepLine(result: StepResult, useColor: boolean): string {
     const lines = [colorize(`  FAIL ${name} (${status}, ${durationMs}ms)`, "red", useColor)];
     for (const assertion of result.assertions.filter((a) => !a.ok)) {
       // 制御文字のサニタイズは truncate/colorize より前に行う(colorize が付与する ANSI コードを壊さないため)
-      lines.push(`    - ${truncate(sanitizeForTerminal(assertion.message))}`);
+      // スナップショットの不一致は、メッセージ中の差分(先頭の数件)を省き、差分を 1 件ずつ別の行にする
+      // (先頭の一部。全件は JSON 出力にある)
+      const differences = assertion.snapshot?.differences ?? [];
+      const message =
+        differences.length > 0
+          ? (/^(.*? differs from the baseline \(\d+ differences?\)): /s.exec(
+              assertion.message,
+            )?.[1] ?? assertion.message)
+          : assertion.message;
+      lines.push(`    - ${truncate(sanitizeForTerminal(message))}`);
+      const shown = Math.min(differences.length, MAX_TEXT_DIFFERENCES);
+      for (const difference of differences.slice(0, shown)) {
+        lines.push(
+          `        ${truncate(sanitizeForTerminal(describeSnapshotDifference(difference)))}`,
+        );
+      }
+      const total = assertion.snapshot?.differenceCount ?? differences.length;
+      if (total > shown) lines.push(`        ... ${total - shown} more`);
     }
     lines.push(...formatRedirectLines(result));
     return lines.join("\n");
@@ -155,6 +181,25 @@ export function formatSummary(runResult: RunResult): string {
   return `${flowsCount} ${flowWord}, ${steps.length} ${stepWord}: ${parts.join(", ")} (${durationMs}ms)`;
 }
 
+/**
+ * スナップショットの集計行(snapshot アサーションが無い実行では空)。書き込んだファイルは、コミット対象として
+ * 見落とさないよう列挙する。ファイル名はユーザー入力由来のためサニタイズする。
+ */
+export function formatSnapshotSummary(runResult: RunResult): string[] {
+  const snapshots = runResult.snapshots;
+  if (!snapshots) return [];
+  const parts = [`${snapshots.matched} matched`];
+  if (snapshots.written > 0) parts.push(`${snapshots.written} written`);
+  if (snapshots.updated > 0) parts.push(`${snapshots.updated} updated`);
+  if (snapshots.mismatched > 0) parts.push(`${snapshots.mismatched} mismatched`);
+  if (snapshots.missing > 0) parts.push(`${snapshots.missing} missing`);
+  if (snapshots.obsolete > 0) parts.push(`${snapshots.obsolete} obsolete`);
+  return [
+    `snapshots: ${parts.join(", ")}`,
+    ...snapshots.files.map((file) => `snapshot file written: ${sanitizeForTerminal(file)}`),
+  ];
+}
+
 export interface TextReporter {
   onStepStart(context: StepStartContext): void;
   onStepComplete(context: StepCompleteContext): void;
@@ -197,8 +242,9 @@ export function createTextReporter(
         (message) =>
           `${colorize("warning:", "yellow", useColor)} ${truncate(sanitizeForTerminal(message))}\n`,
       );
+      const snapshotLines = formatSnapshotSummary(runResult).map((line) => `${line}\n`);
       write(
-        `\n${warnings.join("")}${warnings.length > 0 ? "\n" : ""}${formatSummary(runResult)}\n`,
+        `\n${warnings.join("")}${warnings.length > 0 ? "\n" : ""}${snapshotLines.join("")}${formatSummary(runResult)}\n`,
       );
     },
   };

@@ -29,6 +29,7 @@ import { type FollowResult, HttpSession, mergeHttpConfig } from "./http-session.
 import { loadFlow } from "./loader.js";
 import { type BodyPayload, expandBodyForm, materializePayload } from "./request-body.js";
 import type {
+  AssertDef,
   AuthDef,
   CaptureDef,
   Environment,
@@ -38,9 +39,16 @@ import type {
   Step,
 } from "./schema.js";
 import { requestSchema } from "./schema.js";
+import {
+  buildSnapshotKey,
+  normalizeSnapshotSpec,
+  SnapshotStore,
+  summarizeSnapshots,
+} from "./snapshot.js";
 import { receiveSse } from "./sse.js";
 import { renderDeep, renderHeaders, renderString, type TemplateContext } from "./template.js";
 import type {
+  AssertionResult,
   FlowResult,
   RequestSnapshot,
   ResponseSnapshot,
@@ -190,6 +198,18 @@ export interface RunFlowOptions {
    * 読まない(runLoadedFlows 専用)
    */
   jobs?: number | undefined;
+  /**
+   * スナップショットアサーション(assert.snapshot)の動作。呼び出し元(CLI の --update-snapshots / --ci)が決めて渡す
+   * (core は環境変数 CI を読まない)。未指定なら update も ci も false: 基準が無ければ書き込んで成功にし、
+   * 不一致は失敗にする。--replay(recording.mode === "replay")のときは基準を一切書かない(update も無視する)
+   */
+  snapshots?: { update?: boolean | undefined; ci?: boolean | undefined } | undefined;
+  /**
+   * runLoadedFlows が実行全体で共有するスナップショットの状態(内部用)。指定されたフローの実行は書き込みを
+   * このストアに溜めるだけで、書き込みは runLoadedFlows が最後に一度だけ行う。直接 executeFlow を呼ぶ場合は
+   * 指定しない(その場合はフロー 1 回の実行ごとに作って書き込む)
+   */
+  snapshotStore?: SnapshotStore | undefined;
 }
 
 const DEFAULT_HISTORY = true;
@@ -663,6 +683,61 @@ export function assertSendAllowed(
   }
 }
 
+/** executeStep が assert.snapshot を評価するために受け取る、フロー実行ごとのスナップショットの文脈 */
+interface SnapshotRuntime {
+  store: SnapshotStore;
+  /** フロー定義ファイルのパス(スナップショットファイルの場所を決める) */
+  flowFilePath: string;
+  /** 保護環境($protected)に対する実行か */
+  protectedEnv: boolean;
+}
+
+/** ステップの assert.snapshot を評価して、アサーション結果を返す(指定が無ければ空配列) */
+function evaluateStepSnapshot(
+  def: AssertDef | undefined,
+  stepName: string,
+  iteration: number | undefined,
+  runtime: SnapshotRuntime | undefined,
+  response: { status: number; headers: Record<string, string>; body: unknown },
+  secrets: ReadonlySet<string> | undefined,
+  otherAssertionsOk: boolean,
+): AssertionResult[] {
+  if (def?.snapshot === undefined) return [];
+  if (!runtime) {
+    return [
+      {
+        ok: false,
+        kind: "snapshot",
+        message: "snapshot assertions are only available when running a flow",
+      },
+    ];
+  }
+  const spec = normalizeSnapshotSpec(def.snapshot);
+  return [
+    runtime.store.evaluate({
+      flowFilePath: runtime.flowFilePath,
+      key: buildSnapshotKey(stepName, iteration, spec.name),
+      spec,
+      response,
+      secrets: secrets ? [...secrets] : [],
+      protectedEnv: runtime.protectedEnv,
+      otherAssertionsOk,
+    }),
+  ];
+}
+
+/** SSE / WebSocket ステップに指定された assert.snapshot の、未対応を知らせる失敗アサーション */
+function unsupportedSnapshotAssertion(def: AssertDef | undefined): AssertionResult[] {
+  if (def?.snapshot === undefined) return [];
+  return [
+    {
+      ok: false,
+      kind: "snapshot",
+      message: "snapshot assertions are not supported for SSE and WebSocket steps",
+    },
+  ];
+}
+
 /** 指定ミリ秒だけ待つ(step.retry の試行間隔に使う) */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -691,6 +766,8 @@ async function executeStep(
   session: HttpSession,
   /** multipart / bodyFile のファイルを読む基準ディレクトリ(この配下のファイルだけ送れる) */
   cwd: string,
+  /** assert.snapshot の評価に使うスナップショットの状態(フロー実行のときだけ渡す) */
+  snapshots?: SnapshotRuntime,
 ): Promise<{
   result: StepResult;
   captured: Record<string, unknown>;
@@ -777,7 +854,7 @@ async function executeStep(
       return finish(
         requestSnapshot,
         wsResult.durationMs,
-        assertions,
+        [...assertions, ...unsupportedSnapshotAssertion(assertDef)],
         {},
         { wsMessages: wsResult.messages },
         {
@@ -846,7 +923,14 @@ async function executeStep(
         droppedHeaders: [],
       };
       const sseResult = await receiveSse(
-        { method, url, headers: sendHeaders, body, timeoutMs: request.timeoutMs },
+        {
+          method,
+          url,
+          headers: sendHeaders,
+          body,
+          timeoutMs: request.timeoutMs,
+          maxResponseBytes: session.maxResponseBytes,
+        },
         step.sse,
         async (connectOptions) => {
           // 初回・リダイレクト先を含む各ホップで同じ安全柵の判定を通す
@@ -899,7 +983,14 @@ async function executeStep(
       };
 
       // capture は JSON レスポンス(SSE 以外)にのみ適用する
-      return finish(requestSnapshot, sseResult.durationMs, assertions, {}, extra, extra);
+      return finish(
+        requestSnapshot,
+        sseResult.durationMs,
+        [...assertions, ...unsupportedSnapshotAssertion(assertDef)],
+        {},
+        extra,
+        extra,
+      );
     }
 
     // 送信直前の判定(テンプレート展開後のメソッド・URL に対して行う)。
@@ -950,7 +1041,26 @@ async function executeStep(
       ...(droppedHeaders.length > 0 ? { droppedHeaders } : {}),
     };
 
-    return finish(requestSnapshot, response.durationMs, assertions, captured, extra, extra);
+    // スナップショットは capture が成功した後に評価する(capture の失敗でステップが error になるとき、
+    // 基準を書き込む予約だけが残らないようにするため)
+    const snapshotAssertions = evaluateStepSnapshot(
+      assertDef,
+      step.name,
+      iteration,
+      snapshots,
+      responseSnapshot,
+      templateContext.secrets,
+      assertions.every((assertion) => assertion.ok),
+    );
+
+    return finish(
+      requestSnapshot,
+      response.durationMs,
+      [...assertions, ...snapshotAssertions],
+      captured,
+      extra,
+      extra,
+    );
   } catch (error) {
     // runtime エラー(接続不能・タイムアウト・テンプレート未解決等)はここに集約する
     const message = error instanceof KlausError ? error.message : String(error);
@@ -1132,6 +1242,33 @@ export async function executeFlow(
       ? await loadReplay(options.recording.dir)
       : { mode: "record", dir: options.recording.dir };
 
+  // スナップショット: runLoadedFlows から共有のストアが渡されればそれを使い、無ければ(snapshot を使うフローに限り)
+  // このフロー 1 回の実行専用のストアを作る。--replay は基準を書かない
+  const usesSnapshot = flow.steps.some((step) => step.assert?.snapshot !== undefined);
+  const snapshotStore =
+    options.snapshotStore ??
+    (usesSnapshot
+      ? new SnapshotStore({
+          cwd,
+          update: options.snapshots?.update === true,
+          ci: options.snapshots?.ci === true,
+          readOnly: options.recording?.mode === "replay",
+        })
+      : undefined);
+  const ownsSnapshotStore = snapshotStore !== undefined && options.snapshotStore === undefined;
+  if (snapshotStore && ownsSnapshotStore) {
+    for (const warning of await snapshotStore.preload([{ filePath, usesSnapshot }])) {
+      options.onWarning?.(warning);
+    }
+  }
+  const snapshotRuntime: SnapshotRuntime | undefined = snapshotStore
+    ? {
+        store: snapshotStore,
+        flowFilePath: filePath,
+        protectedEnv: getProtectedMode(environment) !== false,
+      }
+    : undefined;
+
   // ループ内の各コールバックで共通に付与する iteration/unitIndex(設定時のみ)
   const unitContext = {
     ...(options.iteration !== undefined ? { iteration: options.iteration } : {}),
@@ -1259,6 +1396,7 @@ export async function executeFlow(
               options.iteration,
               session,
               cwd,
+              snapshotRuntime,
             );
           } while (
             step.retry &&
@@ -1324,6 +1462,25 @@ export async function executeFlow(
   } finally {
     // 実行終了時にクライアント(接続・dispatcher)を閉じる。cookie jar と取得済みトークンもここで破棄される
     await session.close();
+  }
+
+  // スナップショット: このフローの実行で古いエントリを判定してよいか(全ステップが実行され、snapshot を持つ
+  // すべてのステップが評価された)を記録し、自前のストアなら書き込む
+  if (snapshotStore) {
+    snapshotStore.recordFlowRun(
+      filePath,
+      steps.length === flow.steps.length &&
+        steps.every((result) => result.status !== "skipped") &&
+        flow.steps.every(
+          (step, index) =>
+            step.assert?.snapshot === undefined ||
+            steps[index]?.assertions.some((assertion) => assertion.snapshot !== undefined) === true,
+        ),
+    );
+    if (ownsSnapshotStore) {
+      const finalized = await snapshotStore.finalize();
+      for (const warning of finalized.warnings) options.onWarning?.(warning);
+    }
   }
 
   const durationMs = performance.now() - flowStartedAt;
@@ -1518,6 +1675,24 @@ export async function runLoadedFlows(
   const warningSink = collectWarnings(options.onWarning);
   options = { ...options, onWarning: warningSink.onWarning };
 
+  // スナップショットは実行全体で 1 つのストアを共有し、書き込みは最後に一度だけ行う。
+  // 壊れたスナップショットファイルは、何も実行する前に ParseError(CLI では exit 2)として報告する
+  const snapshotStore = new SnapshotStore({
+    cwd: options.cwd ?? process.cwd(),
+    update: options.snapshots?.update === true,
+    ci: options.snapshots?.ci === true,
+    readOnly: options.recording?.mode === "replay",
+  });
+  for (const warning of await snapshotStore.preload(
+    entries.map(({ filePath, flow }) => ({
+      filePath,
+      usesSnapshot: flow.steps.some((step) => step.assert?.snapshot !== undefined),
+    })),
+  )) {
+    options.onWarning?.(warning);
+  }
+  options = { ...options, snapshotStore };
+
   const units = buildRunUnits(entries, options);
   let flows: FlowResult[];
   if (jobs > 1) {
@@ -1537,8 +1712,27 @@ export async function runLoadedFlows(
     }
   }
 
+  // 基準の書き込みと古いエントリの集計。書き込みに失敗したら、成功と報告したステップの基準が残らないため
+  // 警告に加えて実行全体を error にする
+  let snapshotWriteFailed = false;
+  let finalized: Awaited<ReturnType<SnapshotStore["finalize"]>> = {
+    files: [],
+    obsoleteEntries: [],
+    warnings: [],
+  };
+  try {
+    finalized = await snapshotStore.finalize();
+  } catch (error) {
+    snapshotWriteFailed = true;
+    options.onWarning?.(
+      `failed to write snapshot files: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  for (const warning of finalized.warnings) options.onWarning?.(warning);
+  const snapshots = summarizeSnapshots(flows, finalized);
+
   const durationMs = performance.now() - runStartedAt;
-  const status = aggregateStatus(flows.map((f) => f.status));
+  const status = snapshotWriteFailed ? "error" : aggregateStatus(flows.map((f) => f.status));
 
   return {
     runId,
@@ -1547,6 +1741,7 @@ export async function runLoadedFlows(
     flows,
     status,
     ...(warningSink.warnings.length > 0 ? { warnings: warningSink.warnings } : {}),
+    ...(snapshots ? { snapshots } : {}),
   };
 }
 

@@ -59,6 +59,8 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
 
 **skipped ステップも記録される**(`status: "skipped"`、request/response なし、assertions は空)。runtime エラーになったステップは履歴には記録されない。ただし例外として、安全柵(`guard.allowedHosts` または `$protected`)に拒否されたステップは監査のために記録され、`status: "error"`、送信しようとしたリクエスト(マスク済み)、`error` に拒否理由、監査項目を持つ。
 
+**スナップショットの結果**は、`kind: "snapshot"` のアサーションと `snapshot` オブジェクトとして記録される。`snapshot` には `key`、`file`(スナップショットファイル)、`state`(`matched` / `written` / `updated` / `mismatch` / `missing`)が入り、不一致なら `differences`(最大 20 件)と `differenceCount` も入る。`mismatch` と `missing` の結果は、基準として書き込まれるはずだったマスク済みの `{ status?, headers?, body }` を `candidate` としても保持する。`klaus snapshot accept <runId>` はこの候補をそのまま書き込むので、変更を受け入れても API をもう一度呼ぶことはない([klaus snapshot](cli.md#klaus-snapshot))。候補は、エントリの他の部分と同じ秘密値のマスクを通した後の値から作られる。
+
 新規に書き込まれるエントリには常に `status` が設定される。`status` フィールドが無い旧エントリは、従来どおり `assertions` の内容から成否を導出して読み込める(後方互換)。
 
 ## 監査項目

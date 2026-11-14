@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type {
+  AssertionResult,
   FlowResult,
   RequestSnapshot,
   ResponseSnapshot,
@@ -41,7 +42,73 @@ const assertionResultSchema = z.strictObject({
     .optional()
     .describe("Actual observed value, when applicable to this assertion kind."),
   message: z.string().describe("Human-readable summary of this assertion's result."),
+  state: z
+    .enum(["matched", "written", "updated", "mismatch", "missing"])
+    .optional()
+    .describe(
+      'Snapshot assertions only (kind "snapshot"): "matched" (equals the baseline), "written" (a new baseline was recorded), "updated" (the baseline was replaced by --update-snapshots), "mismatch" (differs from the baseline; the assertion failed), "missing" (no baseline and none was written, e.g. in CI).',
+    ),
+  snapshotKey: z
+    .string()
+    .optional()
+    .describe(
+      "Snapshot assertions only: the key of this snapshot in its file (step name, plus ` #<iteration>` for --data runs, plus ` :: <name>`).",
+    ),
+  snapshotFile: z
+    .string()
+    .optional()
+    .describe(
+      "Snapshot assertions only: the snapshot file, relative to the current directory (`<flow dir>/__snapshots__/<flow file>.snap.json`).",
+    ),
+  differences: z
+    .array(
+      z.strictObject({
+        path: z
+          .string()
+          .describe("JSONPath-style location, e.g. `$.body.items[0].id` or `$.status`."),
+        kind: z
+          .enum(["added", "removed", "changed", "type-changed", "too-deep"])
+          .describe("How the response differs from the baseline at this path."),
+        before: z.unknown().optional().describe("Baseline value (absent for `added`)."),
+        after: z.unknown().optional().describe("Value in this response (absent for `removed`)."),
+      }),
+    )
+    .optional()
+    .describe(
+      "Snapshot mismatches only: the structural differences between the baseline (before) and this response (after), at most 20.",
+    ),
+  differenceCount: z
+    .number()
+    .optional()
+    .describe(
+      "Snapshot mismatches only: the total number of differences (greater than `differences.length` when the list was capped).",
+    ),
 });
+
+/** run 全体のスナップショット集計。snapshot アサーションが 1 件でもあった実行にだけ付く */
+export const jsonSnapshotSummarySchema = z.strictObject({
+  matched: z.number().describe("Snapshot assertions that equal their baseline."),
+  written: z.number().describe("New baselines recorded in this run."),
+  updated: z.number().describe("Baselines replaced in this run by --update-snapshots."),
+  mismatched: z.number().describe("Snapshot assertions that differ from their baseline (failed)."),
+  missing: z
+    .number()
+    .describe("Snapshot assertions with no baseline that were not written (CI, --replay, ...)."),
+  obsolete: z
+    .number()
+    .describe(
+      "Entries in snapshot files that no step produced in this run (reported only after a full run of the flow; --update-snapshots removes them).",
+    ),
+  files: z
+    .array(z.string())
+    .describe(
+      "Snapshot files written or trimmed in this run, relative to the current directory (review and commit them).",
+    ),
+  obsoleteEntries: z
+    .array(z.strictObject({ file: z.string(), keys: z.array(z.string()) }))
+    .describe("The obsolete entries per snapshot file."),
+});
+export type JsonSnapshotSummary = z.infer<typeof jsonSnapshotSummarySchema>;
 
 /** 全体のステータス集計。failure-focused な出力でも全体像が一目で分かるようにする */
 export const jsonSummarySchema = z.strictObject({
@@ -238,6 +305,11 @@ export const jsonReportSchema = z
       "Aggregate pass/fail/error/skipped counts across all flows.",
     ),
     flows: z.array(jsonFlowReportSchema).describe("Per-flow results, in execution order."),
+    snapshots: jsonSnapshotSummarySchema
+      .optional()
+      .describe(
+        "Snapshot (assert.snapshot) totals for the run. Present only when a step had a snapshot assertion, or a snapshot file had obsolete entries, or snapshot files were written.",
+      ),
     warnings: z
       .array(z.string())
       .optional()
@@ -311,6 +383,25 @@ function buildHistoryRef(
   return { date: historyDateFromTimestamp(step.startedAt), runId, step: step.name, iteration };
 }
 
+/**
+ * アサーション結果を JSON 出力形にする。snapshot アサーションは内部の入れ子(snapshot)を state / 差分などの
+ * 平らなフィールドにし、履歴からの承認用に持っている候補(candidate。応答全体のコピー)は出力しない。
+ */
+function toJsonAssertion(assertion: AssertionResult): z.infer<typeof assertionResultSchema> {
+  const { snapshot, ...rest } = assertion;
+  if (snapshot === undefined) return rest;
+  return {
+    ...rest,
+    state: snapshot.state,
+    snapshotKey: snapshot.key,
+    snapshotFile: snapshot.file,
+    ...(snapshot.differences !== undefined ? { differences: snapshot.differences } : {}),
+    ...(snapshot.differenceCount !== undefined
+      ? { differenceCount: snapshot.differenceCount }
+      : {}),
+  };
+}
+
 function buildStep(
   step: StepResult,
   runId: string,
@@ -341,7 +432,7 @@ function buildStep(
     response: buildResponse(step.response),
     events: buildEvents(step.events),
     wsMessages: buildWsMessages(step.wsMessages),
-    assertions: step.assertions,
+    assertions: step.assertions.map(toJsonAssertion),
     error: step.error,
   };
 }
@@ -381,6 +472,7 @@ export function formatJson(runResult: RunResult, options: FormatJsonOptions): st
     durationMs: Math.round(runResult.durationMs),
     summary: buildSummary(runResult),
     flows: runResult.flows.map((flow) => buildFlow(flow, runResult.runId, options.historyEnabled)),
+    ...(runResult.snapshots !== undefined ? { snapshots: runResult.snapshots } : {}),
     ...(runResult.warnings !== undefined && runResult.warnings.length > 0
       ? { warnings: runResult.warnings }
       : {}),

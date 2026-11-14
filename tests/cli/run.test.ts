@@ -3,7 +3,7 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { type RunCommandOptions, runCommand } from "../../src/cli/run.js";
+import { isCiEnvironment, type RunCommandOptions, runCommand } from "../../src/cli/run.js";
 import { historyFilePath } from "../../src/core/history.js";
 import { readAllHistoryEntries } from "../../src/core/history-query.js";
 import { closeServer, listenEphemeral, reserveClosedPort } from "../support/net.js";
@@ -35,9 +35,17 @@ steps:
       url: "https://example.com"
 `;
 
+/** /snap が返す本文(スナップショットのテストが差し替える) */
+let snapBody: unknown = { id: 1, name: "alice", at: "t1" };
+
 /** 成功/失敗を再現するための最小限のローカル HTTP サーバー(tests/cli/integration.test.ts の方式を参考に、このファイル専用に複製) */
 async function startFixtureServer() {
   const server = createServer((req, res) => {
+    if (req.url === "/snap") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(snapBody));
+      return;
+    }
     if (req.url === "/ok" && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
@@ -1658,5 +1666,177 @@ describe("runCommand", () => {
         vi.unstubAllEnvs();
       }
     });
+  });
+});
+
+describe("run --update-snapshots / --ci", () => {
+  let fixture: Awaited<ReturnType<typeof startFixtureServer>>;
+  let workDir: string;
+  let out: string[];
+  let err: string[];
+  let stdoutWrite: typeof process.stdout.write;
+  let stderrWrite: typeof process.stderr.write;
+  let isTty: boolean | undefined;
+
+  beforeAll(async () => {
+    fixture = await startFixtureServer();
+  });
+  afterAll(async () => {
+    await closeServer(fixture.server);
+  });
+  beforeEach(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    workDir = await mkdtemp(join(tmpRoot, "klaus-run-snap-"));
+    out = [];
+    err = [];
+    stdoutWrite = process.stdout.write;
+    stderrWrite = process.stderr.write;
+    process.stdout.write = ((chunk: string) => {
+      out.push(chunk.toString());
+      return true;
+    }) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: string) => {
+      err.push(chunk.toString());
+      return true;
+    }) as typeof process.stderr.write;
+    isTty = process.stdout.isTTY;
+    process.stdout.isTTY = undefined as unknown as true;
+    snapBody = { id: 1, name: "alice", at: "t1" };
+  });
+  afterEach(async () => {
+    process.stdout.write = stdoutWrite;
+    process.stderr.write = stderrWrite;
+    process.stdout.isTTY = isTty as true;
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  const options = (overrides: Partial<RunCommandOptions> = {}): RunCommandOptions => ({
+    history: false,
+    mask: true,
+    reportFile: join(workDir, "klaus-report.xml"),
+    ci: false,
+    ...overrides,
+  });
+  const lastJson = () => JSON.parse(out.join(""));
+
+  async function writeSnapFlow(name = "snap.yaml") {
+    const flowPath = join(workDir, name);
+    await writeFile(
+      flowPath,
+      `name: snap\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/snap"\n    assert:\n      snapshot:\n        ignore: ["$.at"]\n`,
+      "utf-8",
+    );
+    return flowPath;
+  }
+
+  it("isCiEnvironment: CI が設定され、空・0・false 以外なら真", () => {
+    expect(isCiEnvironment({ CI: "true" })).toBe(true);
+    expect(isCiEnvironment({ CI: "1" })).toBe(true);
+    expect(isCiEnvironment({ CI: "yes" })).toBe(true);
+    for (const value of [undefined, "", "0", "false", "FALSE", " "]) {
+      expect(isCiEnvironment(value === undefined ? {} : { CI: value }), String(value)).toBe(false);
+    }
+  });
+
+  it("書き込み → 一致 → 不一致(exit 4、JSON に差分があり候補は含まれない)→ -u で更新", async () => {
+    const flowPath = await writeSnapFlow();
+    const snapFile = join(workDir, "__snapshots__", "snap.yaml.snap.json");
+
+    expect(await runCommand([flowPath], options())).toBe(0);
+    const first = lastJson();
+    expect(first.snapshots).toMatchObject({ written: 1, matched: 0, mismatched: 0 });
+    expect(first.snapshots.files).toHaveLength(1);
+    expect(JSON.parse(await readFile(snapFile, "utf-8")).get.status).toBe(200);
+
+    out.length = 0;
+    snapBody = { id: 1, name: "alice", at: "t2" };
+    expect(await runCommand([flowPath], options())).toBe(0);
+    expect(lastJson().snapshots).toMatchObject({ matched: 1, written: 0 });
+
+    out.length = 0;
+    snapBody = { id: 1, name: "bob", at: "t3" };
+    expect(await runCommand([flowPath], options())).toBe(4);
+    const failed = lastJson();
+    expect(failed.snapshots).toMatchObject({ mismatched: 1, files: [] });
+    const assertion = failed.flows[0].steps[0].assertions[0];
+    expect(assertion).toMatchObject({
+      ok: false,
+      kind: "snapshot",
+      state: "mismatch",
+      snapshotKey: "get",
+      differenceCount: 1,
+      differences: [{ path: "$.body.name", kind: "changed", before: "alice", after: "bob" }],
+    });
+    expect(Object.hasOwn(assertion, "candidate")).toBe(false);
+    expect(Object.hasOwn(assertion, "snapshot")).toBe(false);
+
+    out.length = 0;
+    expect(await runCommand([flowPath], options({ updateSnapshots: true }))).toBe(0);
+    expect(lastJson().snapshots).toMatchObject({ updated: 1 });
+    expect(JSON.parse(await readFile(snapFile, "utf-8")).get.body.name).toBe("bob");
+  });
+
+  it("基準が無いとき、--ci と環境変数 CI では失敗し、ci: false なら環境変数を無視して書き込む", async () => {
+    const flowPath = await writeSnapFlow();
+    const snapFile = join(workDir, "__snapshots__", "snap.yaml.snap.json");
+    const previous = process.env.CI;
+    try {
+      process.env.CI = "true";
+      // ci を指定しない → 環境変数 CI に従う
+      expect(await runCommand([flowPath], options({ ci: undefined }))).toBe(4);
+      expect(lastJson().snapshots).toMatchObject({ missing: 1, written: 0 });
+      await expect(readFile(snapFile, "utf-8")).rejects.toThrow();
+
+      out.length = 0;
+      expect(await runCommand([flowPath], options({ ci: false }))).toBe(0);
+      expect(lastJson().snapshots).toMatchObject({ written: 1 });
+    } finally {
+      if (previous === undefined) delete process.env.CI;
+      else process.env.CI = previous;
+    }
+  });
+
+  it("--update-snapshots は --dry-run・--replay・--ci と併用できず exit 1(何も実行しない)", async () => {
+    const flowPath = await writeSnapFlow();
+    for (const [extra, message] of [
+      [{ dryRun: true }, "--dry-run cannot be combined with --update-snapshots"],
+      [{ replay: workDir }, "--update-snapshots cannot be combined with --replay"],
+      [{ ci: true }, "--update-snapshots cannot be combined with --ci"],
+    ] as const) {
+      err.length = 0;
+      out.length = 0;
+      expect(await runCommand([flowPath], options({ updateSnapshots: true, ...extra }))).toBe(1);
+      expect(err.join("")).toContain(message);
+      expect(out.join("")).toBe("");
+    }
+  });
+
+  it("壊れたスナップショットファイルは exit 2 で、何も実行しない", async () => {
+    const flowPath = await writeSnapFlow();
+    await mkdir(join(workDir, "__snapshots__"), { recursive: true });
+    await writeFile(join(workDir, "__snapshots__", "snap.yaml.snap.json"), "{broken", "utf-8");
+
+    expect(await runCommand([flowPath], options())).toBe(2);
+    expect(err.join("")).toContain("is corrupt");
+    expect(out.join("")).toBe("");
+  });
+
+  it("text 出力: 書き込んだ PASS 行・不一致の差分行・集計行とコミット対象のファイルを出す", async () => {
+    const flowPath = await writeSnapFlow();
+    expect(await runCommand([flowPath], options({ text: true }))).toBe(0);
+    const written = out.join("");
+    expect(written).toContain("[snapshot written]");
+    expect(written).toContain("snapshots: 0 matched, 1 written");
+    expect(written).toContain("snapshot file written:");
+
+    out.length = 0;
+    snapBody = { id: 1, name: "bob", at: "t1" };
+    expect(await runCommand([flowPath], options({ text: true }))).toBe(4);
+    const failed = out.join("");
+    expect(failed).toContain("FAIL get");
+    // 差分はメッセージに繰り返さず、1 件ずつ別の行に出す
+    expect(failed.match(/\$\.body\.name "alice" -> "bob"/g)).toHaveLength(1);
+    expect(failed).toContain('snapshot "get" differs from the baseline (1 difference)');
+    expect(failed).toContain("snapshots: 0 matched, 1 mismatched");
   });
 });

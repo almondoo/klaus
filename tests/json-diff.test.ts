@@ -5,6 +5,7 @@ import {
   formatJsonPath,
   MAX_DESCENDANT_OPERATORS,
   parseJsonPathPattern,
+  replaceIgnoredPaths,
 } from "../src/core/json-diff.js";
 import { diffLines } from "../src/core/text-diff.js";
 
@@ -216,5 +217,59 @@ describe("diffLines", () => {
     const result = diffLines(before, after);
     expect(result.removed).toBe(1100);
     expect(result.added).toBe(1100);
+  });
+});
+
+describe("replaceIgnoredPaths", () => {
+  it("パターンに一致するノードだけを placeholder に置き換えた複製を返し、元の値は変更しない", () => {
+    const original = {
+      id: 1,
+      items: [
+        { id: 2, name: "a" },
+        { id: 3, name: "b" },
+      ],
+      meta: { at: "t" },
+    };
+    const result = replaceIgnoredPaths(original, patterns("$.id", "$.items[*].id", "$..at"), "[x]");
+
+    expect(result).toEqual({
+      id: "[x]",
+      items: [
+        { id: "[x]", name: "a" },
+        { id: "[x]", name: "b" },
+      ],
+      meta: { at: "[x]" },
+    });
+    expect(original.items[0]?.id).toBe(2);
+  });
+
+  it("ルート($)に一致すれば全体を置き換え、パターンが空・スカラーならそのまま返す", () => {
+    expect(replaceIgnoredPaths({ a: 1 }, patterns("$"), "[x]")).toBe("[x]");
+    const value = { a: 1 };
+    expect(replaceIgnoredPaths(value, [], "[x]")).toBe(value);
+    expect(replaceIgnoredPaths("text", patterns("$.a"), "[x]")).toBe("text");
+  });
+
+  it("置換後は diffJson の ignorePaths を使った比較と同じ結果になる(揮発する値だけが異なれば差分なし)", () => {
+    const ignore = patterns("$.items[*].id");
+    const left = { items: [{ id: 1, name: "a" }] };
+    const right = { items: [{ id: 99, name: "a" }] };
+    expect(
+      diffJson(replaceIgnoredPaths(left, ignore, "[x]"), replaceIgnoredPaths(right, ignore, "[x]")),
+    ).toEqual([]);
+  });
+
+  it("__proto__ という名前のキーでもプロトタイプを書き換えず、own プロパティとして保つ", () => {
+    const parsed = JSON.parse('{"__proto__": {"polluted": true}, "id": 1}');
+    const result = replaceIgnoredPaths(parsed, patterns("$.id"), "[x]") as Record<string, unknown>;
+    expect(Object.hasOwn(result, "__proto__")).toBe(true);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect(Object.getPrototypeOf(result)).toBe(Object.prototype);
+  });
+
+  it("深く入れ子になった値でもスタックを溢れさせない", () => {
+    let deep: unknown = { leaf: 1 };
+    for (let i = 0; i < 5000; i++) deep = { child: deep };
+    expect(() => replaceIgnoredPaths(deep, patterns("$.child.leaf"), "[x]")).not.toThrow();
   });
 });

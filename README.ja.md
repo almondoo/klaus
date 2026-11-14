@@ -20,6 +20,7 @@
 - **ドライラン**: `klaus run --dry-run` は、何も送信せずに各ステップの展開後リクエストと、安全柵が拒否するかどうかを出力する
 - **単発リクエスト**: `klaus req` は `klaus run` と同じ安全柵・シークレットマスクのもとで1件のリクエストを送り、履歴に記録する。エージェントは `curl` の代わりに使える
 - **記録・比較・フロー化・モック**: `klaus diff` は記録済みの2つの run を比較し、`klaus promote` は記録済みの run からアサーションを推論した再実行可能なフローを生成し、`klaus mock` は記録済みカセットをローカルのモックサーバーとして提供する
+- **スナップショット**: `assert.snapshot` はレスポンスを基準ファイルと比較する(秘密値はマスク、揮発する項目は除外できる)。変わったレスポンスは構造的な差分つきで失敗し、受け入れは明示的な操作(`klaus run -u`、`klaus snapshot accept`)。CI では基準が無いと記録せずに失敗する
 - **レポート**: `--report` で `junit`・`tap`・`html`(自己完結の単一ファイル)・`github`(GitHub Actions 向けのジョブサマリーとアノテーション)を出力
 - **ローカルファースト**: 実行履歴は `.klaus/history/*.jsonl` に追記。クラウド同期・アカウント機構はない
 
@@ -98,6 +99,7 @@ klaus run api/auth-flow.yaml
 | `klaus diff [runA] [runB]` | 履歴の記録済み2 run を比較(差分があれば exit 4) |
 | `klaus promote <runId...>` | 記録済みの run からアサーションを推論した再実行可能なフロー YAML を生成 |
 | `klaus mock <dir>` | 記録済みカセットをローカルのモックサーバーとして提供 |
+| `klaus snapshot list\|accept` | 記録済みの run のスナップショットの不一致を一覧し、新しい基準として受け入れる |
 
 各サブコマンドの全オプションは [CLI リファレンス](https://almondoo.github.io/klaus/ja/guide/cli) を参照。
 

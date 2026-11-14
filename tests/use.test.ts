@@ -289,6 +289,56 @@ steps:
     expect(message).toContain("bodySchema");
   });
 
+  it("assert.snapshot は片方だけなら引き継がれ、両方で定義されると conflicts になる", async () => {
+    await writeYaml(
+      "api/ep.yaml",
+      `
+name: ep
+steps:
+  - name: check
+    request:
+      method: GET
+      url: "https://example.com/ep"
+    assert:
+      snapshot:
+        ignore: ["$.id"]
+`,
+    );
+    const inheriting = await writeYaml(
+      "flows/inherit.yaml",
+      `
+name: inherit
+steps:
+  - name: step1
+    use: ../api/ep.yaml
+    assert:
+      status: 200
+`,
+    );
+    const merged = await validateFlowFile(inheriting);
+    expect(merged.valid).toBe(true);
+    if (merged.valid) {
+      expect(merged.flow.steps[0]?.assert?.snapshot).toEqual({ ignore: ["$.id"] });
+      expect(merged.flow.steps[0]?.assert?.status).toBe(200);
+    }
+
+    const conflicting = await writeYaml(
+      "flows/conflict.yaml",
+      `
+name: conflict
+steps:
+  - name: step1
+    use: ../api/ep.yaml
+    assert:
+      snapshot: true
+`,
+    );
+    const result = await validateFlowFile(conflicting);
+    expect(result.valid).toBe(false);
+    if (result.valid) return;
+    expect(result.errors[0]?.message).toContain("snapshot");
+  });
+
   it("参照先ファイルの YAML が不正な場合、use ステップは hint なしの FlowIssue で拒否される", async () => {
     await writeYaml("api/broken.yaml", "name: broken\nsteps: [\n");
     const callerPath = await writeYaml(
