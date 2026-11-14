@@ -7,7 +7,13 @@ import type { Context } from "hono";
 import type { SSEMessage, SSEStreamingApi } from "hono/streaming";
 import { streamSSE } from "hono/streaming";
 import type { FlowResult, GuardOptions, HttpConfig } from "../../core/index.js";
-import { executeFlow, loadFlow, ParseError } from "../../core/index.js";
+import {
+  executeFlow,
+  loadFlow,
+  type OpenApiRunSummary,
+  OpenApiValidator,
+  ParseError,
+} from "../../core/index.js";
 import { parseJsonBody } from "../json-body.js";
 import { adaptFlowResult, adaptStepResult } from "../protection-hint.js";
 import type {
@@ -64,6 +70,7 @@ export async function handleRunRequest(
   cwd: string,
   guard?: GuardOptions,
   http?: HttpConfig,
+  openapiPaths?: readonly string[],
 ): Promise<Response> {
   const body = await parseJsonBody<RunRequestBody>(c);
   if (body === undefined) {
@@ -87,8 +94,16 @@ export async function handleRunRequest(
   return streamSSE(c, async (stream) => {
     const safeWriteSSE = createSafeSseWriter(stream);
     let flowResult: FlowResult;
+    // 成否に影響しない警告(tls.insecure の使用・履歴書き込み失敗など)。重複は除き、run-result にも載せる
+    const warnings: string[] = [];
+    let openapiSummary: OpenApiRunSummary | undefined;
     try {
       const flow = await loadFlow(resolvedPath);
+      // OpenAPI の検証器は実行ごとに作る(カバレッジはその実行の分だけ集計する)。読めない仕様は実行前のエラーにする
+      const openapi =
+        openapiPaths !== undefined && openapiPaths.length > 0
+          ? await OpenApiValidator.load([...openapiPaths], {})
+          : undefined;
       flowResult = await executeFlow(flow, resolvedPath, {
         cwd,
         envNameOverride,
@@ -96,6 +111,7 @@ export async function handleRunRequest(
         history: true,
         guard,
         http,
+        openapi,
         // UI 起点の実行は人間の操作として履歴に記録する
         actor: { kind: "human" },
         onStepStart: async (context) => {
@@ -118,8 +134,15 @@ export async function handleRunRequest(
         // ステップの成否に影響しない警告(履歴書き込み失敗など)はサーバーログ(stderr)へ流す
         onWarning: (message) => {
           process.stderr.write(`klaus ui: warning: ${message}\n`);
+          if (!warnings.includes(message)) warnings.push(message);
         },
       });
+      if (openapi !== undefined) {
+        openapiSummary = openapi.summarize({ partial: false, planned: false });
+        for (const warning of openapi.warnings) {
+          if (!warnings.includes(warning)) warnings.push(warning);
+        }
+      }
     } catch (error) {
       // フロー定義・環境ファイルのパースエラーなど、ステップループに入る前の失敗をここで拾う
       // (通常の実行時エラーは executeFlow 内で StepResult.error に格納され、ここには来ない)
@@ -143,7 +166,11 @@ export async function handleRunRequest(
       };
     }
 
-    const runResultPayload: RunResultPayload = { flow: adaptFlowResult(flowResult) };
+    const runResultPayload: RunResultPayload = {
+      flow: adaptFlowResult(flowResult),
+      ...(warnings.length > 0 ? { warnings } : {}),
+      ...(openapiSummary !== undefined ? { openapi: openapiSummary } : {}),
+    };
     await safeWriteSSE({ event: "run-result", data: JSON.stringify(runResultPayload) });
   });
 }

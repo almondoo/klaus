@@ -21,6 +21,7 @@ import { handleHistoryEvents } from "./routes/history-events.js";
 import { handleHistoryPromote } from "./routes/history-promote.js";
 import { handleSingleRequest } from "./routes/request.js";
 import { handleRunRequest } from "./routes/runs.js";
+import { handleSnapshotAccept, handleSnapshotMismatches } from "./routes/snapshots.js";
 import { createStaticHandler } from "./routes/static.js";
 import type { FlowDetail } from "./types.js";
 import { pathTraversalResponse, resolveWithinCwd } from "./validation.js";
@@ -48,6 +49,11 @@ export interface CreateAppOptions {
    * リクエストボディからは受け付けない
    */
   http?: HttpConfig | undefined;
+  /**
+   * OpenAPI 文書の絶対パス(klaus.config.yaml の `run.openapi`。CLI の --openapi の既定値と同じ)。
+   * POST /api/runs の実行ごとに検証器を作って渡す。起動時に一度だけ渡され、リクエストからは受け付けない
+   */
+  openapi?: readonly string[] | undefined;
   /** 履歴変更通知(GET /api/history/events)用のウォッチャー。未指定なら createApp 内で生成する(サーバー停止時に close したい呼び出し元が渡す) */
   historyWatcher?: HistoryWatcher | undefined;
 }
@@ -65,7 +71,7 @@ function timingSafeTokenEqual(a: string, b: string): boolean {
 }
 
 export function createApp(options: CreateAppOptions): Hono {
-  const { cwd, token, port, staticDir, host = "127.0.0.1", guard, http } = options;
+  const { cwd, token, port, staticDir, host = "127.0.0.1", guard, http, openapi } = options;
   const historyWatcher = options.historyWatcher ?? createHistoryWatcher(cwd);
   const app = new Hono();
 
@@ -172,7 +178,7 @@ export function createApp(options: CreateAppOptions): Hono {
     handlePostEnvironmentCapture(c, cwd, c.req.param("name")),
   );
 
-  app.post("/api/runs", (c) => handleRunRequest(c, cwd, guard, http));
+  app.post("/api/runs", (c) => handleRunRequest(c, cwd, guard, http, openapi));
 
   app.post("/api/request", (c) => handleSingleRequest(c, cwd, guard, http));
 
@@ -180,6 +186,10 @@ export function createApp(options: CreateAppOptions): Hono {
   app.get("/api/history/events", (c) => handleHistoryEvents(c, historyWatcher));
 
   app.get("/api/history/diff", (c) => handleHistoryDiff(c, cwd));
+
+  app.get("/api/snapshots/mismatches", (c) => handleSnapshotMismatches(c, cwd));
+
+  app.post("/api/snapshots/accept", (c) => handleSnapshotAccept(c, cwd));
 
   app.post("/api/history/promote", (c) => handleHistoryPromote(c, cwd));
 

@@ -2494,3 +2494,457 @@ describe("GET /api/history/diff と POST /api/history/promote", () => {
     });
   });
 });
+
+describe("OpenAPI(startServer の openapi オプション)", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let dir: string;
+  let fixture: Awaited<ReturnType<typeof startFixtureServer>>;
+  let withSpec: StartServerResult;
+  let withoutSpec: StartServerResult;
+
+  async function runFlow(server: StartServerResult, body: unknown) {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/runs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": server.token,
+        Cookie: `klaus_token=${server.token}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const events = await collectSseEvents(res);
+    return events.at(-1)?.data as {
+      flow: {
+        status: string;
+        steps: Array<{
+          assertions: Array<{ kind: string; ok: boolean; openapi?: { state: string } }>;
+        }>;
+      };
+      warnings?: string[];
+      openapi?: { operations: { total: number; covered: number }; violations: number };
+    };
+  }
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    dir = await mkdtemp(join(tmpRoot, "klaus-server-openapi-"));
+    fixture = await startFixtureServer();
+    const response = (type: string) => ({
+      "200": {
+        description: "ok",
+        content: {
+          "application/json": {
+            schema: { type: "object", required: ["step"], properties: { step: { type } } },
+          },
+        },
+      },
+    });
+    await writeFile(
+      join(dir, "api.json"),
+      JSON.stringify({
+        openapi: "3.0.3",
+        info: { title: "t", version: "1" },
+        servers: [{ url: fixture.baseUrl }],
+        paths: {
+          "/step1": { get: { responses: response("integer") } },
+          "/step2": { get: { responses: response("string") } },
+          "/unused": { get: { responses: response("integer") } },
+        },
+      }),
+    );
+    for (const [file, steps] of [
+      ["ok.yaml", ["step1"]],
+      ["bad.yaml", ["step1", "step2"]],
+    ] as const) {
+      await writeFile(
+        join(dir, file),
+        [
+          `name: ${file}`,
+          "steps:",
+          ...steps.flatMap((s) => [
+            `  - name: ${s}`,
+            "    request:",
+            "      method: GET",
+            `      url: "${fixture.baseUrl}/${s}"`,
+          ]),
+          "",
+        ].join("\n"),
+      );
+    }
+    withSpec = await startServer({ cwd: dir, port: 0, openapi: [join(dir, "api.json")] });
+    withoutSpec = await startServer({ cwd: dir, port: 0 });
+  });
+
+  afterAll(async () => {
+    await withSpec.close();
+    await withoutSpec.close();
+    await closeServer(fixture.server);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("run.openapi 相当を渡すと、応答が仕様に照らして検証され、カバレッジが run-result に載る", async () => {
+    const ok = await runFlow(withSpec, { path: "ok.yaml" });
+    expect(ok.flow.status).toBe("passed");
+    expect(ok.flow.steps[0]?.assertions.find((a) => a.kind === "openapi")?.openapi?.state).toBe(
+      "valid",
+    );
+    expect(ok.openapi?.operations).toMatchObject({ total: 3, covered: 1 });
+
+    const bad = await runFlow(withSpec, { path: "bad.yaml" });
+    expect(bad.flow.status).toBe("failed");
+    const states = bad.flow.steps.map(
+      (s) => s.assertions.find((a) => a.kind === "openapi")?.openapi?.state,
+    );
+    expect(states).toEqual(["valid", "invalid"]);
+    expect(bad.openapi?.violations).toBe(1);
+    // 検証器は実行ごとに作るため、カバレッジは前の実行に引きずられない
+    expect(bad.openapi?.operations.covered).toBe(2);
+  });
+
+  it("openapi を渡さなければ検証せず、リクエストボディの openapi も受け付けない", async () => {
+    const result = await runFlow(withoutSpec, {
+      path: "ok.yaml",
+      openapi: [join(dir, "api.json")],
+    });
+    expect(result.flow.status).toBe("passed");
+    expect(result.openapi).toBeUndefined();
+    expect(result.flow.steps[0]?.assertions.some((a) => a.kind === "openapi")).toBe(false);
+  });
+
+  it("読めない仕様は実行前のエラーとして返り、ステップは送信されない", async () => {
+    const broken = await startServer({ cwd: dir, port: 0, openapi: [join(dir, "missing.json")] });
+    try {
+      const result = await runFlow(broken, { path: "ok.yaml" });
+      expect(result.flow.status).toBe("error");
+    } finally {
+      await broken.close();
+    }
+  });
+});
+
+describe("GET /api/snapshots/mismatches と POST /api/snapshots/accept", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let dir: string;
+  let outside: string;
+  let server: StartServerResult;
+  let base: string;
+
+  const auth = () => ({ "X-Klaus-Token": server.token });
+  const authWrite = () => ({
+    "Content-Type": "application/json",
+    "X-Klaus-Token": server.token,
+    Cookie: `klaus_token=${server.token}`,
+  });
+  const list = (runId: string) =>
+    fetch(`${base}/api/snapshots/mismatches?runId=${encodeURIComponent(runId)}`, {
+      headers: auth(),
+    });
+  const accept = (body: unknown) =>
+    fetch(`${base}/api/snapshots/accept`, {
+      method: "POST",
+      headers: authWrite(),
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+
+  function snapshotEntry(
+    runId: string,
+    step: string,
+    file: string,
+    key: string,
+    state: "mismatch" | "missing" | "matched",
+    extra: Partial<HistoryEntry> = {},
+  ): HistoryEntry {
+    return {
+      v: 1,
+      runId,
+      flow: "orders",
+      step,
+      startedAt: "2026-06-01T00:00:00.000Z",
+      durationMs: 1,
+      status: state === "matched" ? "passed" : "failed",
+      file: "orders.yaml",
+      assertions: [
+        {
+          ok: state === "matched",
+          kind: "snapshot",
+          message: `snapshot ${state}`,
+          snapshot: {
+            key,
+            file,
+            state,
+            ...(state === "mismatch"
+              ? {
+                  differences: [
+                    { path: "$.body.status", kind: "changed", before: "new", after: "shipped" },
+                  ],
+                  differenceCount: 1,
+                }
+              : {}),
+            ...(state !== "matched"
+              ? { candidate: { status: 200, body: { status: "shipped" } } }
+              : {}),
+          },
+        },
+      ],
+      ...extra,
+    };
+  }
+
+  async function exists(path: string): Promise<boolean> {
+    try {
+      await stat(path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    dir = await mkdtemp(join(tmpRoot, "klaus-server-snap-"));
+    outside = await mkdtemp(join(tmpRoot, "klaus-server-snap-outside-"));
+    await mkdir(join(dir, "environments"), { recursive: true });
+    await writeFile(join(dir, "environments", "dev.yaml"), "baseUrl: x\n");
+    await writeFile(join(dir, "environments", "prod.yaml"), "$protected: true\nbaseUrl: x\n");
+    await writeFile(join(dir, "environments", "stg.yaml"), "$protected: readonly\nbaseUrl: x\n");
+    const snap = "__snapshots__/orders.snap.json";
+    for (const entry of [
+      snapshotEntry("run-ok", "get", snap, "get", "mismatch", { env: "dev" }),
+      snapshotEntry("run-ok", "create", snap, "create", "missing", { env: "dev" }),
+      snapshotEntry("run-ok", "same", snap, "same", "matched", { env: "dev" }),
+      snapshotEntry("run-none", "same", snap, "same", "matched"),
+      snapshotEntry("run-prod", "get", snap, "get", "mismatch", { env: "prod" }),
+      snapshotEntry("run-stg", "get", snap, "get", "mismatch", { env: "stg" }),
+      snapshotEntry("run-ghost", "get", snap, "get", "mismatch", { env: "ghost" }),
+      snapshotEntry("run-envfile", "get", snap, "get", "mismatch", { env: "../x.yaml" }),
+      snapshotEntry("run-corrupt", "get", "bad/__snapshots__/c.snap.json", "get", "mismatch"),
+      snapshotEntry("run-link", "get", "__snapshots__/link.snap.json", "get", "mismatch"),
+    ]) {
+      await appendHistory(dir, entry);
+    }
+    await mkdir(join(dir, "bad", "__snapshots__"), { recursive: true });
+    await writeFile(join(dir, "bad", "__snapshots__", "c.snap.json"), "{not json", "utf-8");
+    await mkdir(join(dir, "__snapshots__"), { recursive: true });
+    await symlink(join(outside, "target.snap.json"), join(dir, "__snapshots__", "link.snap.json"));
+    server = await startServer({ cwd: dir, port: 0 });
+    base = `http://127.0.0.1:${server.port}`;
+  });
+
+  afterAll(async () => {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  describe("GET /api/snapshots/mismatches", () => {
+    it("トークンが無ければ 401", async () => {
+      expect((await fetch(`${base}/api/snapshots/mismatches?runId=run-ok`)).status).toBe(401);
+    });
+
+    it("承認待ち(mismatch / missing)だけを実行順に返し、候補(candidate)は含めない", async () => {
+      const res = await list("run-ok");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        runId: string;
+        acceptRefusal?: string;
+        mismatches: Array<{
+          step: string;
+          state: string;
+          key: string;
+          snapshotFile: string;
+          differenceCount: number;
+        }>;
+      };
+      expect(body.runId).toBe("run-ok");
+      expect(body.acceptRefusal).toBeUndefined();
+      expect(body.mismatches.map((m) => [m.step, m.state])).toEqual([
+        ["get", "mismatch"],
+        ["create", "missing"],
+      ]);
+      expect(body.mismatches[0]).toMatchObject({
+        snapshotFile: "__snapshots__/orders.snap.json",
+        key: "get",
+        differenceCount: 1,
+      });
+      expect(JSON.stringify(body)).not.toContain("candidate");
+    });
+
+    it("承認待ちが無い run は 200 の空配列、履歴に無い run は 404", async () => {
+      const none = await list("run-none");
+      expect(none.status).toBe(200);
+      expect(((await none.json()) as { mismatches: unknown[] }).mismatches).toEqual([]);
+      expect((await list("no-such-run")).status).toBe(404);
+    });
+
+    it.each([
+      ["runId が無い", ""],
+      ["runId が不正", "?runId=../x"],
+      ["runId が複数", "?runId=run-ok&runId=run-none"],
+    ])("400: %s", async (_label, query) => {
+      const res = await fetch(`${base}/api/snapshots/mismatches${query}`, { headers: auth() });
+      expect(res.status).toBe(400);
+    });
+
+    it.each(["run-prod", "run-stg", "run-ghost", "run-envfile"])(
+      "%s: 保護環境の run(または環境を判定できない run)は承認を拒否する理由を返す",
+      async (runId) => {
+        const body = (await (await list(runId)).json()) as {
+          acceptRefusal?: string;
+          mismatches: unknown[];
+        };
+        expect(body.mismatches).toHaveLength(1);
+        expect(body.acceptRefusal).toBeTruthy();
+      },
+    );
+  });
+
+  describe("POST /api/snapshots/accept", () => {
+    it("トークンが無ければ 401、CSRF Cookie が無い・Origin が不正なら 403(何も書かない)", async () => {
+      const payload = JSON.stringify({
+        runId: "run-ok",
+        snapshotFile: "__snapshots__/orders.snap.json",
+        key: "get",
+      });
+      const noToken = await fetch(`${base}/api/snapshots/accept`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: payload,
+      });
+      expect(noToken.status).toBe(401);
+      const noCookie = await fetch(`${base}/api/snapshots/accept`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...auth() },
+        body: payload,
+      });
+      expect(noCookie.status).toBe(403);
+      const badOrigin = await fetch(`${base}/api/snapshots/accept`, {
+        method: "POST",
+        headers: { ...authWrite(), Origin: "http://evil.example.com" },
+        body: payload,
+      });
+      expect(badOrigin.status).toBe(403);
+      expect(await exists(join(dir, "__snapshots__", "orders.snap.json"))).toBe(false);
+    });
+
+    it("承認すると基準ファイルに書き込まれ(written)、他のキーは変えず、再承認は置き換え(updated)になる", async () => {
+      const file = join(dir, "__snapshots__", "orders.snap.json");
+      const first = await accept({
+        runId: "run-ok",
+        snapshotFile: "__snapshots__/orders.snap.json",
+        key: "get",
+      });
+      expect(first.status).toBe(200);
+      expect(await first.json()).toEqual({
+        ok: true,
+        state: "written",
+        snapshotFile: "__snapshots__/orders.snap.json",
+        key: "get",
+      });
+      expect(JSON.parse(await readFile(file, "utf-8"))).toEqual({
+        get: { status: 200, body: { status: "shipped" } },
+      });
+
+      const second = await accept({
+        runId: "run-ok",
+        snapshotFile: "__snapshots__/orders.snap.json",
+        key: "create",
+      });
+      expect(((await second.json()) as { state: string }).state).toBe("written");
+      const third = await accept({
+        runId: "run-ok",
+        snapshotFile: "__snapshots__/orders.snap.json",
+        key: "get",
+      });
+      expect(((await third.json()) as { state: string }).state).toBe("updated");
+      expect(Object.keys(JSON.parse(await readFile(file, "utf-8"))).sort()).toEqual([
+        "create",
+        "get",
+      ]);
+    });
+
+    it.each([
+      ["JSON として不正", "{nope"],
+      ["本文がオブジェクトではない", "[1]"],
+      ["runId が無い", { snapshotFile: "__snapshots__/orders.snap.json", key: "get" }],
+      [
+        "runId が不正",
+        { runId: "../x", snapshotFile: "__snapshots__/orders.snap.json", key: "get" },
+      ],
+      ["snapshotFile が無い", { runId: "run-ok", key: "get" }],
+      ["snapshotFile が制御文字を含む", { runId: "run-ok", snapshotFile: "a\nb", key: "get" }],
+      ["key が空", { runId: "run-ok", snapshotFile: "__snapshots__/orders.snap.json", key: "" }],
+      [
+        "key が文字列ではない",
+        { runId: "run-ok", snapshotFile: "__snapshots__/orders.snap.json", key: 1 },
+      ],
+      [
+        "未知のフィールド",
+        {
+          runId: "run-ok",
+          snapshotFile: "__snapshots__/orders.snap.json",
+          key: "get",
+          candidate: {},
+        },
+      ],
+    ])("400: %s", async (_label, body) => {
+      expect((await accept(body)).status).toBe(400);
+    });
+
+    it("403: 承認待ちとして返っていない cwd 外のパスは拒否され、何も書かれない", async () => {
+      for (const snapshotFile of [
+        "../outside/__snapshots__/x.snap.json",
+        `${outside}/__snapshots__/x.snap.json`,
+      ]) {
+        const res = await accept({ runId: "run-ok", snapshotFile, key: "get" });
+        expect(res.status).toBe(403);
+      }
+      expect(await readdir(outside)).toEqual([]);
+    });
+
+    it("404: 承認待ちの組でないもの(cwd 内の別ファイル・別キー・承認待ちでないキー)は拒否され、何も書かれない", async () => {
+      const cases = [
+        { runId: "run-ok", snapshotFile: "other/__snapshots__/x.snap.json", key: "get" },
+        { runId: "run-ok", snapshotFile: "__snapshots__/orders.snap.json", key: "nope" },
+        { runId: "run-ok", snapshotFile: "__snapshots__/orders.snap.json", key: "same" },
+        { runId: "no-such-run", snapshotFile: "__snapshots__/orders.snap.json", key: "get" },
+      ];
+      for (const body of cases) expect((await accept(body)).status).toBe(404);
+      expect(await exists(join(dir, "other"))).toBe(false);
+    });
+
+    it.each(["run-prod", "run-stg", "run-ghost", "run-envfile"])(
+      "403: %s は保護環境(または判定不能)のため承認できず、何も書かれない",
+      async (runId) => {
+        const res = await accept({
+          runId,
+          snapshotFile: "__snapshots__/orders.snap.json",
+          key: "get",
+        });
+        expect(res.status).toBe(403);
+        expect(await res.text()).toContain("Forbidden");
+      },
+    );
+
+    it("422: 既存のスナップショットファイルが壊れている場合は書き換えない", async () => {
+      const res = await accept({
+        runId: "run-corrupt",
+        snapshotFile: "bad/__snapshots__/c.snap.json",
+        key: "get",
+      });
+      expect(res.status).toBe(422);
+      expect(await readFile(join(dir, "bad", "__snapshots__", "c.snap.json"), "utf-8")).toBe(
+        "{not json",
+      );
+    });
+
+    it("403: 承認待ちの書き込み先がシンボリックリンクなら core が拒否し、リンク先には書かれない", async () => {
+      const res = await accept({
+        runId: "run-link",
+        snapshotFile: "__snapshots__/link.snap.json",
+        key: "get",
+      });
+      expect(res.status).toBe(403);
+      expect(await readdir(outside)).toEqual([]);
+    });
+  });
+});

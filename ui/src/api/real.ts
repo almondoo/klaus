@@ -2,6 +2,8 @@ import { apiFetchJson } from "./http";
 import type { RunStreamCallbacks } from "./sse";
 import { streamRun } from "./sse";
 import type {
+  AcceptSnapshotRequestBody,
+  AcceptSnapshotResult,
   EnvironmentCaptureRequestBody,
   EnvironmentDetail,
   EnvironmentListEntry,
@@ -17,6 +19,7 @@ import type {
   RunRequestBody,
   SingleRequestRequestBody,
   SingleRequestResultPayload,
+  SnapshotMismatchesPayload,
 } from "./types";
 
 export function getFlows(): Promise<FlowListEntry[]> {
@@ -67,6 +70,22 @@ export function getHistoryDiff(params: GetHistoryDiffParams): Promise<RunDiff> {
 /** POST /api/history/promote: 履歴から新規フローを生成する(dryRun でプレビュー、それ以外は新規ファイルとして保存) */
 export function promoteHistory(body: PromoteRequestBody): Promise<PromoteResponse> {
   return apiFetchJson<PromoteResponse>("/api/history/promote", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** GET /api/snapshots/mismatches: run の承認待ちスナップショット */
+export function getSnapshotMismatches(runId: string): Promise<SnapshotMismatchesPayload> {
+  return apiFetchJson<SnapshotMismatchesPayload>(
+    `/api/snapshots/mismatches?runId=${encodeURIComponent(runId)}`,
+  );
+}
+
+/** POST /api/snapshots/accept: 承認待ちの 1 件を基準としてリポジトリのスナップショットファイルへ書き込む */
+export function acceptSnapshot(body: AcceptSnapshotRequestBody): Promise<AcceptSnapshotResult> {
+  return apiFetchJson<AcceptSnapshotResult>("/api/snapshots/accept", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),

@@ -6,9 +6,39 @@
  * NOTE: ビルド時に import type は完全に消去されるため、ui/ から core/ への
  * ランタイム依存は発生しない(docs/dev/ui-design.md の「ブラウザ側は core を runtime import しない」契約を満たす)。
  */
-import type { AssertionResult, FlowResult, StepResult } from "../../../src/core/types";
+import type {
+  AssertionResult,
+  FlowResult,
+  OpenApiAssertionDetail,
+  OpenApiRunSummary,
+  OpenApiState,
+  OpenApiViolation,
+  RunResult,
+  SnapshotAssertionDetail,
+  SnapshotDifference,
+  SnapshotEntry,
+  SnapshotRunSummary,
+  SnapshotState,
+  StepResult,
+} from "../../../src/core/types";
 
-export type { AssertionResult, FlowResult, StepResult };
+// スナップショット・OpenAPI 検証の結果の型は core の型をそのまま再利用する(type-only import のため手動同期は不要。
+// AssertionResult.snapshot / .openapi、RunResult.warnings / .snapshots / .openapi、StepResult.redirects / .droppedHeaders を含む)
+export type {
+  AssertionResult,
+  FlowResult,
+  OpenApiAssertionDetail,
+  OpenApiRunSummary,
+  OpenApiState,
+  OpenApiViolation,
+  RunResult,
+  SnapshotAssertionDetail,
+  SnapshotDifference,
+  SnapshotEntry,
+  SnapshotRunSummary,
+  SnapshotState,
+  StepResult,
+};
 
 /** GET /api/flows の1エントリ */
 export interface FlowListEntry {
@@ -132,6 +162,14 @@ export interface HistoryEntry {
   events?: SseEvent[];
   /** skipped では [] */
   assertions: AssertionResult[];
+  /** executeSingleRequest(フローを介さない単発実行)経由で書き込まれた場合 "single" */
+  source?: "single";
+  /** step.retry を設定した場合のみ。実際に実行された試行回数 */
+  attempts?: number;
+  /** リダイレクトを追った場合のみ。経由 URL の一覧 */
+  redirects?: string[];
+  /** 別オリジンへのリダイレクトで落としたヘッダー名(ホップ番号つき。値は含まない) */
+  droppedHeaders?: { hop: number; headers: string[] }[];
 }
 
 /** POST /api/runs のリクエストボディ */
@@ -157,6 +195,10 @@ export interface StepResultPayload {
 /** SSE event: run-result(単一フロー実行の最終結果) */
 export interface RunResultPayload {
   flow: FlowResult;
+  /** ステップの成否に影響しない警告(tls.insecure の使用など)。無ければ省略 */
+  warnings?: string[];
+  /** OpenAPI の検証・カバレッジ(サーバーに run.openapi を設定したときだけ) */
+  openapi?: OpenApiRunSummary;
 }
 
 /**
@@ -349,4 +391,46 @@ export interface PromoteResponse {
   templateLiterals: Array<{ step: string; location: string }>;
   notes: string[];
   notice: string;
+}
+
+/**
+ * 承認待ちのスナップショット(不一致、または基準が無く書かれなかったもの)。
+ * src/core/snapshot.ts の SnapshotMismatch と同一契約(GET /api/snapshots/mismatches が返す)
+ */
+export interface SnapshotMismatch {
+  runId: string;
+  flow: string;
+  step: string;
+  iteration?: number;
+  flowFile?: string;
+  snapshotFile: string;
+  key: string;
+  state: "mismatch" | "missing";
+  message: string;
+  differences: SnapshotDifference[];
+  differenceCount: number;
+}
+
+/** GET /api/snapshots/mismatches のレスポンス。server/routes/snapshots.ts の SnapshotMismatchesPayload と手動同期する */
+export interface SnapshotMismatchesPayload {
+  runId: string;
+  mismatches: SnapshotMismatch[];
+  /** 承認できない理由(保護環境の run など)。あれば承認操作は無効にして理由を示す */
+  acceptRefusal?: string;
+}
+
+/** POST /api/snapshots/accept のリクエストボディ(GET が返した組をそのまま送る) */
+export interface AcceptSnapshotRequestBody {
+  runId: string;
+  snapshotFile: string;
+  key: string;
+}
+
+/** POST /api/snapshots/accept の成功レスポンス */
+export interface AcceptSnapshotResult {
+  ok: true;
+  /** written: 新規キー / updated: 既存キーを置き換え */
+  state: "written" | "updated";
+  snapshotFile: string;
+  key: string;
 }

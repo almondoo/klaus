@@ -17,6 +17,7 @@ import {
   getFlows,
   getHistory,
   getHistoryDiff,
+  getSnapshotMismatches,
   promoteHistory,
 } from "./client";
 import type { GetHistoryDiffParams, HistoryPage, PromoteRequestBody } from "./types";
@@ -75,6 +76,17 @@ export function historyDiffOptions(params: GetHistoryDiffParams) {
       params.ignorePaths ?? [],
     ] as const,
     queryFn: () => getHistoryDiff(params),
+  });
+}
+
+/**
+ * run の承認待ちスナップショット。履歴は追記のみなので run ごとの内容は変わらないが、承認で
+ * 基準ファイルは変わる(承認済みかどうかは UI 側のセッション状態で持つ)ため、取得は run 単位に分ける。
+ */
+export function snapshotMismatchesOptions(runId: string) {
+  return queryOptions({
+    queryKey: ["snapshotMismatches", runId] as const,
+    queryFn: () => getSnapshotMismatches(runId),
   });
 }
 

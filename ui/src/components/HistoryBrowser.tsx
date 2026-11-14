@@ -18,10 +18,13 @@ import { cn } from "@/lib/utils";
 import { formatDateTime, formatDuration } from "@/utils/format";
 import { groupHistoryByRun, type HistoryRunGroup, resolveStepStatus } from "@/utils/history";
 import { formatActor, pickAudit } from "@/utils/historyEvents";
+import { hasPendingSnapshot } from "@/utils/results";
 import { commonFlow, findPreviousRun, isSingleGroup, orderRunPair } from "@/utils/runDiff";
 import { JsonBlock } from "./JsonBlock";
 import { PromoteDialog } from "./PromoteDialog";
+import { AssertionList, RedirectNotes } from "./ResultDetails";
 import { RunDiffPanel } from "./RunDiffPanel";
+import { SnapshotReview, SnapshotStepAction } from "./SnapshotReview";
 import { Spinner } from "./Spinner";
 import { StatusBadge } from "./StatusBadge";
 
@@ -139,6 +142,17 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
           b={diffTarget.b}
           flow={diffTarget.flow}
           onClose={() => setDiffTarget(null)}
+          // 新しい方の run(B)の承認待ちスナップショットを、ステップごとの操作と下部の承認パネルで扱う
+          renderStepActions={({ step, runIds }) => (
+            <SnapshotStepAction
+              runId={runIds.b}
+              step={step}
+              reviewId={`snapshot-review-diff-${runIds.b}`}
+            />
+          )}
+          extra={
+            <SnapshotReview runId={diffTarget.b} id={`snapshot-review-diff-${diffTarget.b}`} />
+          }
         />
       )}
 
@@ -327,6 +341,14 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                       </TableCell>
                     </TableRow>
 
+                    {runExpanded && hasPendingSnapshot(group.steps) && (
+                      <TableRow className="bg-popover hover:bg-popover">
+                        <TableCell colSpan={9} className="whitespace-normal py-3">
+                          <SnapshotReview runId={group.runId} />
+                        </TableCell>
+                      </TableRow>
+                    )}
+
                     {runExpanded &&
                       group.steps.map((step) => {
                         const stepKey = `${groupKey}:${step.step}`;
@@ -379,6 +401,15 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                             {stepExpanded && (
                               <TableRow className="bg-popover hover:bg-popover">
                                 <TableCell colSpan={9} className="whitespace-normal py-3">
+                                  {step.assertions.length > 0 && (
+                                    <div className="mb-3">
+                                      <AssertionList assertions={step.assertions} />
+                                    </div>
+                                  )}
+                                  <RedirectNotes
+                                    redirects={step.redirects}
+                                    droppedHeaders={step.droppedHeaders}
+                                  />
                                   {hasStepDetail ? (
                                     <JsonBlock value={stepDetail} />
                                   ) : (

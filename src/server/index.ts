@@ -32,6 +32,11 @@ export interface StartServerOptions {
    * 両方に適用する)。guard と同じく起動時に一度だけ読むため変更後は再起動が必要で、リクエストからは指定できない
    */
   http?: HttpConfig | undefined;
+  /**
+   * OpenAPI 文書の絶対パス(klaus.config.yaml の `run.openapi`)。`klaus ui` が読んで渡し、UI からのフロー実行の応答を仕様に照らして検証する。
+   * 起動時に一度だけ読むため変更後は再起動が必要で、リクエストからは指定できない
+   */
+  openapi?: readonly string[] | undefined;
 }
 
 export interface StartServerResult {
@@ -96,6 +101,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
     host: bindHost,
     guard: options.guard,
     http: options.http,
+    openapi: options.openapi,
     historyWatcher,
   });
   currentHandler = bridgeHonoApp(app, `127.0.0.1:${port}`);

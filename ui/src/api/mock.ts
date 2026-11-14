@@ -14,6 +14,8 @@ import {
 import { ApiError } from "./http";
 import type { RunStreamCallbacks } from "./sse";
 import type {
+  AcceptSnapshotRequestBody,
+  AcceptSnapshotResult,
   EnvironmentCaptureRequestBody,
   EnvironmentDetail,
   EnvironmentListEntry,
@@ -29,6 +31,7 @@ import type {
   RunRequestBody,
   SingleRequestRequestBody,
   SingleRequestResultPayload,
+  SnapshotMismatchesPayload,
   StepResult,
 } from "./types";
 
@@ -209,6 +212,20 @@ export async function promoteHistory(body: PromoteRequestBody): Promise<PromoteR
     notice:
       "Generated from recorded traffic: review this file for sensitive data (tokens, passwords, personal data) before committing it.",
   };
+}
+
+/** GET /api/snapshots/mismatches のモック。承認待ちは無いものとして返す */
+export async function getSnapshotMismatches(runId: string): Promise<SnapshotMismatchesPayload> {
+  await delay(80);
+  return { runId, mismatches: [] };
+}
+
+/** POST /api/snapshots/accept のモック。何も書かずに成功を返す */
+export async function acceptSnapshot(
+  body: AcceptSnapshotRequestBody,
+): Promise<AcceptSnapshotResult> {
+  await delay(80);
+  return { ok: true, state: "written", snapshotFile: body.snapshotFile, key: body.key };
 }
 
 /** POST /api/runs のモック。setTimeout で step-start/step-result を逐次流し、最後に run-result を返す */

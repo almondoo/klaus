@@ -44,6 +44,8 @@ export interface RunDiffPanelProps {
   onClose: () => void;
   /** ステップ見出しの右側に置く操作(省略可。スナップショット承認などの追加先) */
   renderStepActions?: ((context: StepActionContext) => ReactNode) | undefined;
+  /** ステップ一覧の後ろに置く領域(スナップショットの承認パネルなど) */
+  extra?: ReactNode;
 }
 
 const CHANGE_VARIANT: Record<StepDiff["change"], NonNullable<BadgeProps["variant"]>> = {
@@ -395,7 +397,7 @@ function IgnorePaths({
  * ステップごとに「同じ / 差分あり / 追加 / 削除」と、結果(状態・HTTP ステータス)・リクエスト・レスポンスの差分を示す。
  * 除外パスを変えると再取得する。値は履歴に保存済みのマスク済みのもの(アンマスクはしない)。
  */
-export function RunDiffPanel({ a, b, flow, onClose, renderStepActions }: RunDiffPanelProps) {
+export function RunDiffPanel({ a, b, flow, onClose, renderStepActions, extra }: RunDiffPanelProps) {
   const [ignored, setIgnored] = useState<string[]>([]);
   const { diff, loading, refetching, error } = useHistoryDiff({
     a,
@@ -498,6 +500,8 @@ export function RunDiffPanel({ a, b, flow, onClose, renderStepActions }: RunDiff
               />
             ))}
           </ul>
+
+          {extra}
         </>
       )}
     </section>

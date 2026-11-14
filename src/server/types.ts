@@ -4,7 +4,7 @@
  * ここで独立して定義し、レスポンス形状を手動で同期する)。
  */
 import type { HistoryPage as CoreHistoryPage } from "../core/history-query.js";
-import type { PromoteResult } from "../core/index.js";
+import type { OpenApiRunSummary, PromoteResult } from "../core/index.js";
 import type { FlowResult, StepResult } from "../core/types.js";
 
 /** GET /api/flows の1エントリ */
@@ -98,6 +98,10 @@ export interface StepResultPayload {
 /** SSE event: run-result(単一フロー実行の最終結果) */
 export interface RunResultPayload {
   flow: FlowResult;
+  /** ステップの成否に影響しない警告(tls.insecure の使用など)。重複は除く。無ければ省略 */
+  warnings?: string[];
+  /** OpenAPI の検証・カバレッジ(run.openapi を設定したときだけ) */
+  openapi?: OpenApiRunSummary;
 }
 
 /** POST /api/history/promote のリクエストボディ(検証前の生の値。許可するキー以外は 400) */

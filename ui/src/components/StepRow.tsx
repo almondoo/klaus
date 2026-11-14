@@ -1,10 +1,11 @@
-import { CheckCircle2, ChevronDown, ChevronRight, XCircle } from "lucide-react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import type { RunStepView } from "@/hooks/useRun";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/utils/format";
 import { JsonBlock } from "./JsonBlock";
+import { AssertionList, RedirectNotes } from "./ResultDetails";
 import { StatusBadge } from "./StatusBadge";
 
 export interface StepRowProps {
@@ -70,26 +71,10 @@ export function StepRow({ step }: StepRowProps) {
         <CollapsibleContent className="flex flex-col gap-3 border-t border-border px-3 pb-3">
           {result?.error && <p className="mt-2 text-sm text-fail">{result.error}</p>}
 
-          {result && result.assertions.length > 0 && (
-            <ul className="mt-2 flex flex-col gap-1 text-sm">
-              {result.assertions.map((assertion, i) => {
-                const itemClass = cn(
-                  "flex items-center gap-1.5",
-                  assertion.ok ? "text-pass" : "text-fail",
-                );
-                return (
-                  // biome-ignore lint/suspicious/noArrayIndexKey: assertions は実行結果の静的リストで並び替え・挿入が発生せず、kind + message も重複定義があり得るため一意性を保証できない
-                  <li key={`${assertion.kind}-${i}`} className={itemClass}>
-                    {assertion.ok ? (
-                      <CheckCircle2 className="size-3.5" aria-hidden="true" />
-                    ) : (
-                      <XCircle className="size-3.5" aria-hidden="true" />
-                    )}
-                    <span>{assertion.message}</span>
-                  </li>
-                );
-              })}
-            </ul>
+          {result && <AssertionList assertions={result.assertions} />}
+
+          {result && (
+            <RedirectNotes redirects={result.redirects} droppedHeaders={result.droppedHeaders} />
           )}
 
           {result?.request && (

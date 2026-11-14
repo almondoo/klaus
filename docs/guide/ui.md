@@ -30,6 +30,32 @@ Runs made outside the UI (for example an AI agent running `klaus run` or `klaus 
 - The connection is dropped while the browser tab is hidden and re-established (with one refresh) when you return. If it breaks, the UI reconnects with backoff
 - At most 16 browser connections can subscribe at once
 
+## Run results
+
+The runner view and the history step detail show more than pass or fail.
+
+- **Snapshot assertions** (`assert.snapshot`): the state (一致 matched, 新規に基準を書き込み written, 基準を更新 updated, 不一致 mismatch, 基準なし missing), the snapshot key and file, and for a mismatch the list of differences (path, kind, before to after; the total is shown when the list is cut off). A flow run from the UI behaves like a local `klaus run` without `--update-snapshots`: a step with no baseline yet records one (state 新規に基準を書き込み; not for a protected environment, where the result is 基準なし instead), and a changed response is never overwritten.
+- **OpenAPI validation**: if `klaus.config.yaml` sets `run.openapi`, `klaus ui` reads the list once at startup (like `guard` and `http`, never from a request) and validates every HTTP response of a flow run from the UI against it. Each assertion shows its state (仕様どおり, 仕様に違反, 仕様に記載なし, 対応するオペレーションなし, 検証できず), the matched operation, and the violations (location, path, message; at most 10 are listed, the rest is counted). After the run, a coverage summary lists the operations that were not matched and the requests that matched no operation. The strictness and coverage-minimum options of the CLI are not available in the UI. A document that cannot be read ends the run before any request is sent.
+- **Warnings** that do not change the result (for example TLS verification being disabled by `http.tls.insecure`) appear as a notice above the run summary.
+- **Redirects**: when `http.followRedirects` is on, the step detail lists the URLs that were visited and, for every cross-origin hop, the names (never the values) of the headers that were dropped.
+- **Snapshot summary**: counts of matched, written, updated, mismatched, and missing snapshots for the run. A changed response is never accepted by the run itself; use the review below.
+
+## Reviewing snapshots
+
+When an agent (or you) ran a flow and a response changed, the history tab is where a human reviews the difference and accepts the new baseline.
+
+1. Open the run in the history tab (click its row). If it has snapshot mismatches or snapshots with no baseline, a panel "スナップショットの承認待ち" lists each one with its key, file, and differences. In a run comparison, the same panel appears below the step list for run B, and each step with pending snapshots has a button "スナップショットの承認待ち n 件を確認" that jumps to it.
+2. Press **この結果を基準として承認** on one item, or **すべて承認**, which first lists the files and keys that will be written and asks you to confirm with **書き込みを実行** (**やめる** cancels).
+3. After accepting, the item shows the file that was written and whether the key was added or replaced. **Accepting changes a file in the repository** (`__snapshots__/*.snap.json`): check `git diff` and commit it.
+
+Details:
+
+- The baseline written is exactly the (masked) response stored in history when the run happened, like [`klaus snapshot accept`](cli.md#klaus-snapshot). Other keys in the file are untouched, and nothing is ever written outside `__snapshots__/*.snap.json` inside the working directory or through a symbolic link.
+- Only snapshots that the server lists as pending for that run can be accepted. The file and key are never taken from the browser as a free path.
+- History is append-only, so an accepted item still appears in the list when you reopen the run; it is marked as accepted only in the screen you accepted it on. Accepting it again just rewrites the same content.
+- **Runs against a protected environment cannot be accepted from the UI** (`$protected: true` or `readonly`), and neither can runs whose environment cannot be verified (for example one started with `--env-file`). The UI can be driven by an agent, and the UI also refuses to edit protected environments, so baselines from protected data are accepted only with `klaus snapshot accept`. The panel shows the reason and the buttons are disabled.
+- A corrupt snapshot file is reported (422) and left as it is; fix or delete it first.
+
 ## Comparing runs
 
 Pick two runs in the history tab to see what changed between them, for example to review what an AI agent did against the API.
