@@ -2263,6 +2263,9 @@ describe("GET /api/history/diff と POST /api/history/promote", () => {
       ["a が空", "a=&b=run-b"],
       ["run ID の形式が不正", "a=run-a&b=../etc/passwd"],
       ["a が複数", "a=run-a&a=run-b&b=run-b"],
+      ["run ID に ASCII 以外の紛らわしい文字(キリル文字)", "a=run-a&b=run-%D0%B0"],
+      ["run ID にバックスラッシュ", "a=run-a&b=run-b%5Cx"],
+      ["run ID が prototype 汚染を狙う名前", "a=__proto__&b=run-b"],
       ["flow が制御文字を含む", `a=run-a&b=run-b&flow=${encodeURIComponent("x\ny")}`],
       ["latest は flow が必須", "a=latest&b=run-b"],
       ["ignorePath が JSONPath として解釈できない", "a=run-a&b=run-b&ignorePath=nope"],
@@ -2345,7 +2348,7 @@ describe("GET /api/history/diff と POST /api/history/promote", () => {
         baseUrlVar: "BASE_URL",
         chain: false,
         name: "my flow",
-        out: "custom/my-flow.yaml",
+        out: "flows/custom/my-flow.yaml",
         dryRun: true,
       });
       expect(res.status).toBe(200);
@@ -2358,7 +2361,7 @@ describe("GET /api/history/diff と POST /api/history/promote", () => {
         placeholders: Array<{ name: string }>;
         captures: unknown[];
       };
-      expect(body.file).toBe("custom/my-flow.yaml");
+      expect(body.file).toBe("flows/custom/my-flow.yaml");
       expect(body.flow).toBe("my flow");
       expect(body.assert).toBe("status");
       expect(body.variables).toEqual([{ name: "BASE_URL", value: "http://localhost:4000" }]);
@@ -2367,15 +2370,15 @@ describe("GET /api/history/diff と POST /api/history/promote", () => {
       expect(body.placeholders.length).toBeGreaterThan(0);
       expect(body.captures).toEqual([]);
       expect(body.yaml).not.toContain("***");
-      expect(await exists(join(dir, "custom"))).toBe(false);
+      expect(await exists(join(dir, "flows", "custom"))).toBe(false);
     });
 
     it("書き込み: 新規ファイルを作り、フロー一覧に現れ、2 回目は 409 で内容を変えない", async () => {
-      const res = await promote({ runIds: ["run-b"], out: "written/orders.yaml" });
+      const res = await promote({ runIds: ["run-b"], out: "flows/written/orders.yaml" });
       expect(res.status).toBe(200);
       const body = (await res.json()) as { written: boolean; file: string; yaml: string };
-      expect(body).toMatchObject({ written: true, file: "written/orders.yaml" });
-      const onDisk = await readFile(join(dir, "written", "orders.yaml"), "utf-8");
+      expect(body).toMatchObject({ written: true, file: "flows/written/orders.yaml" });
+      const onDisk = await readFile(join(dir, "flows", "written", "orders.yaml"), "utf-8");
       expect(onDisk).toBe(body.yaml);
 
       const flows = (await (
@@ -2383,23 +2386,29 @@ describe("GET /api/history/diff と POST /api/history/promote", () => {
       ).json()) as Array<{
         path: string;
       }>;
-      expect(flows.map((f) => f.path)).toContain("written/orders.yaml");
+      expect(flows.map((f) => f.path)).toContain("flows/written/orders.yaml");
 
-      const dry = await promote({ runIds: ["run-b"], out: "written/orders.yaml", dryRun: true });
+      const dry = await promote({
+        runIds: ["run-b"],
+        out: "flows/written/orders.yaml",
+        dryRun: true,
+      });
       expect(((await dry.json()) as { exists: boolean }).exists).toBe(true);
 
-      const again = await promote({ runIds: ["run-a"], out: "written/orders.yaml" });
+      const again = await promote({ runIds: ["run-a"], out: "flows/written/orders.yaml" });
       expect(again.status).toBe(409);
       expect(((await again.json()) as { error: string }).error).toContain("already exists");
-      expect(await readFile(join(dir, "written", "orders.yaml"), "utf-8")).toBe(onDisk);
+      expect(await readFile(join(dir, "flows", "written", "orders.yaml"), "utf-8")).toBe(onDisk);
     });
 
     it("既存のフローファイルは上書きされない(409)", async () => {
-      await mkdir(join(dir, "manual"), { recursive: true });
-      await writeFile(join(dir, "manual", "keep.yaml"), "sentinel: true\n", "utf-8");
-      const res = await promote({ runIds: ["run-a"], out: "manual/keep.yaml" });
+      await mkdir(join(dir, "flows", "manual"), { recursive: true });
+      await writeFile(join(dir, "flows", "manual", "keep.yaml"), "sentinel: true\n", "utf-8");
+      const res = await promote({ runIds: ["run-a"], out: "flows/manual/keep.yaml" });
       expect(res.status).toBe(409);
-      expect(await readFile(join(dir, "manual", "keep.yaml"), "utf-8")).toBe("sentinel: true\n");
+      expect(await readFile(join(dir, "flows", "manual", "keep.yaml"), "utf-8")).toBe(
+        "sentinel: true\n",
+      );
     });
 
     it.each([
@@ -2423,13 +2432,14 @@ describe("GET /api/history/diff と POST /api/history/promote", () => {
     });
 
     it("403: cwd の外を指すシンボリックリンク(途中のディレクトリ・最終要素)経由では書かない", async () => {
-      await symlink(outside, join(dir, "linkdir"));
-      const viaDir = await promote({ runIds: ["run-a"], out: "linkdir/x.yaml" });
+      await mkdir(join(dir, "flows"), { recursive: true });
+      await symlink(outside, join(dir, "flows", "linkdir"));
+      const viaDir = await promote({ runIds: ["run-a"], out: "flows/linkdir/x.yaml" });
       expect(viaDir.status).toBe(403);
 
-      await mkdir(join(dir, "final"), { recursive: true });
-      await symlink(join(outside, "created.yaml"), join(dir, "final", "f.yaml"));
-      const viaFile = await promote({ runIds: ["run-a"], out: "final/f.yaml" });
+      await mkdir(join(dir, "flows", "final"), { recursive: true });
+      await symlink(join(outside, "created.yaml"), join(dir, "flows", "final", "f.yaml"));
+      const viaFile = await promote({ runIds: ["run-a"], out: "flows/final/f.yaml" });
       expect(viaFile.status).toBe(403);
 
       expect(await readdir(outside)).toEqual([]);
@@ -2736,6 +2746,28 @@ describe("GET /api/snapshots/mismatches と POST /api/snapshots/accept", () => {
     await rm(outside, { recursive: true, force: true });
   });
 
+  describe("GET /api/history(承認用の候補は返さない)", () => {
+    it("履歴の snapshot アサーションから candidate を取り除き、他の内容は保つ(履歴ファイル自体は変えない)", async () => {
+      const res = await fetch(`${base}/api/history?limit=100`, { headers: auth() });
+      expect(res.status).toBe(200);
+      const text = await res.text();
+      expect(text).not.toContain("candidate");
+      const page = JSON.parse(text) as {
+        entries: Array<{
+          runId: string;
+          assertions: Array<{ snapshot?: { state: string; key: string } }>;
+        }>;
+      };
+      const entry = page.entries.find(
+        (e) => e.runId === "run-ok" && e.assertions[0]?.snapshot?.state === "mismatch",
+      );
+      expect(entry?.assertions[0]?.snapshot).toMatchObject({ key: "get", state: "mismatch" });
+      // 承認に必要な候補はサーバー側の履歴に残っている
+      const stored = await readAllHistoryEntries(dir);
+      expect(JSON.stringify(stored)).toContain("candidate");
+    });
+  });
+
   describe("GET /api/snapshots/mismatches", () => {
     it("トークンが無ければ 401", async () => {
       expect((await fetch(`${base}/api/snapshots/mismatches?runId=run-ok`)).status).toBe(401);
@@ -2912,6 +2944,38 @@ describe("GET /api/snapshots/mismatches と POST /api/snapshots/accept", () => {
       expect(await exists(join(dir, "other"))).toBe(false);
     });
 
+    it("承認待ちの組と大文字小文字・Unicode が違うパスやキーは 404、バックスラッシュを含むパスは 403(何も書かれない)", async () => {
+      const file = "__snapshots__/orders.snap.json";
+      for (const body of [
+        { runId: "run-ok", snapshotFile: "__Snapshots__/orders.snap.json", key: "get" },
+        { runId: "run-ok", snapshotFile: "__SNAPSHOTS__/ORDERS.SNAP.JSON", key: "get" },
+        { runId: "run-ok", snapshotFile: file, key: "GET" },
+        { runId: "run-ok", snapshotFile: "__snapshots__/orde\u0301rs.snap.json", key: "get" },
+      ]) {
+        expect((await accept(body)).status).toBe(404);
+      }
+      for (const snapshotFile of [
+        "__snapshots__\\orders.snap.json",
+        "..\\x\\__snapshots__\\y.snap.json",
+      ]) {
+        expect((await accept({ runId: "run-ok", snapshotFile, key: "get" })).status).toBe(403);
+      }
+      expect(await readdir(outside)).toEqual([]);
+      expect((await readdir(join(dir, "__snapshots__"))).sort()).toEqual([
+        "link.snap.json",
+        "orders.snap.json",
+      ]);
+    });
+
+    it("__proto__ や constructor などの未知のキーを本文に含めると 400", async () => {
+      for (const raw of [
+        '{"runId":"run-ok","snapshotFile":"__snapshots__/orders.snap.json","key":"get","__proto__":{"x":1}}',
+        '{"runId":"run-ok","snapshotFile":"__snapshots__/orders.snap.json","key":"get","constructor":{}}',
+      ]) {
+        expect((await accept(raw)).status).toBe(400);
+      }
+    });
+
     it.each(["run-prod", "run-stg", "run-ghost", "run-envfile"])(
       "403: %s は保護環境(または判定不能)のため承認できず、何も書かれない",
       async (runId) => {
@@ -2947,4 +3011,155 @@ describe("GET /api/snapshots/mismatches と POST /api/snapshots/accept", () => {
       expect(await readdir(outside)).toEqual([]);
     });
   });
+});
+
+describe("POST /api/history/promote の出力先(許可リスト・大文字小文字・Unicode)", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let dir: string;
+  let outside: string;
+  let server: StartServerResult;
+  let base: string;
+
+  const flowYaml = (name: string) =>
+    `name: ${name}\nsteps:\n  - name: s\n    request:\n      method: GET\n      url: http://localhost:1/x\n`;
+  const promote = (body: unknown) =>
+    fetch(`${base}/api/history/promote`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": server.token,
+        Cookie: `klaus_token=${server.token}`,
+      },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  const attempt = (out: string, dryRun = false) => promote({ runIds: ["run-a"], out, dryRun });
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    dir = await mkdtemp(join(tmpRoot, "klaus-server-promote-out-"));
+    outside = await mkdtemp(join(tmpRoot, "klaus-server-promote-outside-"));
+    for (const entry of runEntries("run-a", "2026-05-01T00:00:00.000Z", {
+      status: "new",
+      createdAt: "x",
+    })) {
+      await appendHistory(dir, entry);
+    }
+    // 既にフローがあるディレクトリ(ちょうどそこだけが保存先になれる)。NFC の非 ASCII 名も含める
+    await mkdir(join(dir, "sub"), { recursive: true });
+    await writeFile(join(dir, "sub", "existing.yaml"), flowYaml("existing"));
+    await mkdir(join(dir, "caf\u00e9"), { recursive: true });
+    await writeFile(join(dir, "caf\u00e9", "existing.yaml"), flowYaml("cafe"));
+    // 環境ファイル(フロー探索の対象外)
+    await mkdir(join(dir, "environments"), { recursive: true });
+    await writeFile(join(dir, "environments", "dev.yaml"), "baseUrl: x\n");
+    server = await startServer({ cwd: dir, port: 0 });
+    base = `http://127.0.0.1:${server.port}`;
+  });
+
+  afterAll(async () => {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  it("許可される場所: 既にフローがあるディレクトリ、api/、flows/ とその配下", async () => {
+    for (const out of [
+      "sub/new.yaml",
+      "api/n.yaml",
+      "flows/n.yml",
+      "flows/deep/er/n.yaml",
+      "caf\u00e9/new.yaml",
+    ]) {
+      expect((await attempt(out, true)).status, out).toBe(200);
+    }
+    // Unicode の合成形が違う表記でも、同じディレクトリとして許可リストに一致する
+    expect((await attempt("cafe\u0301/new2.yaml", true)).status).toBe(200);
+  });
+
+  it("許可されない場所: フローが無いディレクトリ・cwd 直下・既存フローのディレクトリの配下は 403", async () => {
+    for (const out of [
+      "other/n.yaml",
+      "n.yaml",
+      "sub/deeper/n.yaml",
+      "sub/../other/n.yaml",
+      "api2/n.yaml",
+    ]) {
+      expect((await attempt(out, true)).status, out).toBe(403);
+    }
+  });
+
+  it.each([
+    "Node_Modules/x.yaml",
+    "NODE_MODULES/x.yaml",
+    "Environments/prod.yaml",
+    "ENVIRONMENTS/dev2.yaml",
+    "TMP/x.yaml",
+    "Dist/x.yaml",
+    "UI/x.yaml",
+    ".Git/x.yaml",
+    ".KLAUS/x.yaml",
+    "flows/.Git/x.yaml",
+    "sub/.Hidden/x.yaml",
+    "flows/Node_Modules/x.yaml",
+    "flows/ENVIRONMENTS/x.yaml",
+    "KLAUS.CONFIG.YAML",
+    "Klaus.Config.Yml",
+    "flows/Klaus.Config.Yaml",
+    "flows/.hidden.yaml",
+  ])(
+    "403: 大文字小文字を変えた除外ディレクトリ・隠し要素・設定ファイル名 — %s(dryRun でも書き込みでも、何も作られない)",
+    async (out) => {
+      for (const dryRun of [true, false]) {
+        expect((await attempt(out, dryRun)).status).toBe(403);
+      }
+      const created = (await readdir(dir)).map((name) => name.toLowerCase());
+      expect(created.sort()).toEqual([".klaus", "café", "environments", "sub"].sort());
+      expect(await readdir(join(dir, "environments"))).toEqual(["dev.yaml"]);
+    },
+  );
+
+  it("403: バックスラッシュを含むパスは一律に拒否し、リテラルなファイル名のファイルも作らない", async () => {
+    for (const out of ["flows\\..\\..\\y.yaml", "flows\\x.yaml", "api/a\\b.yaml", "..\\y.yaml"]) {
+      expect((await attempt(out)).status, out).toBe(403);
+    }
+    expect((await readdir(dir)).some((name) => name.includes("\\"))).toBe(false);
+    expect(await exists(join(dir, "flows"))).toBe(false);
+  });
+
+  it("書き込み: 許可された場所には書かれ、同じ場所への 2 回目は 409", async () => {
+    expect((await attempt("sub/written.yaml")).status).toBe(200);
+    expect(await readFile(join(dir, "sub", "written.yaml"), "utf-8")).toContain("name: orders");
+    expect((await attempt("sub/written.yaml")).status).toBe(409);
+  });
+
+  it("403: 宙づり(行き先が無い)のシンボリックリンクは、許可された場所の名前でも書かない(ディレクトリ・最終要素とも)", async () => {
+    // api は実在しないパスへの宙づりリンク。flows 配下に最終要素が宙づりのリンクを置く
+    await symlink(join(outside, "nope"), join(dir, "api"));
+    await mkdir(join(dir, "flows"), { recursive: true });
+    await symlink(join(outside, "created.yaml"), join(dir, "flows", "dangling.yaml"));
+    expect((await attempt("api/x.yaml")).status).toBe(403);
+    expect((await attempt("api/x.yaml", true)).status).toBe(403);
+    expect((await attempt("flows/dangling.yaml")).status).toBe(403);
+    expect(await readdir(outside)).toEqual([]);
+  });
+
+  it("400: __proto__ や constructor など未知のキーを本文に含めると拒否する(out などは反映されない)", async () => {
+    for (const raw of [
+      '{"runIds":["run-a"],"dryRun":true,"__proto__":{"out":"x.yaml"}}',
+      '{"runIds":["run-a"],"dryRun":true,"constructor":{"prototype":{"out":"x.yaml"}}}',
+      '{"runIds":["__proto__"],"dryRun":true}',
+    ]) {
+      expect((await promote(raw)).status, raw).toBe(400);
+    }
+    expect(Object.hasOwn({}, "out")).toBe(false);
+  });
+
+  async function exists(path: string): Promise<boolean> {
+    try {
+      await stat(path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 });

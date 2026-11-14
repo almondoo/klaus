@@ -119,6 +119,10 @@ export async function handleSnapshotAccept(c: Context, cwd: string): Promise<Res
   ) {
     return c.json({ error: "key is invalid" }, 400);
   }
+  // バックスラッシュを含むパスは一律に拒否する(区切りの解釈が環境で変わり得るため)
+  if (snapshotFile.includes("\\")) {
+    return c.text("Forbidden: backslashes are not allowed in snapshotFile", 403);
+  }
   // cwd の外を指すパス(.. ・絶対パス・リンク経由)は、承認待ちの照合より前に拒否する
   if (!resolveWithinCwd(cwd, snapshotFile)) return pathTraversalResponse(c);
 

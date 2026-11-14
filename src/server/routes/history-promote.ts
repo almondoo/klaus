@@ -180,7 +180,7 @@ export async function handleHistoryPromote(c: Context, cwd: string): Promise<Res
     );
   }
 
-  const output = resolvePromoteOutput(cwd, body.out ?? result.suggestedPath);
+  const output = await resolvePromoteOutput(cwd, body.out ?? result.suggestedPath);
   if (!output.ok) return c.text(output.message, output.status);
 
   let exists: boolean | undefined;

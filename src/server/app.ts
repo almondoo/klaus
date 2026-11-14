@@ -15,7 +15,7 @@ import {
   listEnvironments,
 } from "./routes/environments.js";
 import { listFlows, summarizeStep } from "./routes/flows.js";
-import { getHistoryPage } from "./routes/history.js";
+import { getHistoryPage, stripPageCandidates } from "./routes/history.js";
 import { handleHistoryDiff } from "./routes/history-diff.js";
 import { handleHistoryEvents } from "./routes/history-events.js";
 import { handleHistoryPromote } from "./routes/history-promote.js";
@@ -203,7 +203,8 @@ export function createApp(options: CreateAppOptions): Hono {
       limit: limit !== undefined && Number.isFinite(limit) ? limit : undefined,
       before: before || undefined,
     });
-    return c.json(page);
+    // 承認用の候補(応答全体のコピー)は一覧に含めない
+    return c.json(stripPageCandidates(page));
   });
 
   // 上記いずれにもマッチしない GET は静的配信(SPA フォールバック含む)
