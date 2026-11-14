@@ -281,11 +281,21 @@ capture:
   token: "$.token"            # 変数名: JSONPath
   userId: "$.data.user.id"    # ネストしたフィールド
   firstId: "$.items[0].id"    # 配列インデックス
+  requestId: { header: X-Request-Id }          # レスポンスヘッダー(名前は大文字小文字を無視)
+  session: { cookie: sid }                     # run の cookie jar の値(http.cookies: true が必要)
+  orderNo: { regex: "order=(\\w+)", group: 1 }  # レスポンス本文テキストへの正規表現
+  code: { status: true }                       # HTTP ステータスコード(数値)
 ```
 
 - JSON レスポンスに JSONPath を適用し、結果を後続ステップのテンプレート変数にする(ログイン → トークン → Authorization ヘッダーが代表ケース)
 - **マッチしない・レスポンスが JSON でない場合は RuntimeError** になりステップは error(exit 3)。`Bearer undefined` のようなサイレント連鎖は起きない。値が `null` のキャプチャは成功扱い
 - **キャプチャした値はマスクされない**。シークレットマスクの対象は <code v-pre>{{env.X}}</code> で解決した値のみのため、ここでキャプチャしたトークンは履歴 JSONL・JUnit レポート・record カセットにそのまま書き込まれる。マスクの境界は [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) を参照
+- オブジェクト形式(いずれも 1 キーだけ。キーを混ぜると ParseError):
+  - `{header: name}`: レスポンスヘッダーの値。無ければ RuntimeError
+  - `{cookie: name}`: run の cookie jar にある cookie の現在値(最終 URL で引くため、リダイレクト途中のホップで付いた cookie も含む)。`http.cookies: true` が必要で、jar が無い・該当 cookie が無い場合は RuntimeError
+  - `{regex, group?}`: レスポンス本文テキストに適用する(JSON でない本文にも使える)。`group` の既定は、パターンにキャプチャグループがあれば 1、無ければ 0(マッチ全体)。不一致・参加しなかったグループは RuntimeError。パターンは書いたまま使う(capture 定義はテンプレート展開されないため、別の capture で差し替えられない)
+  - `{status: true}`: ステータスコードを数値で取得
+- エラーメッセージにはキャプチャした値やレスポンス本文を含めない
 - SSE / WS ステップでは無視される
 
 ## assert(アサーション)
@@ -294,12 +304,15 @@ capture:
 
 ```yaml
 assert:
-  status: 200
+  status: 200                 # [200, 201](いずれか)や "2xx"(ステータスクラス)も可
   headers:
     - { name: content-type, contains: json }
+    - { name: content-length, lte: 100000 }
   body:
-    - { path: "$.token", exists: true }
+    - { path: "$.token", exists: true, type: string, length: { min: 20 } }
     - { path: "$.email", equals: "{{testEmail}}" }
+    - { path: "$.total", gte: 0 }
+    - { path: "$.state", oneOf: [pending, paid] }
   bodyText:
     contains: "ok"
   bodySchema:
@@ -324,9 +337,9 @@ assert:
 
 | 対象 | フィールド | マッチャー |
 |---|---|---|
-| ステータス | `status` | 数値の完全一致 |
-| ヘッダー | `headers[]` | `name` + `equals` / `contains` / `regex` / `exists` |
-| ボディ(JSONPath) | `body[]` | `path` + `exists` / `equals` / `contains` / `regex` |
+| ステータス | `status` | 数値(完全一致)・数値の配列(いずれか)・`"2xx"`(`1xx`〜`5xx` のクラス) |
+| ヘッダー | `headers[]` | `name` + `equals` / `contains` / `regex` / `exists` + 下記の比較マッチャー |
+| ボディ(JSONPath) | `body[]` | `path` + `exists` / `equals` / `contains` / `regex` + 下記の比較マッチャー |
 | ボディ(生テキスト) | `bodyText` | `equals` / `contains` / `regex` |
 | ボディ(JSON Schema) | `bodySchema` | JSON Schema オブジェクト |
 | 所要時間 | `duration` | `maxMs` |
@@ -335,7 +348,16 @@ assert:
 | WS メッセージ数 | `messageCount` | `min` / `max` / `equals` |
 | WS メッセージ | `messages[]` | `index?` + `path?` + 上記マッチャー |
 
-`events` / `messages` の共通セマンティクス:
+比較マッチャー(`headers[]` と `body[]` のみ。マッチャーごとに個別の結果が出て、値が存在しなければ失敗):
+
+| マッチャー | pass の条件 |
+|---|---|
+| `gt` / `gte` / `lt` / `lte` | 値が数値で、比較を満たす。`body[]` では `"7"` のような数値文字列は数値として扱わない。ヘッダー値は常に文字列なので、ヘッダーでは数値文字列を数値として比較する(数値でなければ失敗) |
+| `length` | 文字列・配列の長さが指定値(数値)と一致、または `{min, max}` の範囲内(両端を含み、片方だけも可)。オブジェクトなど他の型は失敗 |
+| `type` | JSON 型が `string` / `number` / `integer` / `boolean` / `null` / `array` / `object` のいずれかと一致(`number` は整数も受け入れる) |
+| `oneOf` | 値が配列のいずれかの要素と構造的に等しい(オブジェクト・配列も可) |
+
+`events` / `messages` の共通セマンティクス(`exists` / `equals` / `contains` / `regex` のみ使える):
 
 - `index` 指定時: そのインデックスの受信データに対して評価
 - `index` 省略時: **いずれかの受信データが一致すれば pass**

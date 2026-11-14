@@ -91,6 +91,7 @@ export {
 } from "./loader.js";
 export { isPathWithinDir, isRealPathWithinDir, toDisplayPath } from "./path-guard.js";
 export type {
+  CaptureResponse,
   ExecuteSingleRequestOptions,
   ExecuteSingleRequestResult,
   LoadedFlowEntry,
@@ -112,6 +113,7 @@ export type {
   AuthDef,
   BodyAssertion,
   BodyTextAssertion,
+  CaptureDef,
   CliConfig,
   DurationAssertion,
   Environment,

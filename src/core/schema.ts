@@ -10,6 +10,41 @@ import { parseAllowedHostEntry } from "./guard.js";
  * ユーザー定義の自由な文字列であるため strict 化の対象外(record 自体がキー集合を制限しない)。
  */
 
+/** ヘッダー・body の値に対する比較系マッチャー(gt/gte/lt/lte/length/type/oneOf)。header と body のアサーションで共有する */
+const comparisonMatcherFields = {
+  gt: z.number().optional().describe("Passes if the resolved value is a number greater than this."),
+  gte: z
+    .number()
+    .optional()
+    .describe("Passes if the resolved value is a number greater than or equal to this."),
+  lt: z.number().optional().describe("Passes if the resolved value is a number less than this."),
+  lte: z
+    .number()
+    .optional()
+    .describe("Passes if the resolved value is a number less than or equal to this."),
+  length: z
+    .union([
+      z.number(),
+      z.strictObject({
+        min: z.number().optional().describe("Minimum length (inclusive)."),
+        max: z.number().optional().describe("Maximum length (inclusive)."),
+      }),
+    ])
+    .optional()
+    .describe(
+      "Length of a string or array. A number means exactly that length; {min, max} is an inclusive range.",
+    ),
+  type: z
+    .enum(["string", "number", "integer", "boolean", "null", "array", "object"])
+    .optional()
+    .describe("Passes if the resolved value has this JSON type."),
+  oneOf: z
+    .array(z.unknown())
+    .min(1)
+    .optional()
+    .describe("Passes if the resolved value equals any of these values."),
+};
+
 /** ヘッダーアサーション(1件) */
 export const headerAssertionSchema = z.strictObject({
   name: z.string().describe("Response header name to assert against (case-insensitive)."),
@@ -23,6 +58,7 @@ export const headerAssertionSchema = z.strictObject({
     .boolean()
     .optional()
     .describe("If true, passes when the header is present; if false, when it is absent."),
+  ...comparisonMatcherFields,
 });
 export type HeaderAssertion = z.infer<typeof headerAssertionSchema>;
 
@@ -47,6 +83,7 @@ export const bodyAssertionSchema = z.strictObject({
     .string()
     .optional()
     .describe("Passes if the resolved value (stringified) matches this regular expression."),
+  ...comparisonMatcherFields,
 });
 export type BodyAssertion = z.infer<typeof bodyAssertionSchema>;
 
@@ -165,12 +202,44 @@ export const messageAssertionSchema = z.strictObject({
 });
 export type MessageAssertion = z.infer<typeof messageAssertionSchema>;
 
+/** capture の1件。文字列は従来どおり JSONPath、オブジェクトは header / cookie / regex / status のいずれか1つ */
+export const captureSchema = z.union([
+  z.string(),
+  z.strictObject({
+    header: z.string().describe("Response header name (case-insensitive) to capture."),
+  }),
+  z.strictObject({
+    cookie: z
+      .string()
+      .describe("Name of a cookie in the run's cookie jar (requires http.cookies) to capture."),
+  }),
+  z.strictObject({
+    regex: z.string().describe("Regular expression applied to the response body text."),
+    group: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Capture group to extract (default 1 when the pattern has groups, else 0)."),
+  }),
+  z.strictObject({
+    status: z.literal(true).describe("Capture the HTTP response status code (a number)."),
+  }),
+]);
+export type CaptureDef = z.infer<typeof captureSchema>;
+
 /** ステップのアサーション定義全体 */
 export const assertSchema = z.strictObject({
   status: z
-    .number()
+    .union([
+      z.number(),
+      z.array(z.number()).min(1),
+      z.string().regex(/^[1-5]xx$/i, 'status class must look like "2xx"'),
+    ])
     .optional()
-    .describe("Passes if the HTTP response status code equals this value."),
+    .describe(
+      'Passes if the HTTP response status matches: a number (exact), an array of numbers (any of them), or a class such as "2xx".',
+    ),
   headers: z
     .array(headerAssertionSchema)
     .optional()
@@ -620,10 +689,10 @@ export const stepSchema = z
           "step's assert.",
       ),
     capture: z
-      .record(z.string(), z.string())
+      .record(z.string(), captureSchema)
       .optional()
       .describe(
-        "Map of variable name to JSONPath expression, extracted from the step's response body and made available as `{{name}}` in later steps.",
+        "Map of variable name to what to extract, made available as `{{name}}` in later steps. A string is a JSONPath expression over the response body; objects select a response header ({header}), a cookie ({cookie}), a regex over the body text ({regex, group}) or the status code ({status: true}).",
       ),
     assert: assertSchema.optional().describe("Assertions to evaluate against the step's result."),
     retry: retrySchema

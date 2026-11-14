@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { JSONPath } from "jsonpath-plus";
-import { evaluateAssertions } from "./assert.js";
+import { compileUserRegex, evaluateAssertions } from "./assert.js";
 import { expandAuth, type OAuth2Params } from "./auth.js";
 import {
   appendCassetteEntry,
@@ -28,7 +28,15 @@ import { sendRawRequest, sendRequest } from "./http.js";
 import { type FollowResult, HttpSession, mergeHttpConfig } from "./http-session.js";
 import { loadFlow } from "./loader.js";
 import { type BodyPayload, expandBodyForm, materializePayload } from "./request-body.js";
-import type { AuthDef, Environment, Flow, HttpConfig, RequestDef, Step } from "./schema.js";
+import type {
+  AuthDef,
+  CaptureDef,
+  Environment,
+  Flow,
+  HttpConfig,
+  RequestDef,
+  Step,
+} from "./schema.js";
 import { requestSchema } from "./schema.js";
 import { receiveSse } from "./sse.js";
 import { renderDeep, renderHeaders, renderString, type TemplateContext } from "./template.js";
@@ -444,36 +452,101 @@ export function expandStepRequest(
   };
 }
 
+/** capture のオブジェクト形式(header / cookie / regex / status)が参照するレスポンス側の情報 */
+export interface CaptureResponse {
+  status: number;
+  headers: Record<string, string>;
+  bodyText: string;
+  /** run 内の cookie jar から名前で値を引く(jar が無効・該当なしなら undefined) */
+  cookie: (name: string) => string | undefined;
+}
+
 /**
- * capture 定義(jsonpath)に従って JSON レスポンスから変数を抽出する。
- * JSONPath の評価例外・マッチなし(wrap:false で undefined が返る場合)は
- * 無警告で "undefined" を格納せず RuntimeError を投げてステップを error にする。
- * JSONPath が正当に null を返した場合は成功として扱う。
+ * capture 定義に従ってレスポンスから変数を抽出する。
+ * - 文字列: JSON レスポンスに対する JSONPath。評価例外・マッチなし(wrap:false で undefined)は
+ *   無警告で "undefined" を格納せず RuntimeError を投げてステップを error にする。JSONPath が正当に null を返した場合は成功。
+ * - {header}: レスポンスヘッダー(名前は大文字小文字を無視)。無ければ RuntimeError。
+ * - {cookie}: cookie jar の値。無ければ RuntimeError。
+ * - {regex, group?}: レスポンス本文テキストへの正規表現。不一致・グループ範囲外は RuntimeError。
+ * - {status: true}: ステータスコード(数値)。
+ * エラーメッセージには取得した値を含めない(秘密を含み得るため)。
  */
 export function captureValues(
-  captureDef: Record<string, string> | undefined,
+  captureDef: Record<string, CaptureDef> | undefined,
   json: unknown,
   stepName: string,
+  response?: CaptureResponse,
 ): Record<string, unknown> {
   if (!captureDef) return {};
   const result: Record<string, unknown> = {};
-  for (const [name, path] of Object.entries(captureDef)) {
-    let value: unknown;
-    try {
-      value = JSONPath({ path, json: json as never, wrap: false });
-    } catch (error) {
+  for (const [name, def] of Object.entries(captureDef)) {
+    const where = `capture "${name}"`;
+    if (typeof def === "string") {
+      let value: unknown;
+      try {
+        value = JSONPath({ path: def, json: json as never, wrap: false });
+      } catch (error) {
+        throw new RuntimeError(
+          `${where}: failed to evaluate JSONPath "${def}" (step "${stepName}"): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      if (value === undefined) {
+        throw new RuntimeError(`${where}: JSONPath "${def}" matched no value (step "${stepName}")`);
+      }
+      result[name] = value;
+      continue;
+    }
+    if (!response) {
       throw new RuntimeError(
-        `capture "${name}": failed to evaluate JSONPath "${path}" (step "${stepName}"): ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `${where}: header / cookie / regex / status captures need an HTTP response (step "${stepName}")`,
       );
     }
-    if (value === undefined) {
-      throw new RuntimeError(
-        `capture "${name}": JSONPath "${path}" matched no value (step "${stepName}")`,
-      );
+    if ("status" in def) {
+      result[name] = response.status;
+    } else if ("header" in def) {
+      const wanted = def.header.toLowerCase();
+      const entry = Object.entries(response.headers).find(([key]) => key.toLowerCase() === wanted);
+      if (!entry) {
+        throw new RuntimeError(
+          `${where}: response header "${def.header}" not found (step "${stepName}")`,
+        );
+      }
+      result[name] = entry[1];
+    } else if ("cookie" in def) {
+      const value = response.cookie(def.cookie);
+      if (value === undefined) {
+        throw new RuntimeError(
+          `${where}: cookie "${def.cookie}" not found in the cookie jar (is http.cookies enabled?) (step "${stepName}")`,
+        );
+      }
+      result[name] = value;
+    } else {
+      let match: RegExpMatchArray | null;
+      try {
+        match = response.bodyText.match(compileUserRegex(def.regex));
+      } catch (error) {
+        throw new RuntimeError(
+          `${where}: invalid regex /${def.regex}/ (step "${stepName}"): ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+      if (!match) {
+        throw new RuntimeError(
+          `${where}: regex /${def.regex}/ matched nothing (step "${stepName}")`,
+        );
+      }
+      const group = def.group ?? (match.length > 1 ? 1 : 0);
+      const value = match[group];
+      if (value === undefined) {
+        throw new RuntimeError(
+          `${where}: regex /${def.regex}/ has no group ${group} that matched (step "${stepName}")`,
+        );
+      }
+      result[name] = value;
     }
-    result[name] = value;
   }
   return result;
 }
@@ -857,7 +930,14 @@ async function executeStep(
       bodyText: response.bodyText,
       durationMs: response.durationMs,
     });
-    const captured = captureValues(step.capture, response.body, step.name);
+    // cookie は最終ホップの URL に対して jar から引く(リダイレクト途中で付いた cookie も含む)
+    const finalUrl = redirects.length > 0 ? (redirects[redirects.length - 1] as string) : url;
+    const captured = captureValues(step.capture, response.body, step.name, {
+      status: response.status,
+      headers: response.headers,
+      bodyText: response.bodyText,
+      cookie: (cookieName) => session.cookieValue(cookieName, finalUrl),
+    });
 
     const responseSnapshot: ResponseSnapshot = {
       status: response.status,

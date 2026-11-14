@@ -281,11 +281,21 @@ capture:
   token: "$.token"            # variable name: JSONPath
   userId: "$.data.user.id"    # nested field
   firstId: "$.items[0].id"    # array index
+  requestId: { header: X-Request-Id }          # response header (name is case-insensitive)
+  session: { cookie: sid }                     # cookie from the run's cookie jar (needs http.cookies: true)
+  orderNo: { regex: "order=(\\w+)", group: 1 }  # regex over the response body text
+  code: { status: true }                       # HTTP status code (a number)
 ```
 
 - Applies a JSONPath to the JSON response, making the result available as a template variable in subsequent steps (the classic case being login → token → Authorization header)
 - **If it doesn't match, or the response isn't JSON, this is a RuntimeError** and the step becomes error (exit 3). A silent chain like `Bearer undefined` cannot happen. A capture whose value is `null` is treated as a success
 - **Captured values are not masked.** Secret masking covers only values resolved via <code v-pre>{{env.X}}</code>, so a token captured here is written as-is to the history JSONL, the JUnit report, and record cassettes. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) for the masking boundaries
+- Object forms (exactly one key each; mixing keys is a ParseError):
+  - `{header: name}`: the response header value. Not found is a RuntimeError
+  - `{cookie: name}`: the cookie's current value in the run's cookie jar, looked up for the final URL (cookies set by a redirect hop are included). Requires `http.cookies: true`; with no jar, or no such cookie, it is a RuntimeError
+  - `{regex, group?}`: applied to the response body text (works on non-JSON bodies too). `group` defaults to 1 when the pattern has capture groups, otherwise 0 (the whole match). No match, or a group that did not participate, is a RuntimeError. The pattern is used as written (capture definitions are not template-rendered), so it cannot be steered by another capture
+  - `{status: true}`: the status code as a number
+- Error messages never include the captured value or the response body
 - Ignored on SSE / WS steps
 
 ## assert (assertions)
@@ -294,12 +304,15 @@ All fields are optional. If multiple are given, all are evaluated; if even one f
 
 ```yaml
 assert:
-  status: 200
+  status: 200                 # also: [200, 201] (any of) or "2xx" (a status class)
   headers:
     - { name: content-type, contains: json }
+    - { name: content-length, lte: 100000 }
   body:
-    - { path: "$.token", exists: true }
+    - { path: "$.token", exists: true, type: string, length: { min: 20 } }
     - { path: "$.email", equals: "{{testEmail}}" }
+    - { path: "$.total", gte: 0 }
+    - { path: "$.state", oneOf: [pending, paid] }
   bodyText:
     contains: "ok"
   bodySchema:
@@ -324,9 +337,9 @@ assert:
 
 | Target | Field | Matcher |
 |---|---|---|
-| Status | `status` | exact numeric match |
-| Headers | `headers[]` | `name` + `equals` / `contains` / `regex` / `exists` |
-| Body (JSONPath) | `body[]` | `path` + `exists` / `equals` / `contains` / `regex` |
+| Status | `status` | a number (exact), an array of numbers (any of), or `"2xx"` (class `1xx`-`5xx`) |
+| Headers | `headers[]` | `name` + `equals` / `contains` / `regex` / `exists` + the comparison matchers below |
+| Body (JSONPath) | `body[]` | `path` + `exists` / `equals` / `contains` / `regex` + the comparison matchers below |
 | Body (raw text) | `bodyText` | `equals` / `contains` / `regex` |
 | Body (JSON Schema) | `bodySchema` | a JSON Schema object |
 | Duration | `duration` | `maxMs` |
@@ -335,7 +348,16 @@ assert:
 | WS message count | `messageCount` | `min` / `max` / `equals` |
 | WS message | `messages[]` | `index?` + `path?` + the matchers above |
 
-Common semantics for `events` / `messages`:
+Comparison matchers (`headers[]` and `body[]` only; each produces its own result and fails when the value does not exist):
+
+| Matcher | Passes when |
+|---|---|
+| `gt` / `gte` / `lt` / `lte` | the value is a number satisfying the comparison. In `body[]` a numeric string such as `"7"` does **not** count as a number; header values are always strings, so a numeric string is compared as a number there (a non-numeric header fails) |
+| `length` | a string or array has exactly this length (number), or a length within `{min, max}` (inclusive, either bound optional). Objects and other types fail |
+| `type` | the JSON type is `string` / `number` / `integer` / `boolean` / `null` / `array` / `object` (`number` also accepts integers) |
+| `oneOf` | the value structurally equals any element of the array (objects and arrays included) |
+
+Common semantics for `events` / `messages` (they accept `exists` / `equals` / `contains` / `regex` only):
 
 - When `index` is given: evaluated against the received data at that index
 - When `index` is omitted: **passes if any received data item matches**

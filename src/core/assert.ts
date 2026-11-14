@@ -31,7 +31,7 @@ const ajv = new Ajv2020({ allErrors: true, strict: false });
  * いずれも可用性(評価のハングアップ)にのみ影響する既知のリスクとして許容している
  * (docs/guide/flow-definition.md の regex 節を参照)。
  */
-function compileUserRegex(pattern: string): RegExp {
+export function compileUserRegex(pattern: string): RegExp {
   return new RegExp(pattern);
 }
 
@@ -88,6 +88,45 @@ interface MatchOptions {
   contains?: string | undefined;
   regex?: string | undefined;
   exists?: boolean | undefined;
+  gt?: number | undefined;
+  gte?: number | undefined;
+  lt?: number | undefined;
+  lte?: number | undefined;
+  length?: number | { min?: number | undefined; max?: number | undefined } | undefined;
+  type?: JsonTypeName | undefined;
+  oneOf?: unknown[] | undefined;
+}
+
+type JsonTypeName = "string" | "number" | "integer" | "boolean" | "null" | "array" | "object";
+
+/** 値の JSON 型名(integer は number の部分集合として type: number にも一致させる) */
+function matchesJsonType(value: unknown, type: JsonTypeName): boolean {
+  switch (type) {
+    case "string":
+      return typeof value === "string";
+    case "number":
+      return typeof value === "number" && Number.isFinite(value);
+    case "integer":
+      return typeof value === "number" && Number.isInteger(value);
+    case "boolean":
+      return typeof value === "boolean";
+    case "null":
+      return value === null;
+    case "array":
+      return Array.isArray(value);
+    case "object":
+      return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+}
+
+/** 数値比較の対象値。header は常に文字列なので numericStrings 指定時だけ数値文字列を数値として扱う */
+function numericValue(value: unknown, numericStrings: boolean): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (numericStrings && typeof value === "string" && value.trim() !== "") {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
 }
 
 /** 構造的な等価比較(JSON 値用) */
@@ -133,6 +172,8 @@ function pushMatchResults(
    * 要素ループのように同一 def を何度も評価する呼び出し元だけが、ループの外でコンパイルして渡す)。
    */
   precompiledRegex?: RegExp,
+  /** header のように値が常に文字列になる対象で、gt/gte/lt/lte に数値文字列を許す */
+  numericStrings = false,
 ): void {
   if (matchers.exists !== undefined) {
     const ok = resolvedExists === matchers.exists;
@@ -185,15 +226,104 @@ function pushMatchResults(
         : `${subject}: expected to match /${matchers.regex}/ but got "${actualStr}"`,
     });
   }
+  const comparisons = [
+    ["gt", matchers.gt, (a: number, b: number) => a > b, ">"],
+    ["gte", matchers.gte, (a: number, b: number) => a >= b, ">="],
+    ["lt", matchers.lt, (a: number, b: number) => a < b, "<"],
+    ["lte", matchers.lte, (a: number, b: number) => a <= b, "<="],
+  ] as const;
+  for (const [key, limit, compare, symbol] of comparisons) {
+    if (limit === undefined) continue;
+    const actual = numericValue(resolvedValue, numericStrings);
+    const ok = resolvedExists && actual !== undefined && compare(actual, limit);
+    results.push({
+      ok,
+      kind: `${kindPrefix}.${key}`,
+      expected: limit,
+      actual: resolvedValue,
+      message: ok
+        ? `${subject} ${actual} ${symbol} ${limit}`
+        : `${subject}: expected a number ${symbol} ${limit} but got ${JSON.stringify(resolvedValue)}`,
+    });
+  }
+  if (matchers.length !== undefined) {
+    const range =
+      typeof matchers.length === "number"
+        ? { min: matchers.length, max: matchers.length }
+        : matchers.length;
+    const size =
+      typeof resolvedValue === "string" || Array.isArray(resolvedValue)
+        ? resolvedValue.length
+        : undefined;
+    const ok =
+      resolvedExists &&
+      size !== undefined &&
+      (range.min === undefined || size >= range.min) &&
+      (range.max === undefined || size <= range.max);
+    const expectedText =
+      typeof matchers.length === "number" ? `${matchers.length}` : JSON.stringify(matchers.length);
+    results.push({
+      ok,
+      kind: `${kindPrefix}.length`,
+      expected: matchers.length,
+      actual: size,
+      message: ok
+        ? `${subject} length ${size} matches ${expectedText}`
+        : size === undefined
+          ? `${subject}: length applies to strings and arrays but the value is ${describeType(resolvedExists, resolvedValue)}`
+          : `${subject}: expected length ${expectedText} but got ${size}`,
+    });
+  }
+  if (matchers.type !== undefined) {
+    const ok = resolvedExists && matchesJsonType(resolvedValue, matchers.type);
+    results.push({
+      ok,
+      kind: `${kindPrefix}.type`,
+      expected: matchers.type,
+      actual: describeType(resolvedExists, resolvedValue),
+      message: ok
+        ? `${subject} is ${matchers.type}`
+        : `${subject}: expected type ${matchers.type} but got ${describeType(resolvedExists, resolvedValue)}`,
+    });
+  }
+  if (matchers.oneOf !== undefined) {
+    const ok =
+      resolvedExists && matchers.oneOf.some((candidate) => deepEqual(resolvedValue, candidate));
+    results.push({
+      ok,
+      kind: `${kindPrefix}.oneOf`,
+      expected: matchers.oneOf,
+      actual: resolvedValue,
+      message: ok
+        ? `${subject} is one of the expected values`
+        : `${subject}: expected one of ${JSON.stringify(matchers.oneOf)} but got ${JSON.stringify(resolvedValue)}`,
+    });
+  }
+}
+
+/** メッセージ用の型名(存在しない値は "missing") */
+function describeType(exists: boolean, value: unknown): string {
+  if (!exists) return "missing";
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/** status の期待値(数値 / 数値の配列 / "2xx" 形式)に実際のステータスが合うか */
+function statusMatches(expected: number | number[] | string, actual: number): boolean {
+  if (typeof expected === "number") return actual === expected;
+  if (Array.isArray(expected)) return expected.includes(actual);
+  return Math.floor(actual / 100) === Number(expected[0]);
 }
 
 /** status アサーション */
 export function assertStatus(
-  expected: number | undefined,
+  expected: number | number[] | string | undefined,
   actualStatus: number,
 ): AssertionResult[] {
   if (expected === undefined) return [];
-  const ok = actualStatus === expected;
+  const ok = statusMatches(expected, actualStatus);
+  const expectedText = Array.isArray(expected) ? `one of [${expected.join(", ")}]` : `${expected}`;
   return [
     {
       ok,
@@ -202,7 +332,7 @@ export function assertStatus(
       actual: actualStatus,
       message: ok
         ? `status is ${actualStatus}`
-        : `expected status ${expected} but got ${actualStatus}`,
+        : `expected status ${expectedText} but got ${actualStatus}`,
     },
   ];
 }
@@ -218,7 +348,16 @@ export function assertHeaders(
   for (const def of defs) {
     const value = lowerHeaders.get(def.name.toLowerCase());
     const exists = value !== undefined;
-    pushMatchResults(results, "header", `header "${def.name}"`, def, exists, value);
+    pushMatchResults(
+      results,
+      "header",
+      `header "${def.name}"`,
+      def,
+      exists,
+      value,
+      undefined,
+      true,
+    );
   }
   return results;
 }
