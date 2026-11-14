@@ -93,7 +93,7 @@ steps:
 
 ### Optional (not implemented for now)
 
-- gRPC, mock server, load testing
+- gRPC, load testing (the mock server is implemented as `klaus mock`)
 
 ## Constraints for the future localhost UI (to be honored in the current phase)
 

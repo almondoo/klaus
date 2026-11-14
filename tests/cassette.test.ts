@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, rm, stat } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -6,6 +6,7 @@ import {
   type CassetteEntry,
   cassetteEntryToHttpResponse,
   cassetteFilePath,
+  loadCassetteEntries,
   loadCassetteIndex,
 } from "../src/core/cassette.js";
 import { RuntimeError } from "../src/core/errors.js";
@@ -112,5 +113,46 @@ describe("cassetteEntryToHttpResponse", () => {
       baseEntry({ headers: { "content-type": "text/plain" }, bodyText: "plain text" }),
     );
     expect(response.body).toBe("plain text");
+  });
+});
+
+describe("loadCassetteEntries", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let dir: string;
+
+  const entry: CassetteEntry = {
+    v: 1,
+    method: "GET",
+    url: "http://example.com/ok",
+    status: 200,
+    headers: {},
+    bodyText: "{}",
+  };
+
+  beforeEach(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    dir = await mkdtemp(join(tmpRoot, "klaus-cassette-"));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("同一キーの重複行も含めて記録順に全エントリを返す", async () => {
+    await appendCassetteEntry(dir, entry);
+    await appendCassetteEntry(dir, { ...entry, bodyText: "second" });
+
+    const entries = await loadCassetteEntries(dir);
+    expect(entries.map((e) => e.bodyText)).toEqual(["{}", "second"]);
+  });
+
+  it("ファイルが無い・JSON として壊れている・エントリの形でない場合は RuntimeError を投げる", async () => {
+    await expect(loadCassetteEntries(dir)).rejects.toThrow(RuntimeError);
+
+    await writeFile(cassetteFilePath(dir), "{not json\n", "utf-8");
+    await expect(loadCassetteEntries(dir)).rejects.toThrow(/line 1 is not valid JSON/);
+
+    await writeFile(cassetteFilePath(dir), '{"v":1}\n', "utf-8");
+    await expect(loadCassetteEntries(dir)).rejects.toThrow(/not a cassette entry/);
   });
 });

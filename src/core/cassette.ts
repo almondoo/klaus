@@ -94,6 +94,58 @@ export async function loadCassetteIndex(dir: string): Promise<Map<string, Casset
 }
 
 /**
+ * カセットファイルの全エントリを記録順のまま読み込む(mock サーバー用)。
+ * loadCassetteIndex と異なり同一キーの重複行も残す(--sequence で記録順に返すため)。
+ * ファイルが読めない・JSON として壊れている・エントリとして不正な行がある場合は RuntimeError にする。
+ */
+export async function loadCassetteEntries(dir: string): Promise<CassetteEntry[]> {
+  const filePath = cassetteFilePath(dir);
+  let raw: string;
+  try {
+    raw = await readFile(filePath, "utf-8");
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new RuntimeError(
+      `failed to read cassette file "${filePath}": ${detail}. Record a cassette first with --record.`,
+    );
+  }
+
+  const entries: CassetteEntry[] = [];
+  const lines = raw.split("\n");
+  for (const [i, line] of lines.entries()) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      throw new RuntimeError(`invalid cassette "${filePath}": line ${i + 1} is not valid JSON`);
+    }
+    if (!isCassetteEntry(parsed)) {
+      throw new RuntimeError(
+        `invalid cassette "${filePath}": line ${i + 1} is not a cassette entry (method, url, status, headers, bodyText)`,
+      );
+    }
+    entries.push(parsed);
+  }
+  return entries;
+}
+
+/** 1行分の JSON が CassetteEntry の形をしているか(mock が参照するフィールドのみ)を判定する */
+function isCassetteEntry(value: unknown): value is CassetteEntry {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.method === "string" &&
+    typeof v.url === "string" &&
+    typeof v.status === "number" &&
+    typeof v.headers === "object" &&
+    v.headers !== null &&
+    typeof v.bodyText === "string"
+  );
+}
+
+/**
  * replay モードで、method + URL(現時点で判明している secrets でマスクしたもの)からカセットのエントリを探す。
  * 記録側の URL は record 時点でマスク済みで保存されているため、再生側もレンダリング済み URL に
  * 同じマスキングを適用してからキー比較する(secrets が同じ env から解決される前提)。

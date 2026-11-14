@@ -49,6 +49,44 @@ Even in record/replay mode, writes to `.klaus/history/*.jsonl` still happen as u
 - **Verification inside a network-isolated sandbox**: when a CI or agent execution environment has no network access, you can record a cassette ahead of time (locally or in another environment) and then `--replay` it to still validate request/assertion logic.
 - **Avoiding re-running destructive APIs**: for APIs with side effects on every call (payments, sending emails, deleting resources), record once and then `--replay` the same responses afterward, keeping calls with real side effects to a minimum.
 
+## Mock server
+
+`klaus mock <dir>` starts a local HTTP server that serves the responses recorded in `<dir>/cassette.jsonl`, so another client (a frontend, a script, another tool) can talk to `localhost` instead of the real API. It never forwards anything to the network.
+
+```bash
+klaus run api/create-user.yaml --record ./cassettes
+klaus mock ./cassettes --port 4885
+# klaus mock started: http://127.0.0.1:4885
+curl http://127.0.0.1:4885/users/1
+```
+
+The listening URL is printed to stdout; per-request logs go to stderr. Stop it with Ctrl+C (SIGINT / SIGTERM); it then exits with code 0. Other exit codes: **2** if the cassette is missing, invalid, or empty, or `--origin` matches no recorded entry; **1** for an invalid option value (for example `--port 99999` or a malformed `--origin`), the port being in use, or any other runtime failure.
+
+| Option | Description |
+|---|---|
+| `-p, --port <n>` | Port to listen on. Default `4885` (the UI uses 4884). `0` picks a free port |
+| `-H, --host <host>` | Address to bind. Default `127.0.0.1`; pass `0.0.0.0` explicitly to accept outside connections |
+| `--cors` | Add permissive CORS headers and answer preflight (`OPTIONS` with `Access-Control-Request-Method`). Off by default |
+| `--delay <ms>` | Add a fixed latency to every response |
+| `--ignore-query` | Match on method and path only |
+| `--sequence` | Serve repeated recordings of the same request in recorded order, repeating the last one when exhausted |
+| `--origin <url>` | Serve only entries recorded for this origin (for example `http://api.example.com`) |
+| `--json` | Print the startup line (stdout) and request logs (stderr) as JSON Lines |
+
+### Mock matching rule
+
+The mock matches on **method + path + query**. The recorded host is dropped, because the client now talks to localhost (this differs from replay, which matches the full URL).
+
+- The query string is compared exactly first. If nothing matches, it is compared again with the query parameters in any order.
+- If several recorded entries share the same key, the first one is served every time (same as replay). With `--sequence` they are served in recorded order and the last one repeats.
+- If the cassette holds more than one origin, all of them are merged. When two origins record the same method + path + query, the first one in the cassette wins and a warning listing the collisions is printed at startup. Use `--origin` to pick one origin.
+- The request target is read as a path: `//host/path` is not treated as a host, an absolute-form target (`GET http://host/path`) uses its path and query, and any other form (`*`, `CONNECT`) is refused with `400` / `405`.
+- A request with no match gets a `404` with a small JSON body (`error`, `method`, `path`, and `closest` recorded paths; recorded bodies are never included), and a log line.
+
+### Mock responses
+
+The recorded status, headers, and body are served as stored. `content-length` is recomputed, and headers that would be wrong when re-served (`transfer-encoding`, `content-encoding`, `connection`, `keep-alive`, and other hop-by-hop headers) are dropped. Bodyless responses follow HTTP: a recorded 1xx, 204, or 304 is sent without a body or `content-length`, and a `HEAD` request gets the headers (with the `content-length` of the corresponding GET) but no body. Recorded `access-control-*` headers are always dropped, since the recorded origin's CORS policy does not apply to the mock; with `--cors` the mock adds its own permissive set instead. Because recording masks secrets, any secret in a recorded body or header is served as `***`; the mock does not restore it.
+
 ## Example
 
 ```bash
