@@ -5,6 +5,19 @@ The current spec lives in the respective references ([CLI](../../guide/cli.md) /
 
 0.2.0 through 0.14.4 were reconstructed after the fact from the git history (taking the `chore: vX.Y.Z` version-bump commits as boundaries: everything between the previous bump and a given bump belongs to that version). Only user-visible changes (feat / fix) are summarized, briefly; internal refactors, tests, and dependency-update details are left out.
 
+## 0.28.1
+
+Hardened snapshots and OpenAPI validation (a response to an adversarial review).
+
+- Snapshots: the OpenAPI check now runs first, and a response that failed it is never recorded as a baseline. If another assertion of the same step failed, neither `-u` nor `klaus snapshot accept` (new failure kind `failed-step`) records it. The `snapshot list --json` items gain `otherAssertionsFailed`. A history candidate is validated with the same shape as a baseline entry (`corrupt`), and a baseline or response nested deeper than 200 levels no longer crashes: exit 2 for a baseline, a failed snapshot assertion for a response
+- Unambiguous keys: the name of a step with `assert.snapshot` cannot contain ` :: ` or end with ` #<number>` (a definition error, exit 2). Duplicate keys are also a definition error
+- File safety: a FIFO or device at the baseline path no longer hangs the run (lstat, regular-file check, non-blocking open). A symbolic link anywhere from the flow directory down to the baseline is refused for reads and writes, and so is a `__snapshots__` below a hidden directory such as `.git/`. Error messages no longer print absolute paths outside the current directory
+- Concurrent writes: a baseline is written under a lock file, re-reading the file just before writing, so runs that write different keys to the same file no longer lose each other's keys. It is now documented that runs started from the UI do not read `CI` (only `klaus run` does)
+- OpenAPI: schema validation runs in a worker thread with a 3-second budget per response (a `pattern` such as `^(a+)+$` can no longer hang the run; on timeout the response is `skipped` with a warning, and a failure under `--openapi-strict`). The worker ships as `dist/openapi-worker.js` (added to `files`, no new dependency). `OpenApiValidator.check()` is now async, and `close()` and `validationTimeoutMs` were added
+- OpenAPI: YAML is parsed without emitting warnings (a warning can include a line of a referenced file; the same applies to every `yaml` parse in the repository). A `$ref` target must stay inside the directory of the document (judged by real path), and is refused with one message that does not distinguish a missing file from a forbidden one. A schema with an unresolved `$ref`, a cycle without a body, or `$dynamicRef` is `skipped` rather than `valid` (a failure under `--openapi-strict`)
+- OpenAPI: a server variable whose default contains `/` matches several segments. YAML merge keys, a required `writeOnly` property inside an `allOf` branch, `nullable` in 3.1, an empty body against a declared body, `.` / `..` segments, and deep bodies against recursive schemas (no `RangeError`) are handled correctly. `--openapi-coverage-min` accepts only a decimal 0-100 (`0x10` and the like are refused)
+- Decisions: (1) the time budget is implemented by running the bundled Ajv in a worker, because a synchronous regular expression cannot be interrupted. A schema that timed out is never evaluated again in that run. (2) The lock gives up after 10 seconds, and a lock older than 30 seconds is ignored. (3) `nullable` in 3.1 is not converted but warned about, since it is not a 3.1 keyword
+
 ## 0.28.0
 
 Added OpenAPI response validation and coverage (`klaus run --openapi`). Without changing any flow, every HTTP response is checked against an OpenAPI 3.0 / 3.1 document, and the run reports which operations it exercised.

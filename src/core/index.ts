@@ -258,3 +258,4 @@ export type { WsConnectOptions, WsConnectResult } from "./ws.js";
  * 判定が効くのは runFlow / runFlows / runLoadedFlows / executeFlow / executeSingleRequest 経由の実行のみ。
  */
 export { connectWebSocket } from "./ws.js";
+export { parseYamlQuietly } from "./yaml-quiet.js";

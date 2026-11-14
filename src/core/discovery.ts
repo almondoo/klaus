@@ -6,7 +6,7 @@
 import type { Dirent } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { parse as parseYaml } from "yaml";
+import { parseYamlQuietly } from "./yaml-quiet.js";
 
 /** 再帰走査時に除外するディレクトリ名 */
 export const EXCLUDED_DISCOVERY_DIRS = new Set([
@@ -82,7 +82,7 @@ export async function discoverFlowCandidatesWithRaw(dir: string): Promise<FlowCa
 
       let raw: unknown;
       try {
-        raw = parseYaml(content);
+        raw = parseYamlQuietly(content);
       } catch {
         return undefined;
       }

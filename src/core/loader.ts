@@ -1,13 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import {
-  type Document,
-  isNode,
-  LineCounter,
-  parseDocument,
-  parse as parseYaml,
-  YAMLParseError,
-} from "yaml";
+import { type Document, isNode, LineCounter, parseDocument, YAMLParseError } from "yaml";
 import { ZodError } from "zod";
 import { ParseError } from "./errors.js";
 import { isPathWithinDir, isRealPathWithinDir } from "./path-guard.js";
@@ -19,6 +12,8 @@ import {
   flowSchema,
   type Step,
 } from "./schema.js";
+import { findSnapshotKeyProblem } from "./snapshot.js";
+import { parseYamlQuietly } from "./yaml-quiet.js";
 
 /** zod のエラーを人間可読な1行にまとめる */
 export function formatZodError(error: ZodError): string {
@@ -242,6 +237,15 @@ export async function validateFlowFile(filePath: string): Promise<FlowValidation
   const absolutePath = resolve(filePath);
   try {
     const flow = await materializeFlow(result.flow, absolutePath, new Set([absolutePath]));
+    const keyProblem = findSnapshotKeyProblem(flow);
+    if (keyProblem !== undefined) {
+      return {
+        valid: false,
+        errors: [
+          { path: `steps[${keyProblem.stepIndex}].assert.snapshot`, message: keyProblem.message },
+        ],
+      };
+    }
     return { valid: true, flow };
   } catch (error) {
     if (error instanceof UseResolutionError) {
@@ -263,7 +267,7 @@ export async function validateFlowFile(filePath: string): Promise<FlowValidation
 /** フロー定義 YAML の文字列を検証済みの Flow に変換する */
 export function parseFlowYaml(content: string, filePath?: string): Flow {
   try {
-    const raw: unknown = parseYaml(content);
+    const raw: unknown = parseYamlQuietly(content);
     return flowSchema.parse(raw);
   } catch (error) {
     throw toParseError(error, filePath);
@@ -273,7 +277,7 @@ export function parseFlowYaml(content: string, filePath?: string): Flow {
 /** 環境ファイル YAML の文字列を検証済みの Environment に変換する */
 export function parseEnvironmentYaml(content: string, filePath?: string): Environment {
   try {
-    const raw: unknown = parseYaml(content);
+    const raw: unknown = parseYamlQuietly(content);
     return environmentSchema.parse(raw);
   } catch (error) {
     throw toParseError(error, filePath);
@@ -533,7 +537,10 @@ export async function loadFlow(filePath: string): Promise<Flow> {
 
   const absolutePath = resolve(filePath);
   try {
-    return await materializeFlow(flow, absolutePath, new Set([absolutePath]));
+    const materialized = await materializeFlow(flow, absolutePath, new Set([absolutePath]));
+    const keyProblem = findSnapshotKeyProblem(materialized);
+    if (keyProblem !== undefined) throw new ParseError(keyProblem.message, filePath);
+    return materialized;
   } catch (error) {
     if (error instanceof UseResolutionError) {
       throw new ParseError(error.message, filePath);

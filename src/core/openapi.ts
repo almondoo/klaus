@@ -11,12 +11,14 @@
  *   format の扱いは docs/guide/cli.md を参照)。スキーマのコンパイルはオペレーションごとに遅延させ、実行中は使い回す
  * - core は CLI / server に依存しない。環境変数も読まない
  */
+import { existsSync } from "node:fs";
 import { readFile, realpath, stat } from "node:fs/promises";
-import { dirname, extname, resolve } from "node:path";
-import Ajv2020 from "ajv/dist/2020";
-import { parse as parseYaml } from "yaml";
+import { dirname, extname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 import { ParseError } from "./errors.js";
-import { toDisplayPath } from "./path-guard.js";
+import { exceedsDepth } from "./json-diff.js";
+import { isPathWithinDir, toDisplayPath } from "./path-guard.js";
 import type {
   AssertionResult,
   OpenApiAssertionDetail,
@@ -24,6 +26,7 @@ import type {
   OpenApiState,
   OpenApiViolation,
 } from "./types.js";
+import { parseYamlQuietly } from "./yaml-quiet.js";
 
 /** 1 ファイルの最大サイズ(バイト) */
 const MAX_FILE_BYTES = 8 * 1024 * 1024;
@@ -49,6 +52,10 @@ const MESSAGE_VIOLATIONS = 3;
 const MAX_SUMMARY_ROWS = 1000;
 /** 警告の最大数 */
 const MAX_WARNINGS = 50;
+/** 検証する応答本文の最大の入れ子の深さ(再帰するスキーマに深い本文を与えられてもスタックを使い切らないため) */
+const MAX_BODY_DEPTH = 400;
+/** 1 回の応答の検証に許す時間(ms)の既定値。超えたらワーカーごと破棄してその検証を諦める */
+export const DEFAULT_VALIDATION_TIMEOUT_MS = 3000;
 
 const SPEC_EXTENSIONS = new Set([".yaml", ".yml", ".json"]);
 const HTTP_METHODS = ["get", "put", "post", "delete", "options", "head", "patch", "trace"] as const;
@@ -186,9 +193,12 @@ class SpecFiles {
   private readonly aliases = new Map<string, string>();
   readonly warnings: string[] = [];
   readonly rootPath: string;
+  /** $ref で辿ってよい範囲(ルートの文書があるディレクトリの実パス) */
+  private readonly rootDir: string;
 
   private constructor(rootPath: string) {
     this.rootPath = rootPath;
+    this.rootDir = dirname(rootPath);
   }
 
   static async load(path: string, cwd: string): Promise<SpecFiles> {
@@ -212,7 +222,7 @@ class SpecFiles {
       for (const ref of refs) {
         const target = parseRef(ref, file);
         if (target.file !== file && !specs.aliases.has(target.file)) {
-          const real = await SpecFiles.realPathOf(target.file, cwd, file);
+          const real = await SpecFiles.realPathOf(target.file, cwd, file, ref, specs.rootDir);
           specs.aliases.set(target.file, real);
           if (!specs.files.has(real)) queue.push(real);
         }
@@ -232,9 +242,38 @@ class SpecFiles {
   }
 
   /** 実パスを返す。存在しない・拡張子が YAML/JSON でないものは ParseError */
-  private static async realPathOf(path: string, cwd: string, referrer?: string): Promise<string> {
+  private static async realPathOf(
+    path: string,
+    cwd: string,
+    referrer?: string,
+    ref?: string,
+    rootDir?: string,
+  ): Promise<string> {
     const shown = toDisplayPath(cwd, path);
     const from = referrer !== undefined ? toDisplayPath(cwd, referrer) : undefined;
+    // $ref の行き先は、存在しない・ルートの文書のディレクトリの外・読めない、のどれでも同じメッセージにする
+    // (どのファイルがディスク上にあるかを、仕様を使って探れないようにするため)
+    const refused = (): ParseError =>
+      new ParseError(
+        `$ref "${ref}" cannot be resolved (the target must be an existing .yaml, .yml or .json file inside the directory of the OpenAPI document)`,
+        from,
+      );
+    if (ref !== undefined) {
+      let real: string;
+      try {
+        real = await realpath(resolve(cwd, path));
+      } catch {
+        throw refused();
+      }
+      if (
+        !SPEC_EXTENSIONS.has(extname(path).toLowerCase()) ||
+        !SPEC_EXTENSIONS.has(extname(real).toLowerCase()) ||
+        (rootDir !== undefined && !isPathWithinDir(rootDir, real))
+      ) {
+        throw refused();
+      }
+      return real;
+    }
     if (!SPEC_EXTENSIONS.has(extname(path).toLowerCase())) {
       throw new ParseError(
         `only .yaml, .yml and .json files can be used as OpenAPI documents or $ref targets: ${shown}`,
@@ -278,7 +317,10 @@ class SpecFiles {
       throw new ParseError("failed to read file", shown);
     }
     try {
-      return extname(file).toLowerCase() === ".json" ? JSON.parse(text) : parseYaml(text);
+      // YAML は警告を出さずにパースする(警告の文面に、参照先のファイルの行が入るため)。マージキー(<<)も解釈する
+      return extname(file).toLowerCase() === ".json"
+        ? JSON.parse(text)
+        : parseYamlQuietly(text, { merge: true });
     } catch (error) {
       // パーサーのメッセージには周辺の行が入るため、位置だけを伝える(参照先の内容を出さない)
       const pos = (error as { linePos?: { line: number; col: number }[] }).linePos?.[0];
@@ -367,6 +409,10 @@ class SchemaBuilder {
   private readonly defs: Record<string, unknown> = {};
   private readonly ids = new Map<string, string>();
   private readonly queue: { id: string; file: string; node: unknown }[] = [];
+  /** 変換できず「任意の値」として扱った(= 検証が弱くなった)箇所があるか */
+  degraded = false;
+  /** allOf の分岐へ $ref を展開している最中のキー(循環で展開し続けないため) */
+  private readonly inlining = new Set<string>();
 
   constructor(
     private readonly specs: SpecFiles,
@@ -374,33 +420,67 @@ class SchemaBuilder {
     private readonly warn: (message: string) => void,
   ) {}
 
+  private degrade(message: string): void {
+    this.degraded = true;
+    this.warn(message);
+  }
+
   /** ルートのスキーマ(+ 参照されるスキーマを $defs に集めたもの)を、単体で Ajv に渡せる形にして返す */
   build(node: unknown, file: string): Json | boolean {
-    const root = this.convert(node, file, 0);
+    const root = this.convert(node, file, 0, NO_NAMES);
     while (this.queue.length > 0) {
       const item = this.queue.shift() as { id: string; file: string; node: unknown };
-      this.defs[item.id] = this.convert(item.node, item.file, 0);
+      this.defs[item.id] = this.convert(item.node, item.file, 0, NO_NAMES);
     }
     if (typeof root === "boolean") return root;
     const rootDefs = isRecord(root.$defs) ? root.$defs : {};
     return { ...root, $defs: { ...rootDefs, ...this.defs } };
   }
 
-  private convert(node: unknown, file: string, depth: number): Json | boolean {
+  /**
+   * writeOnly: 親の allOf の他の分岐で writeOnly と宣言されているプロパティ名。
+   * ある分岐の required が、別の分岐の properties で writeOnly にされた名前を含むことがあるため、allOf の下へ引き継ぐ
+   */
+  private convert(
+    node: unknown,
+    file: string,
+    depth: number,
+    writeOnly: ReadonlySet<string>,
+  ): Json | boolean {
     if (depth > MAX_SCHEMA_DEPTH) throw new Error("the schema is nested too deeply");
     if (typeof node === "boolean") return node;
     if (!isRecord(node)) return {};
     if (typeof node.$ref === "string") {
       const target = this.refTo(node.$ref, file);
+      // writeOnly の名前を引き継ぐ必要がある(参照先の required がそれを含む)ときは、定義を共有せずその場に展開する
+      if (writeOnly.size > 0 && target.final !== undefined) {
+        const final = target.final;
+        if (
+          isRecord(final.node) &&
+          Array.isArray(final.node.required) &&
+          final.node.required.some((name) => typeof name === "string" && writeOnly.has(name)) &&
+          !this.inlining.has(final.key)
+        ) {
+          this.inlining.add(final.key);
+          try {
+            return this.convertKeywords(final.node, final.file, depth + 1, writeOnly);
+          } finally {
+            this.inlining.delete(final.key);
+          }
+        }
+      }
       // 3.0 では $ref の兄弟キーワードは無視される。3.1 では兄弟も有効
-      if (this.oas30) return target;
+      if (this.oas30) return target.json;
       const { $ref: _ref, ...siblings } = node;
-      return { ...this.convertKeywords(siblings, file, depth), ...target };
+      return { ...this.convertKeywords(siblings, file, depth, writeOnly), ...target.json };
     }
-    return this.convertKeywords(node, file, depth);
+    return this.convertKeywords(node, file, depth, writeOnly);
   }
 
-  private refTo(ref: string, file: string): Json {
+  private refTo(
+    ref: string,
+    file: string,
+  ): { json: Json; final?: { node: unknown; file: string; key: string } } {
     const seen = new Set<string>();
     let currentRef = ref;
     let currentFile = file;
@@ -409,8 +489,8 @@ class SchemaBuilder {
       try {
         target = parseRef(currentRef, currentFile);
       } catch {
-        this.warn(`a $ref in the schema cannot be used and is treated as "any value": ${ref}`);
-        return {};
+        this.degrade(`a $ref in the schema cannot be used and is treated as "any value": ${ref}`);
+        return { json: {} };
       }
       const targetFile = this.specs.resolveLoaded(target.file);
       const node =
@@ -418,16 +498,18 @@ class SchemaBuilder {
           ? undefined
           : getPointer(this.specs.files.get(targetFile), target.pointer);
       if (targetFile === undefined || node === undefined) {
-        this.warn(`a $ref in the schema cannot be resolved and is treated as "any value": ${ref}`);
-        return {};
+        this.degrade(
+          `a $ref in the schema cannot be resolved and is treated as "any value": ${ref}`,
+        );
+        return { json: {} };
       }
       const key = `${targetFile}#/${target.pointer.join("/")}`;
       if (isRecord(node) && typeof node.$ref === "string") {
         if (seen.has(key)) {
-          this.warn(
+          this.degrade(
             `a $ref cycle without any schema was found and is treated as "any value": ${ref}`,
           );
-          return {};
+          return { json: {} };
         }
         seen.add(key);
         currentRef = node.$ref;
@@ -441,18 +523,29 @@ class SchemaBuilder {
         this.ids.set(key, id);
         this.queue.push({ id, file: targetFile, node });
       }
-      return { $ref: `#/$defs/${id}` };
+      return { json: { $ref: `#/$defs/${id}` }, final: { node, file: targetFile, key } };
     }
-    this.warn(`a $ref chain is too long and is treated as "any value": ${ref}`);
-    return {};
+    this.degrade(`a $ref chain is too long and is treated as "any value": ${ref}`);
+    return { json: {} };
   }
 
-  private convertKeywords(node: Json, file: string, depth: number): Json {
+  private convertKeywords(
+    node: Json,
+    file: string,
+    depth: number,
+    inherited: ReadonlySet<string>,
+  ): Json {
+    // このノードの properties と、allOf の各分岐(参照先を含む)で writeOnly と宣言された名前
+    const ownWriteOnly = this.collectWriteOnly(node, file);
+    const writeOnly =
+      ownWriteOnly.size === 0 && inherited.size === 0
+        ? NO_NAMES
+        : new Set([...inherited, ...ownWriteOnly]);
     const out: Json = {};
     for (const [key, value] of Object.entries(node)) {
       if (key === "__proto__" || DROPPED_KEYS.has(key)) continue;
       if (UNSUPPORTED_KEYS.has(key)) {
-        this.warn(`the schema keyword ${key} is not supported and is ignored`);
+        this.degrade(`the schema keyword ${key} is not supported and is ignored`);
         continue;
       }
       if (
@@ -461,31 +554,40 @@ class SchemaBuilder {
       ) {
         continue;
       }
+      if (!this.oas30 && key === "nullable") {
+        // nullable は OpenAPI 3.0 のキーワードで、3.1 には無い(Ajv が独自に解釈してしまうのを避けて取り除く)
+        this.warn(
+          "the schema keyword nullable is not part of OpenAPI 3.1 and is ignored (use type: [..., null])",
+        );
+        continue;
+      }
       if (SINGLE_SCHEMA_KEYS.has(key)) {
         out[key] = Array.isArray(value)
-          ? value.map((item) => this.convert(item, file, depth + 1))
-          : this.convert(value, file, depth + 1);
+          ? value.map((item) => this.convert(item, file, depth + 1, NO_NAMES))
+          : this.convert(value, file, depth + 1, NO_NAMES);
+      } else if (key === "allOf" && Array.isArray(value)) {
+        out[key] = value.map((item) => this.convert(item, file, depth + 1, writeOnly));
       } else if (ARRAY_SCHEMA_KEYS.has(key) && Array.isArray(value)) {
-        out[key] = value.map((item) => this.convert(item, file, depth + 1));
+        out[key] = value.map((item) => this.convert(item, file, depth + 1, NO_NAMES));
       } else if (MAP_SCHEMA_KEYS.has(key) && isRecord(value)) {
         const mapped: Json = {};
         for (const [name, child] of Object.entries(value)) {
           if (name === "__proto__") continue;
-          mapped[name] = this.convert(child, file, depth + 1);
+          mapped[name] = this.convert(child, file, depth + 1, NO_NAMES);
         }
         out[key] = mapped;
       } else if (key === "dependencies" && isRecord(value)) {
         const mapped: Json = {};
         for (const [name, child] of Object.entries(value)) {
           if (name === "__proto__") continue;
-          mapped[name] = Array.isArray(child) ? child : this.convert(child, file, depth + 1);
+          mapped[name] = Array.isArray(child)
+            ? child
+            : this.convert(child, file, depth + 1, NO_NAMES);
         }
         out[key] = mapped;
       } else if (key === "required" && Array.isArray(value)) {
         // 応答では writeOnly のプロパティは返らないため、必須から外す
-        out[key] = value.filter(
-          (name) => !(typeof name === "string" && this.isWriteOnly(node, name, file)),
-        );
+        out[key] = value.filter((name) => !(typeof name === "string" && writeOnly.has(name)));
       } else {
         out[key] = value;
       }
@@ -494,11 +596,29 @@ class SchemaBuilder {
     return out;
   }
 
-  private isWriteOnly(node: Json, name: string, file: string): boolean {
+  /** node の properties と、allOf の分岐(参照先を含む。深さを限る)で writeOnly と宣言されたプロパティ名 */
+  private collectWriteOnly(node: Json, file: string, depth = 0): Set<string> {
+    const names = new Set<string>();
     const properties = node.properties;
-    if (!isRecord(properties) || !hasOwn(properties, name)) return false;
-    const resolved = this.specs.deref(properties[name], file);
-    return resolved !== undefined && isRecord(resolved.node) && resolved.node.writeOnly === true;
+    if (isRecord(properties)) {
+      for (const [name, child] of Object.entries(properties)) {
+        const resolved = this.specs.deref(child, file);
+        if (resolved !== undefined && isRecord(resolved.node) && resolved.node.writeOnly === true) {
+          names.add(name);
+        }
+      }
+    }
+    if (depth < 8 && Array.isArray(node.allOf)) {
+      for (const branch of node.allOf) {
+        const resolved = this.specs.deref(branch, file);
+        if (resolved !== undefined && isRecord(resolved.node)) {
+          for (const name of this.collectWriteOnly(resolved.node, resolved.file, depth + 1)) {
+            names.add(name);
+          }
+        }
+      }
+    }
+    return names;
   }
 
   /** 3.0 固有のキーワード(nullable / exclusiveMinimum・exclusiveMaximum の真偽値)を 2020-12 に変換する */
@@ -520,6 +640,8 @@ class SchemaBuilder {
   }
 }
 
+const NO_NAMES: ReadonlySet<string> = new Set();
+
 // ---------------------------------------------------------------------------
 // オペレーションの照合
 // ---------------------------------------------------------------------------
@@ -528,7 +650,7 @@ class SchemaBuilder {
 interface ServerPattern {
   /** サーバー URL のオリジン部(相対 URL のサーバーには無い) */
   origin?: RegExp;
-  /** サーバー URL のパス部(末尾の / は除く)。リクエストのパスの先頭に一致させる */
+  /** サーバー URL のパス部(末尾の / は除く)。リクエストのパスの先頭部分(全体)と一致させる */
   path: RegExp;
 }
 
@@ -545,19 +667,46 @@ function normalizeOrigin(origin: string): string {
     .replace(/^(http:\/\/[^/]*?):80$/, "$1");
 }
 
+/**
+ * パスの `.` / `..` セグメント(`%2e` 表記を含む)を解消する。実際に送られる URL(WHATWG URL の正規化後)に合わせるため。
+ * 例: `/users/x/../me` → `/users/me`
+ */
+function normalizeDotSegments(path: string): string {
+  const segments = path.split("/");
+  const out: string[] = [];
+  for (const [index, segment] of segments.entries()) {
+    const lower = segment.toLowerCase();
+    const last = index === segments.length - 1;
+    if (lower === "." || lower === "%2e") {
+      if (last) out.push("");
+      continue;
+    }
+    if (lower === ".." || lower === "%2e%2e" || lower === ".%2e" || lower === "%2e.") {
+      if (out.length > 1) out.pop();
+      if (last) out.push("");
+      continue;
+    }
+    out.push(segment);
+  }
+  const joined = out.join("/");
+  return joined === "" ? "/" : joined;
+}
+
 /** リクエスト URL を、照合に使う「オリジン + パス」に分ける(クエリ・フラグメント・ユーザー情報は除く) */
 function parseRequestTarget(url: string): RequestTarget {
   const full = /^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/([^/?#]*)([^?#]*)/.exec(url);
   if (full !== null) {
     const authority = (full[2] as string).replace(/^.*@/, "");
-    const path = (full[3] as string) || "/";
+    const path = normalizeDotSegments((full[3] as string) || "/");
     // ホストに未解決のテンプレート変数が残っている場合は、オリジンを判定せずパスだけで照合する
     if (authority.includes("{{")) return { path };
     return { origin: normalizeOrigin(`${(full[1] as string).toLowerCase()}://${authority}`), path };
   }
   const relative = /^(?:\{\{[^}]*\}\})?([^?#]*)/.exec(url);
   const path = relative?.[1] ?? "";
-  return { path: path === "" ? "/" : path.startsWith("/") ? path : `/${path}` };
+  return {
+    path: normalizeDotSegments(path === "" ? "/" : path.startsWith("/") ? path : `/${path}`),
+  };
 }
 
 function templateRegex(text: string, variable: (name: string) => string): string {
@@ -600,7 +749,7 @@ function buildServerPattern(server: unknown): ServerPattern | undefined {
     ...(originText !== undefined
       ? { origin: new RegExp(`^${templateRegex(originText, variable)}$`, "i") }
       : {}),
-    path: new RegExp(`^${templateRegex(trimmed, variable)}(?=/|$)`, "i"),
+    path: new RegExp(`^${templateRegex(trimmed, variable)}$`, "i"),
   };
 }
 
@@ -654,13 +803,189 @@ interface OperationEntry extends OpenApiOperation {
   matchers: SegmentMatcher[];
   servers: ServerPattern[];
   responses: Map<string, { node: unknown; file: string }>;
-  /** 応答キー + メディアタイプごとのコンパイル済み validator(コンパイルできなければ Error) */
-  validators: Map<string, Ajv2020Validate | Error>;
+  /** 応答キー + メディアタイプごとの変換済みスキーマ(変換・コンパイルできない、時間切れになったものは Error) */
+  validators: Map<string, PreparedSchema | Error>;
   owner: OpenApiDocument;
   file: string;
 }
 
-type Ajv2020Validate = ReturnType<Ajv2020["compile"]>;
+/** ワーカーに渡す、変換済みのスキーマ */
+interface PreparedSchema {
+  /** ワーカー内のコンパイル済み validator を引くキー */
+  key: string;
+  schema: Json | boolean;
+  /** 変換できず「任意の値」として扱った箇所がある(valid と断言できない) */
+  degraded: boolean;
+}
+
+let schemaKeyCounter = 0;
+
+/** ワーカーの返信のうち、違反の整形に使う Ajv のエラー */
+interface WorkerError {
+  instancePath: string;
+  keyword: string;
+  message?: string;
+  params: Record<string, unknown>;
+}
+
+type WorkerOutcome =
+  | { kind: "result"; valid: boolean; total: number; errors: WorkerError[] }
+  | { kind: "timeout" }
+  | { kind: "unavailable"; message: string }
+  | { kind: "compile-error"; message: string }
+  | { kind: "runtime-error"; message: string };
+
+/** ワーカーのスクリプト: dist では tsup が出力する openapi-worker.js、開発時(src)では openapi-worker.mjs */
+function resolveWorkerFile(): string | undefined {
+  const dir = dirname(fileURLToPath(import.meta.url));
+  for (const name of ["openapi-worker.js", "openapi-worker.mjs"]) {
+    const candidate = join(dir, name);
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+/**
+ * スキーマの検証を worker_threads のワーカー 1 つで行い、1 回ごとに時間の上限を課す。
+ * 仕様の `pattern` に破滅的な正規表現があっても、メインスレッドは止まらない: 時間切れならワーカーを破棄し(次の検証で
+ * 起動し直す)、その検証を諦める。リクエストは直列に処理する(並列実行でも、他の検証の時間を食わないため)。
+ */
+class SchemaWorker {
+  private worker: Worker | undefined;
+  private ready: Promise<void> | undefined;
+  /** 現在のワーカーに送信済みのスキーマのキー(再起動で空になる) */
+  private readonly sent = new Set<string>();
+  private chain: Promise<unknown> = Promise.resolve();
+  private nextId = 1;
+
+  constructor(private readonly timeoutMs: number) {}
+
+  validate(key: string, schema: Json | boolean, value: unknown): Promise<WorkerOutcome> {
+    const task = this.chain.then(() => this.runOne(key, schema, value));
+    this.chain = task.catch(() => undefined);
+    return task;
+  }
+
+  close(): void {
+    this.kill();
+  }
+
+  private kill(): void {
+    const worker = this.worker;
+    this.worker = undefined;
+    this.ready = undefined;
+    this.sent.clear();
+    if (worker !== undefined) void worker.terminate();
+  }
+
+  private spawn(): Promise<void> {
+    const file = resolveWorkerFile();
+    if (file === undefined) {
+      return Promise.reject(new Error("the OpenAPI validation worker script was not found"));
+    }
+    const worker = new Worker(file);
+    // 検証していない間は、プロセスの終了を妨げない
+    worker.unref();
+    this.worker = worker;
+    return new Promise<void>((resolveReady, rejectReady) => {
+      const timer = setTimeout(
+        () => rejectReady(new Error("the OpenAPI validation worker did not start in time")),
+        10_000,
+      );
+      worker.once("message", (message: { ready?: boolean }) => {
+        if (message?.ready === true) {
+          clearTimeout(timer);
+          resolveReady();
+        }
+      });
+      worker.once("error", (error) => {
+        clearTimeout(timer);
+        rejectReady(error);
+      });
+      worker.once("exit", () => {
+        clearTimeout(timer);
+        rejectReady(new Error("the OpenAPI validation worker exited"));
+      });
+    });
+  }
+
+  private async runOne(
+    key: string,
+    schema: Json | boolean,
+    value: unknown,
+  ): Promise<WorkerOutcome> {
+    try {
+      if (this.worker === undefined) this.ready = this.spawn();
+      await this.ready;
+    } catch (error) {
+      this.kill();
+      return { kind: "unavailable", message: errorText(error) };
+    }
+    const worker = this.worker as Worker;
+    return new Promise<WorkerOutcome>((resolveOutcome) => {
+      const id = this.nextId++;
+      let settled = false;
+      const finish = (outcome: WorkerOutcome): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        worker.off("message", onMessage);
+        worker.off("error", onError);
+        worker.off("exit", onExit);
+        resolveOutcome(outcome);
+      };
+      // 時間の計測は、ワーカーが起動した後(検証の依頼を送った時点)から始める
+      const timer = setTimeout(() => {
+        this.kill();
+        finish({ kind: "timeout" });
+      }, this.timeoutMs);
+      const onMessage = (reply: {
+        id?: number;
+        ok?: boolean;
+        valid?: boolean;
+        total?: number;
+        errors?: WorkerError[];
+        phase?: string;
+        error?: string;
+      }): void => {
+        if (reply.id !== id) return;
+        if (reply.ok === true) {
+          finish({
+            kind: "result",
+            valid: reply.valid === true,
+            total: reply.total ?? 0,
+            errors: reply.errors ?? [],
+          });
+        } else {
+          finish({
+            kind: reply.phase === "compile" ? "compile-error" : "runtime-error",
+            message: reply.error ?? "unknown error",
+          });
+        }
+      };
+      const onError = (error: Error): void => {
+        this.kill();
+        finish({ kind: "unavailable", message: errorText(error) });
+      };
+      const onExit = (): void => {
+        this.kill();
+        finish({
+          kind: "unavailable",
+          message: "the OpenAPI validation worker exited unexpectedly",
+        });
+      };
+      worker.on("message", onMessage);
+      worker.once("error", onError);
+      worker.once("exit", onExit);
+      try {
+        worker.postMessage({ id, key, schema: this.sent.has(key) ? undefined : schema, value });
+        this.sent.add(key);
+      } catch (error) {
+        finish({ kind: "runtime-error", message: errorText(error) });
+      }
+    });
+  }
+}
 
 /** 応答の検証に渡す入力 */
 export interface OpenApiResponseInput {
@@ -731,19 +1056,14 @@ export class OpenApiDocument {
   readonly version: string | undefined;
   readonly operations: OperationEntry[] = [];
   private readonly byMethod = new Map<string, OperationEntry[]>();
-  private readonly ajv = new Ajv2020({
-    allErrors: true,
-    strict: false,
-    validateFormats: false,
-    allowUnionTypes: true,
-    logger: false,
-  });
 
   private constructor(
     file: string,
     private readonly specs: SpecFiles,
     private readonly oas30: boolean,
     private readonly warn: (message: string) => void,
+    private readonly worker: SchemaWorker,
+    private readonly timeoutMs: number,
     info: { title?: string; version?: string },
   ) {
     this.file = file;
@@ -753,7 +1073,13 @@ export class OpenApiDocument {
 
   static async load(
     path: string,
-    options: { cwd: string; baseUrls: string[]; warn: (message: string) => void },
+    options: {
+      cwd: string;
+      baseUrls: string[];
+      warn: (message: string) => void;
+      worker: SchemaWorker;
+      timeoutMs: number;
+    },
   ): Promise<OpenApiDocument> {
     const specs = await SpecFiles.load(path, options.cwd);
     const root = specs.files.get(specs.rootPath);
@@ -777,10 +1103,18 @@ export class OpenApiDocument {
       throw new ParseError('the "paths" field is missing', shown);
     }
     const info = isRecord(root.info) ? root.info : {};
-    const document = new OpenApiDocument(shown, specs, version[1] === "0", options.warn, {
-      ...(typeof info.title === "string" ? { title: info.title } : {}),
-      ...(typeof info.version === "string" ? { version: info.version } : {}),
-    });
+    const document = new OpenApiDocument(
+      shown,
+      specs,
+      version[1] === "0",
+      options.warn,
+      options.worker,
+      options.timeoutMs,
+      {
+        ...(typeof info.title === "string" ? { title: info.title } : {}),
+        ...(typeof info.version === "string" ? { version: info.version } : {}),
+      },
+    );
     document.index(root, options.baseUrls);
     return document;
   }
@@ -858,13 +1192,18 @@ export class OpenApiDocument {
         ) {
           continue;
         }
-        const prefix = server.path.exec(target.path);
-        if (prefix === null) continue;
-        const remainder = target.path.slice(prefix[0].length) || "/";
-        const segments = splitSegments(remainder);
-        if (segments.length !== operation.matchers.length) continue;
-        if (operation.matchers.every((matcher, index) => matcher.test(segments[index] as string))) {
-          return operation;
+        // サーバーのパス部がどこまでかは、`/` を含み得る変数があるため決め打ちできない。
+        // 区切り(`/` の位置と末尾)を短い順にすべて試し、残りがパステンプレートに一致するものを採る
+        for (let end = 0; end <= target.path.length; end++) {
+          if (end < target.path.length && target.path[end] !== "/") continue;
+          if (!server.path.test(target.path.slice(0, end))) continue;
+          const segments = splitSegments(target.path.slice(end) || "/");
+          if (segments.length !== operation.matchers.length) continue;
+          if (
+            operation.matchers.every((matcher, index) => matcher.test(segments[index] as string))
+          ) {
+            return operation;
+          }
         }
       }
     }
@@ -883,7 +1222,10 @@ export class OpenApiDocument {
   }
 
   /** 応答を、オペレーションに書かれた応答の定義と照らす */
-  checkResponse(operation: OperationEntry, input: OpenApiResponseInput): CheckOutcome {
+  async checkResponse(
+    operation: OperationEntry,
+    input: OpenApiResponseInput,
+  ): Promise<CheckOutcome> {
     const found = this.findResponse(operation, input.status);
     if (found === undefined) return { state: "undocumented", violations: [] };
     const resolved = this.specs.deref(found.node, found.file);
@@ -919,6 +1261,23 @@ export class OpenApiDocument {
     let note: string | undefined;
     const content = isRecord(response.content) ? response.content : undefined;
     const declared = content !== undefined ? Object.keys(content) : [];
+    if (
+      declared.length > 0 &&
+      input.bodyText === "" &&
+      operation.method !== "HEAD" &&
+      ![204, 205, 304].includes(input.status) &&
+      declared.some((mediaKey) => {
+        const media = this.specs.deref((content as Json)[mediaKey], resolved.file);
+        return media !== undefined && isRecord(media.node) && media.node.schema !== undefined;
+      })
+    ) {
+      // 本文を宣言した応答(スキーマあり)が空の本文で返った
+      violations.push({
+        location: "body",
+        path: "",
+        message: "the response body is empty, but the specification declares a body",
+      });
+    }
     if (declared.length > 0 && input.bodyText !== "" && operation.method !== "HEAD") {
       const contentType = findHeader(input.headers, "content-type");
       if (contentType === undefined) {
@@ -935,7 +1294,7 @@ export class OpenApiDocument {
             message: `content-type "${actual}" is not declared (declared: ${declared.slice(0, 10).join(", ")})`,
           });
         } else if (isJsonMediaType(actual)) {
-          const outcome = this.checkBody(
+          const outcome = await this.checkBody(
             operation,
             found,
             resolved.file,
@@ -954,14 +1313,14 @@ export class OpenApiDocument {
     return { state: "valid", violations: [] };
   }
 
-  private checkBody(
+  private async checkBody(
     operation: OperationEntry,
     found: { key: string },
     file: string,
     content: Json,
     mediaKey: string,
     input: OpenApiResponseInput,
-  ): { violations: OpenApiViolation[]; omitted?: number; note?: string } {
+  ): Promise<{ violations: OpenApiViolation[]; omitted?: number; note?: string }> {
     const media = this.specs.deref(content[mediaKey], file);
     if (media === undefined || !isRecord(media.node) || media.node.schema === undefined) {
       return { violations: [] };
@@ -976,36 +1335,75 @@ export class OpenApiDocument {
         };
       }
     }
-    const cacheKey = `${found.key}\u0000${mediaKey}`;
-    let validator = operation.validators.get(cacheKey);
-    if (validator === undefined) {
-      try {
-        const schema = new SchemaBuilder(this.specs, this.oas30, this.warn).build(
-          media.node.schema,
-          media.file,
-        );
-        validator = this.ajv.compile(schema);
-      } catch (error) {
-        validator = new Error(errorText(error));
-        this.warn(
-          `${operation.id}: the response schema cannot be compiled and is not validated: ${errorText(error)}`,
-        );
-      }
-      operation.validators.set(cacheKey, validator);
-    }
-    if (validator instanceof Error) {
+    if (exceedsDepth(value, MAX_BODY_DEPTH)) {
       return {
         violations: [],
-        note: `the response schema cannot be compiled (${validator.message})`,
+        note: `the body is nested deeper than ${MAX_BODY_DEPTH} levels and was not validated`,
       };
     }
-    if (validator(value)) return { violations: [] };
-    // 違反は先頭の上限件数だけを整形する(総数は omitted で伝える)
-    const errors = validator.errors ?? [];
-    return {
-      violations: errors.slice(0, MAX_OPENAPI_VIOLATIONS).map(formatAjvViolation),
-      omitted: Math.max(0, errors.length - MAX_OPENAPI_VIOLATIONS),
-    };
+    const cacheKey = `${found.key}\u0000${mediaKey}`;
+    let prepared = operation.validators.get(cacheKey);
+    if (prepared === undefined) {
+      try {
+        const builder = new SchemaBuilder(this.specs, this.oas30, this.warn);
+        const schema = builder.build(media.node.schema, media.file);
+        prepared = { key: `s${schemaKeyCounter++}`, schema, degraded: builder.degraded };
+      } catch (error) {
+        prepared = new Error(errorText(error));
+        this.warn(
+          `${operation.id}: the response schema cannot be used and is not validated: ${errorText(error)}`,
+        );
+      }
+      operation.validators.set(cacheKey, prepared);
+    }
+    if (prepared instanceof Error) {
+      return {
+        violations: [],
+        note: `the response schema cannot be used (${prepared.message})`,
+      };
+    }
+    const outcome = await this.worker.validate(prepared.key, prepared.schema, value);
+    switch (outcome.kind) {
+      case "timeout": {
+        const message = `validating the body exceeded the time budget (${this.timeoutMs} ms; a pattern or schema that takes too long to evaluate?)`;
+        // 同じスキーマは以後の応答でも検証せず、実行が遅くならないようにする
+        operation.validators.set(cacheKey, new Error(message));
+        this.warn(`${operation.id}: ${message}; the response schema is not validated`);
+        return { violations: [], note: message };
+      }
+      case "unavailable":
+        this.warn(`${operation.id}: responses cannot be validated: ${outcome.message}`);
+        return {
+          violations: [],
+          note: `the validation worker is unavailable (${outcome.message})`,
+        };
+      case "compile-error":
+        operation.validators.set(cacheKey, new Error(outcome.message));
+        this.warn(
+          `${operation.id}: the response schema cannot be compiled and is not validated: ${outcome.message}`,
+        );
+        return {
+          violations: [],
+          note: `the response schema cannot be compiled (${outcome.message})`,
+        };
+      case "runtime-error":
+        return { violations: [], note: `the body could not be validated (${outcome.message})` };
+      default: {
+        if (outcome.valid) {
+          return prepared.degraded
+            ? {
+                violations: [],
+                note: "parts of the response schema could not be used and accept any value (see the warnings)",
+              }
+            : { violations: [] };
+        }
+        // 違反は先頭の上限件数だけを整形する(総数は omitted で伝える)
+        return {
+          violations: outcome.errors.slice(0, MAX_OPENAPI_VIOLATIONS).map(formatAjvViolation),
+          omitted: Math.max(0, outcome.total - MAX_OPENAPI_VIOLATIONS),
+        };
+      }
+    }
   }
 }
 
@@ -1020,6 +1418,8 @@ export interface OpenApiLoadOptions {
   baseUrl?: string | undefined;
   /** --openapi-strict: 照合できないリクエスト・仕様にない応答・検証できない応答を失敗にする */
   strict?: boolean;
+  /** 1 回の応答の本文の検証に許す時間(ms)。既定は DEFAULT_VALIDATION_TIMEOUT_MS。超えたら検証を諦める */
+  validationTimeoutMs?: number;
 }
 
 export interface OpenApiCheckInput {
@@ -1032,7 +1432,7 @@ export interface OpenApiCheckInput {
 
 /**
  * 実行全体で共有する OpenAPI の検証器。1 回の実行(--jobs による並列実行を含む)で 1 つ作る。
- * 検証はすべて同期的に行い、状態はステップの完了順に依らない形(Map / Set)で集める。
+ * スキーマの検証は(時間を区切るため)ワーカースレッドで行う。状態はステップの完了順に依らない形(Map / Set)で集める。
  */
 export class OpenApiValidator {
   readonly documents: OpenApiDocument[];
@@ -1050,6 +1450,7 @@ export class OpenApiValidator {
     documents: OpenApiDocument[],
     strict: boolean,
     private readonly warningSet: Set<string>,
+    private readonly worker: SchemaWorker,
   ) {
     this.documents = documents;
     this.strict = strict;
@@ -1061,17 +1462,31 @@ export class OpenApiValidator {
     const warn = (message: string): void => {
       if (warnings.size < MAX_WARNINGS) warnings.add(`OpenAPI: ${message}`);
     };
+    const timeoutMs = options.validationTimeoutMs ?? DEFAULT_VALIDATION_TIMEOUT_MS;
+    const worker = new SchemaWorker(timeoutMs);
     const documents: OpenApiDocument[] = [];
-    for (const path of paths) {
-      documents.push(
-        await OpenApiDocument.load(path, {
-          cwd,
-          baseUrls: options.baseUrl !== undefined ? [options.baseUrl] : [],
-          warn,
-        }),
-      );
+    try {
+      for (const path of paths) {
+        documents.push(
+          await OpenApiDocument.load(path, {
+            cwd,
+            baseUrls: options.baseUrl !== undefined ? [options.baseUrl] : [],
+            warn,
+            worker,
+            timeoutMs,
+          }),
+        );
+      }
+    } catch (error) {
+      worker.close();
+      throw error;
     }
-    return new OpenApiValidator(documents, options.strict === true, warnings);
+    return new OpenApiValidator(documents, options.strict === true, warnings, worker);
+  }
+
+  /** 検証用のワーカーを止める(実行が終わったら呼ぶ。呼ばなくてもプロセスの終了は妨げない) */
+  close(): void {
+    this.worker.close();
   }
 
   /** 読み込み時と検証中(遅延コンパイルなど)に出た警告の一覧(重複を除く) */
@@ -1115,7 +1530,7 @@ export class OpenApiValidator {
   }
 
   /** 応答を検証し、アサーション結果を返す(照合できず strict でもなければ空) */
-  check(input: OpenApiCheckInput): AssertionResult[] {
+  async check(input: OpenApiCheckInput): Promise<AssertionResult[]> {
     const found = this.match(input.method, input.url);
     if (found === undefined) {
       this.recordUnmatched(input.method, input.url);
@@ -1134,7 +1549,7 @@ export class OpenApiValidator {
     statuses.add(input.response.status);
     this.hits.set(found, statuses);
 
-    const outcome = found.owner.checkResponse(found, input.response);
+    const outcome = await found.owner.checkResponse(found, input.response);
     const base = { operation: found.id, document: found.document, status: input.response.status };
     const label = `${found.id} -> ${input.response.status}`;
     switch (outcome.state) {

@@ -90,6 +90,23 @@ export default defineConfig([
     },
   },
   {
+    // OpenAPI の応答検証用ワーカー(src/core/openapi.ts が worker_threads で起動する)。
+    // Ajv ごと 1 ファイルにバンドルし、dist/cli.js・dist/index.js・dist/server.js と同じ dist/ 直下に出力する
+    // (ワーカーは単体のスクリプトとしてしか起動できないため、他のエントリにはバンドルされない)。
+    entry: { "openapi-worker": "src/core/openapi-worker.mjs" },
+    format: ["esm"],
+    dts: false,
+    sourcemap: false,
+    clean: false,
+    target: "node22",
+    outDir: "dist",
+    noExternal,
+    shims: true,
+    banner: {
+      js: requireShim,
+    },
+  },
+  {
     // `node dist/schema-gen.js` として実行するビルド時専用スクリプト。
     // JSON Schema (dist/schema/*.json、--docs 指定時は docs/public/schema/*.json も)を書き出す
     // (package.json の build:schema スクリプト参照)。ユーザー向け CLI サブコマンドではないため

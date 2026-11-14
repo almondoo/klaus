@@ -168,14 +168,14 @@ describe("OpenApiValidator.load: 仕様の読み込み", () => {
       }),
     );
     const validator = await OpenApiValidator.load([path], { cwd: dir });
-    const ok = check(
+    const ok = await check(
       validator,
       "GET",
       "http://x/tree",
       response(200, { value: 1, children: [{ value: 2, children: [] }] }),
     );
     expect(ok[0]?.ok).toBe(true);
-    const bad = check(
+    const bad = await check(
       validator,
       "GET",
       "http://x/tree",
@@ -205,9 +205,9 @@ describe("OpenApiValidator.load: 仕様の読み込み", () => {
       ),
     );
     const validator = await OpenApiValidator.load([path], { cwd: dir });
-    expect(check(validator, "GET", "http://x/a", response(200, { any: "thing" }))[0]?.ok).toBe(
-      true,
-    );
+    expect(
+      (await check(validator, "GET", "http://x/a", response(200, { any: "thing" })))[0]?.ok,
+    ).toBe(true);
     expect(validator.warnings.some((w) => /cycle/.test(w))).toBe(true);
   });
 });
@@ -234,14 +234,14 @@ describe("オペレーションの照合", () => {
       ),
     );
     const validator = await OpenApiValidator.load([path], { cwd: dir });
-    const hit = (method: string, url: string) =>
-      check(validator, method, url, response(200, { id: 1, name: "a" })).length > 0;
-    expect(hit("GET", "https://stg.example.com/api/v2/users/7?x=1#top")).toBe(true);
-    expect(hit("get", "https://DEV.example.com/api/v1/users/7/")).toBe(true);
+    const hit = async (method: string, url: string) =>
+      (await check(validator, method, url, response(200, { id: 1, name: "a" }))).length > 0;
+    expect(await hit("GET", "https://stg.example.com/api/v2/users/7?x=1#top")).toBe(true);
+    expect(await hit("get", "https://DEV.example.com/api/v1/users/7/")).toBe(true);
     // 列挙にないホスト・別のメソッド・接頭辞の外は照合できない(strict でなければアサーションを足さない)
-    expect(hit("GET", "https://prod.example.com/api/v1/users/7")).toBe(false);
-    expect(hit("DELETE", "https://dev.example.com/api/v1/users/7")).toBe(false);
-    expect(hit("GET", "https://dev.example.com/other/users/7")).toBe(false);
+    expect(await hit("GET", "https://prod.example.com/api/v1/users/7")).toBe(false);
+    expect(await hit("DELETE", "https://dev.example.com/api/v1/users/7")).toBe(false);
+    expect(await hit("GET", "https://dev.example.com/other/users/7")).toBe(false);
     const summary = validator.summarize({ partial: false, planned: false });
     expect(summary.unmatched.map((u) => `${u.method} ${u.url}`)).toEqual([
       "DELETE https://dev.example.com/api/v1/users/7",
@@ -258,10 +258,12 @@ describe("オペレーションの照合", () => {
       ),
     );
     const validator = await OpenApiValidator.load([relative], { cwd: dir });
-    expect(check(validator, "GET", "http://anything:3000/v1/ping", response(200, ""))).toHaveLength(
-      1,
-    );
-    expect(check(validator, "GET", "http://anything:3000/ping", response(200, ""))).toHaveLength(0);
+    expect(
+      await check(validator, "GET", "http://anything:3000/v1/ping", response(200, "")),
+    ).toHaveLength(1);
+    expect(
+      await check(validator, "GET", "http://anything:3000/ping", response(200, "")),
+    ).toHaveLength(0);
 
     const absolute = await writeSpec(
       spec30(
@@ -274,12 +276,14 @@ describe("オペレーションの照合", () => {
       baseUrl: "http://localhost:4010/mock",
     });
     expect(
-      check(withBase, "GET", "http://localhost:4010/mock/ping", response(200, "")),
+      await check(withBase, "GET", "http://localhost:4010/mock/ping", response(200, "")),
     ).toHaveLength(1);
-    expect(check(withBase, "GET", "https://api.example.com/ping", response(200, ""))).toHaveLength(
-      1,
-    );
-    expect(check(withBase, "GET", "http://localhost:4010/ping", response(200, ""))).toHaveLength(0);
+    expect(
+      await check(withBase, "GET", "https://api.example.com/ping", response(200, "")),
+    ).toHaveLength(1);
+    expect(
+      await check(withBase, "GET", "http://localhost:4010/ping", response(200, "")),
+    ).toHaveLength(0);
   });
 
   it("具体的なパスをテンプレートより優先する(メソッドを持つものだけが候補)", async () => {
@@ -295,11 +299,16 @@ describe("オペレーションの照合", () => {
       }),
     );
     const validator = await OpenApiValidator.load([path], { cwd: dir });
-    const get = check(validator, "GET", "http://x/users/me", response(200, { concrete: true }));
+    const get = await check(
+      validator,
+      "GET",
+      "http://x/users/me",
+      response(200, { concrete: true }),
+    );
     expect(get[0]?.openapi?.operation).toBe("GET /users/me");
     expect(get[0]?.ok).toBe(true);
     // DELETE は具体的なパスに無いので、テンプレートのパスに照合される
-    const del = check(validator, "DELETE", "http://x/users/me", response(204, "", {}));
+    const del = await check(validator, "DELETE", "http://x/users/me", response(204, "", {}));
     expect(del[0]?.openapi?.operation).toBe("DELETE /users/{id}");
   });
 
@@ -311,9 +320,9 @@ describe("オペレーションの照合", () => {
       spec30({ "/b": { get: { responses: { "200": { description: "second" } } } } }),
     );
     const validator = await OpenApiValidator.load([first, second], { cwd: dir });
-    expect(check(validator, "GET", "http://x/b", response(200, ""))[0]?.openapi?.document).toMatch(
-      /spec-\d+\.json$/,
-    );
+    expect(
+      (await check(validator, "GET", "http://x/b", response(200, "")))[0]?.openapi?.document,
+    ).toMatch(/spec-\d+\.json$/);
     const summary = validator.summarize({ partial: false, planned: false });
     expect(summary.documents).toHaveLength(2);
     expect(summary.operations).toEqual({ total: 2, covered: 1, percent: 50 });
@@ -336,26 +345,34 @@ describe("応答の検証", () => {
       }),
     );
     const lenient = await OpenApiValidator.load([path], { cwd: dir });
-    expect(check(lenient, "GET", "http://x/r", response(200, { exact: 1 }))[0]?.ok).toBe(true);
-    expect(check(lenient, "GET", "http://x/r", response(201, { range: 1 }))[0]?.ok).toBe(true);
-    expect(check(lenient, "GET", "http://x/r", response(500, { fallback: 1 }))[0]?.ok).toBe(true);
-    expect(check(lenient, "GET", "http://x/r", response(201, { exact: 1 }))[0]?.ok).toBe(false);
+    expect((await check(lenient, "GET", "http://x/r", response(200, { exact: 1 })))[0]?.ok).toBe(
+      true,
+    );
+    expect((await check(lenient, "GET", "http://x/r", response(201, { range: 1 })))[0]?.ok).toBe(
+      true,
+    );
+    expect((await check(lenient, "GET", "http://x/r", response(500, { fallback: 1 })))[0]?.ok).toBe(
+      true,
+    );
+    expect((await check(lenient, "GET", "http://x/r", response(201, { exact: 1 })))[0]?.ok).toBe(
+      false,
+    );
 
     const noDefault = await writeSpec(
       spec30({ "/r": { get: { responses: { "200": { description: "ok" } } } } }),
     );
     const lenientNoDefault = await OpenApiValidator.load([noDefault], { cwd: dir });
-    const undocumented = check(lenientNoDefault, "GET", "http://x/r", response(418, {}));
+    const undocumented = await check(lenientNoDefault, "GET", "http://x/r", response(418, {}));
     expect(undocumented[0]).toMatchObject({
       ok: true,
       openapi: { state: "undocumented", status: 418 },
     });
     const strict = await OpenApiValidator.load([noDefault], { cwd: dir, strict: true });
-    expect(check(strict, "GET", "http://x/r", response(418, {}))[0]).toMatchObject({
+    expect((await check(strict, "GET", "http://x/r", response(418, {})))[0]).toMatchObject({
       ok: false,
       openapi: { state: "undocumented" },
     });
-    expect(check(strict, "GET", "http://x/unknown", response(200, {}))[0]).toMatchObject({
+    expect((await check(strict, "GET", "http://x/unknown", response(200, {})))[0]).toMatchObject({
       ok: false,
       openapi: { state: "unmatched" },
     });
@@ -381,25 +398,28 @@ describe("応答の検証", () => {
     );
     const validator = await OpenApiValidator.load([path], { cwd: dir });
     const json = response(200, {}, { "Content-Type": "application/json; charset=utf-8" });
-    expect(check(validator, "GET", "http://x/c", json)[0]?.ok).toBe(true);
+    expect((await check(validator, "GET", "http://x/c", json))[0]?.ok).toBe(true);
     const text = {
       status: 200,
       headers: { "content-type": "text/plain" },
       body: "hi",
       bodyText: "hi",
     };
-    expect(check(validator, "GET", "http://x/c", text)[0]?.ok).toBe(true);
+    expect((await check(validator, "GET", "http://x/c", text))[0]?.ok).toBe(true);
     const xml = {
       status: 200,
       headers: { "content-type": "application/xml" },
       body: "<a/>",
       bodyText: "<a/>",
     };
-    const bad = check(validator, "GET", "http://x/c", xml);
+    const bad = await check(validator, "GET", "http://x/c", xml);
     expect(bad[0]?.ok).toBe(false);
     expect(bad[0]?.openapi?.violations?.[0]?.location).toBe("content-type");
-    // 本文が無ければ content-type は見ない
-    expect(check(validator, "GET", "http://x/c", response(200, "", {}))[0]?.ok).toBe(true);
+    // 本文を宣言した応答(スキーマあり)が空の本文で返ったら違反。204 / 304 と HEAD は本文を持たないので対象外
+    const empty = await check(validator, "GET", "http://x/c", response(200, "", {}));
+    expect(empty[0]?.ok).toBe(false);
+    expect(empty[0]?.openapi?.violations?.[0]).toMatchObject({ location: "body", path: "" });
+    expect((await check(validator, "GET", "http://x/c", response(204, "", {})))[0]?.ok).toBe(true);
   });
 
   it("本文がスキーマに違反すると JSON Pointer つきの違反になり、値は出さない", async () => {
@@ -407,7 +427,7 @@ describe("応答の検証", () => {
       spec30({ "/users/{id}": { get: { responses: { "200": jsonResponse(userSchema) } } } }),
     );
     const validator = await OpenApiValidator.load([path], { cwd: dir });
-    const result = check(
+    const result = await check(
       validator,
       "GET",
       "http://x/users/1",
@@ -437,7 +457,7 @@ describe("応答の検証", () => {
       }),
     );
     const validator = await OpenApiValidator.load([path], { cwd: dir });
-    const result = check(
+    const result = await check(
       validator,
       "GET",
       "http://x/many",
@@ -473,14 +493,14 @@ describe("応答の検証", () => {
       }),
     );
     const validator = await OpenApiValidator.load([path], { cwd: dir });
-    const ok = check(
+    const ok = await check(
       validator,
       "GET",
       "http://x/n",
       response(200, { nick: null, kind: null, score: 0.1, when: "anything", at: "not-a-date" }),
     );
     expect(ok[0]?.ok).toBe(true);
-    const zero = check(validator, "GET", "http://x/n", response(200, { score: 0 }));
+    const zero = await check(validator, "GET", "http://x/n", response(200, { score: 0 }));
     expect(zero[0]?.ok).toBe(false);
     expect(zero[0]?.openapi?.violations?.[0]?.path).toBe("/score");
   });
@@ -508,14 +528,16 @@ describe("応答の検証", () => {
     });
     const validator = await OpenApiValidator.load([path], { cwd: dir });
     expect(
-      check(
-        validator,
-        "GET",
-        "http://x/v",
-        response(200, { maybe: null, user: { id: 1, name: "a" } }),
+      (
+        await check(
+          validator,
+          "GET",
+          "http://x/v",
+          response(200, { maybe: null, user: { id: 1, name: "a" } }),
+        )
       )[0]?.ok,
     ).toBe(true);
-    const bad = check(
+    const bad = await check(
       validator,
       "GET",
       "http://x/v",
@@ -544,8 +566,10 @@ describe("応答の検証", () => {
       }),
     );
     const validator = await OpenApiValidator.load([path], { cwd: dir });
-    expect(check(validator, "GET", "http://x/pw", response(200, { id: 1 }))[0]?.ok).toBe(true);
-    expect(check(validator, "GET", "http://x/pw", response(200, {}))[0]?.ok).toBe(false);
+    expect((await check(validator, "GET", "http://x/pw", response(200, { id: 1 })))[0]?.ok).toBe(
+      true,
+    );
+    expect((await check(validator, "GET", "http://x/pw", response(200, {})))[0]?.ok).toBe(false);
   });
 
   it("必須の応答ヘッダーが無ければ違反(大文字小文字は区別しない)", async () => {
@@ -568,9 +592,10 @@ describe("応答の検証", () => {
     );
     const validator = await OpenApiValidator.load([path], { cwd: dir });
     expect(
-      check(validator, "GET", "http://x/h", response(200, "", { "x-request-id": "1" }))[0]?.ok,
+      (await check(validator, "GET", "http://x/h", response(200, "", { "x-request-id": "1" })))[0]
+        ?.ok,
     ).toBe(true);
-    const missing = check(validator, "GET", "http://x/h", response(200, "", {}));
+    const missing = await check(validator, "GET", "http://x/h", response(200, "", {}));
     expect(missing[0]?.ok).toBe(false);
     expect(missing[0]?.openapi?.violations?.[0]).toMatchObject({
       location: "header",
@@ -599,12 +624,12 @@ describe("応答の検証", () => {
     const headers = { "content-type": "application/problem+json" };
     // 実行時は +json を JSON としてパースしないため body は文字列のまま来る
     const ok = { status: 400, headers, body: '{"title":"x"}', bodyText: '{"title":"x"}' };
-    expect(check(validator, "GET", "http://x/p", ok)[0]?.ok).toBe(true);
+    expect((await check(validator, "GET", "http://x/p", ok))[0]?.ok).toBe(true);
     const missing = { status: 400, headers, body: "{}", bodyText: "{}" };
-    expect(check(validator, "GET", "http://x/p", missing)[0]?.ok).toBe(false);
+    expect((await check(validator, "GET", "http://x/p", missing))[0]?.ok).toBe(false);
     const broken = { status: 400, headers, body: "{oops", bodyText: "{oops" };
     expect(
-      check(validator, "GET", "http://x/p", broken)[0]?.openapi?.violations?.[0]?.message,
+      (await check(validator, "GET", "http://x/p", broken))[0]?.openapi?.violations?.[0]?.message,
     ).toMatch(/not valid JSON/);
   });
 
@@ -615,11 +640,11 @@ describe("応答の検証", () => {
       }),
     );
     const validator = await OpenApiValidator.load([path], { cwd: dir });
-    const result = check(validator, "GET", "http://x/bad", response(200, {}));
+    const result = await check(validator, "GET", "http://x/bad", response(200, {}));
     expect(result[0]).toMatchObject({ ok: true, openapi: { state: "skipped" } });
     expect(validator.warnings.some((w) => /cannot be compiled/.test(w))).toBe(true);
     const strict = await OpenApiValidator.load([path], { cwd: dir, strict: true });
-    expect(check(strict, "GET", "http://x/bad", response(200, {}))[0]?.ok).toBe(false);
+    expect((await check(strict, "GET", "http://x/bad", response(200, {})))[0]?.ok).toBe(false);
   });
 });
 
@@ -636,10 +661,10 @@ describe("カバレッジの集計", () => {
       }),
     );
     const validator = await OpenApiValidator.load([path], { cwd: dir });
-    check(validator, "GET", "http://x/a", response(200, { id: 1, name: "a" }));
-    check(validator, "GET", "http://x/a", response(404, ""));
-    check(validator, "GET", "http://x/a", response(200, { id: "x" }));
-    check(validator, "GET", "http://x/b", response(200, ""));
+    await check(validator, "GET", "http://x/a", response(200, { id: 1, name: "a" }));
+    await check(validator, "GET", "http://x/a", response(404, ""));
+    await check(validator, "GET", "http://x/a", response(200, { id: "x" }));
+    await check(validator, "GET", "http://x/b", response(200, ""));
     validator.exclude("flow", "events", "sse");
     validator.exclude("flow", "events", "sse");
     const summary = validator.summarize({ partial: true, planned: false, coverageMin: 80 });

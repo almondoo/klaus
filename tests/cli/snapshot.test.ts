@@ -191,4 +191,45 @@ describe("snapshot list / accept", () => {
     expect(report.failed[0]).toMatchObject({ kind: "corrupt" });
     expect(await readFile(snapshotFile(), "utf-8")).toBe("not json");
   });
+
+  it("他のアサーションが失敗したステップの候補は、list に otherAssertionsFailed で出し、accept は failed-step で拒否する(exit 2)", async () => {
+    const failing = flow({
+      name: "snap flow",
+      steps: [
+        {
+          name: "first",
+          request: { method: "GET", url: `${baseUrl}/first` },
+          assert: { status: 500, snapshot: true },
+          continueOnError: true,
+        },
+      ],
+    });
+    const entries = [{ filePath: "snap.yaml", flow: failing }];
+    // 基準は、他のアサーションが通る状態で先に書いておく
+    await runLoadedFlows([{ filePath: "snap.yaml", flow: twoSteps() }], {
+      cwd,
+      history: false,
+      snapshots: { ci: false },
+    });
+    body = { name: "bob" };
+    const result = await runLoadedFlows(entries, { cwd, history: true, snapshots: { ci: false } });
+    const before = await readFile(snapshotFile(), "utf-8");
+
+    expect(await snapshotListCommand(result.runId, { json: true }, cwd)).toBe(0);
+    expect(JSON.parse(out.join("")).mismatches[0]).toMatchObject({
+      key: "first",
+      otherAssertionsFailed: true,
+    });
+    out.length = 0;
+    expect(await snapshotListCommand(result.runId, { text: true }, cwd)).toBe(0);
+    expect(out.join("")).toContain("cannot be accepted");
+
+    out.length = 0;
+    expect(await snapshotAcceptCommand(result.runId, { json: true }, cwd)).toBe(2);
+    expect(JSON.parse(out.join(""))).toMatchObject({
+      accepted: [],
+      failed: [{ key: "first", kind: "failed-step" }],
+    });
+    expect(await readFile(snapshotFile(), "utf-8")).toBe(before);
+  });
 });

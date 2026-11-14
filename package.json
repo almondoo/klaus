@@ -41,6 +41,7 @@
     "dist/index.js",
     "dist/index.d.ts",
     "dist/server.js",
+    "dist/openapi-worker.js",
     "dist/schema/*.json",
     "dist/ui/**/*.html",
     "dist/ui/**/*.css",

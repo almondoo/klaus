@@ -10,7 +10,6 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { parse as parseYaml } from "yaml";
 import {
   assertTrustedAncestorSource,
   type CliConfig,
@@ -18,6 +17,7 @@ import {
   type GuardOptions,
   type HttpConfig,
   ParseError,
+  parseYamlQuietly,
   resolveHttpTlsPaths,
   toParseError,
 } from "../core/index.js";
@@ -84,7 +84,7 @@ export async function loadCliConfig(cwd: string): Promise<CliConfig | undefined>
   }
 
   try {
-    const raw: unknown = parseYaml(content);
+    const raw: unknown = parseYamlQuietly(content);
     return resolveOpenApiPaths(configSchema.parse(raw), dirname(path));
   } catch (error) {
     throw toParseError(error, path);

@@ -13,10 +13,10 @@
 
 import { readFile } from "node:fs/promises";
 import { extname } from "node:path";
-import { parse as parseYaml } from "yaml";
 import { z } from "zod";
 import { ParseError } from "./errors.js";
 import { toParseError } from "./loader.js";
+import { parseYamlQuietly } from "./yaml-quiet.js";
 
 /** データファイル1行分。値はスカラー(string | number | boolean | null)のみ */
 export type DataRow = Record<string, string | number | boolean | null>;
@@ -71,7 +71,7 @@ export async function loadDataFile(filePath: string): Promise<DataRow[]> {
   }
 
   try {
-    const raw: unknown = ext === ".json" ? JSON.parse(content) : parseYaml(content);
+    const raw: unknown = ext === ".json" ? JSON.parse(content) : parseYamlQuietly(content);
     return dataFileSchema.parse(raw);
   } catch (error) {
     throw toDataParseError(error, filePath);

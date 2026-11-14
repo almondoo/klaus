@@ -1508,6 +1508,15 @@ steps:
       cliPath,
     );
     expect(strictWithoutSpec.status).toBe(1);
+    // 10 進数以外(16 進・指数・空白つき)は受け付けない
+    for (const value of ["0x10", "1e1", " 5", "-1", "5%"]) {
+      const bad = await runCli(
+        ["run", "flow.yaml", "--openapi", "openapi.json", "--openapi-coverage-min", value],
+        apiDir,
+        cliPath,
+      );
+      expect(bad.status, value).toBe(1);
+    }
     const range = await runCli(
       ["run", "flow.yaml", "--openapi", "openapi.json", "--openapi-coverage-min", "101"],
       apiDir,

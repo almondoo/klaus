@@ -228,8 +228,9 @@ program
     "--openapi-coverage-min <percent>",
     "fail the run (exit code 4) when fewer than this percentage of the OpenAPI operations were matched by a request (0-100; requires --openapi; cannot be combined with --dry-run)",
     (value: string) => {
+      // 10 進数だけを受け付ける(Number() は 0x10・1e1・空白つきの値も数にしてしまうため)
       const parsed = Number(value);
-      if (value.trim() === "" || Number.isNaN(parsed) || parsed < 0 || parsed > 100) {
+      if (!/^\d+(\.\d+)?$/.test(value) || parsed > 100) {
         throw new InvalidArgumentError(
           `invalid --openapi-coverage-min value (expected a number 0-100): ${value}`,
         );

@@ -702,6 +702,7 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   try {
     runResult = await runLoadedFlows(filteredFlows, runOptions);
   } catch (error) {
+    openapi?.close();
     // environments/*.yaml のパース・検証失敗など、loadFlow 以外から来る ParseError もここで exit 2 に丸める
     if (error instanceof ParseError) {
       process.stderr.write(`klaus: parse error: ${error.message}\n`);
@@ -709,6 +710,9 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     }
     throw error;
   }
+
+  // 検証用のワーカーは、実行が終わったら止める
+  openapi?.close();
 
   // OpenAPI: カバレッジを結果に載せる。実行中に増えた警告(遅延コンパイルなど)も含める。
   // --openapi-coverage-min を下回ったら、実行全体を failed にする(通ったステップがあっても exit 4)

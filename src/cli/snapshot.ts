@@ -52,6 +52,7 @@ function toReportItem(mismatch: SnapshotMismatch) {
     message: mismatch.message,
     differences: mismatch.differences,
     differenceCount: mismatch.differenceCount,
+    otherAssertionsFailed: mismatch.otherAssertionsFailed,
   };
 }
 
@@ -59,6 +60,9 @@ function toReportItem(mismatch: SnapshotMismatch) {
 function formatMismatchText(mismatch: SnapshotMismatch): string {
   const head = `${mismatch.state === "missing" ? "MISSING " : "MISMATCH"} ${sanitizeForTerminal(mismatch.key)} (${sanitizeForTerminal(mismatch.snapshotFile)})`;
   const lines = [head];
+  if (mismatch.otherAssertionsFailed) {
+    lines.push("    (the step's other assertions failed: this cannot be accepted)");
+  }
   for (const difference of mismatch.differences.slice(0, 5)) {
     lines.push(`    ${truncate(sanitizeForTerminal(describeSnapshotDifference(difference)))}`);
   }
@@ -101,7 +105,7 @@ export async function snapshotListCommand(
 /**
  * `klaus snapshot accept <runId> [--step <name>]` の本体。履歴に記録された(マスク済みの)応答から、
  * 承認待ちのスナップショットを基準として書き込む。--step を省略すると、その run の承認待ちすべてが対象。
- * exit code: 成功 0 / 引数不正・不明な run・承認対象なし 1 / 書き込み先として許可できない・壊れたファイル 2
+ * exit code: 成功 0 / 引数不正・不明な run・承認対象なし 1 / 書き込み先として許可できない・壊れたファイル・他のアサーションが失敗したステップの候補 2
  */
 export async function snapshotAcceptCommand(
   runId: string,
@@ -200,7 +204,7 @@ Exit codes: 0=success / 1=unknown run or no run with snapshot assertions, invali
     .addHelpText(
       "after",
       `
-Exit codes: 0=success / 1=unknown run, nothing pending to accept, invalid arguments, or unexpected error / 2=a snapshot file is corrupt or cannot be written safely
+Exit codes: 0=success / 1=unknown run, nothing pending to accept, invalid arguments, or unexpected error / 2=a snapshot file is corrupt, cannot be written safely, or the step's other assertions failed
 Review the resulting diff of the __snapshots__ files before committing.
 `,
     )

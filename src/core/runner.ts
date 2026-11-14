@@ -14,7 +14,7 @@ import {
 import { evaluateCondition } from "./condition.js";
 import type { DataRow } from "./data.js";
 import { getProtectedMode, loadEnvironment, toTemplateVariables } from "./env.js";
-import { GuardRefusalError, KlausError, RuntimeError } from "./errors.js";
+import { GuardRefusalError, KlausError, ParseError, RuntimeError } from "./errors.js";
 import {
   checkHostAllowed,
   findMethodOverrideHeader,
@@ -42,6 +42,7 @@ import type {
 import { requestSchema } from "./schema.js";
 import {
   buildSnapshotKey,
+  findSnapshotKeyProblem,
   normalizeSnapshotSpec,
   SnapshotStore,
   summarizeSnapshots,
@@ -1052,25 +1053,13 @@ async function executeStep(
       ...(droppedHeaders.length > 0 ? { droppedHeaders } : {}),
     };
 
-    // スナップショットは capture が成功した後に評価する(capture の失敗でステップが error になるとき、
-    // 基準を書き込む予約だけが残らないようにするため)
-    const snapshotAssertions = evaluateStepSnapshot(
-      assertDef,
-      step.name,
-      iteration,
-      snapshots,
-      responseSnapshot,
-      templateContext.secrets,
-      assertions.every((assertion) => assertion.ok),
-    );
-
     // OpenAPI: リダイレクトを追った応答は、最初のリクエストに対するものではないため検証せず対象外にする
     let openapiAssertions: AssertionResult[] = [];
     if (openapi !== undefined) {
       if (redirects.length > 0) {
         openapi.exclude(flowName, step.name, "redirected");
       } else {
-        openapiAssertions = openapi.check({
+        openapiAssertions = await openapi.check({
           flow: flowName,
           step: step.name,
           method,
@@ -1084,6 +1073,18 @@ async function executeStep(
         });
       }
     }
+
+    // スナップショットは capture が成功した後に評価する(capture の失敗でステップが error になるとき、
+    // 基準を書き込む予約だけが残らないようにするため)。OpenAPI の検証の後に評価し、その失敗した応答も基準にしない
+    const snapshotAssertions = evaluateStepSnapshot(
+      assertDef,
+      step.name,
+      iteration,
+      snapshots,
+      responseSnapshot,
+      templateContext.secrets,
+      [...assertions, ...openapiAssertions].every((assertion) => assertion.ok),
+    );
 
     return finish(
       requestSnapshot,
@@ -1277,6 +1278,8 @@ export async function executeFlow(
   // スナップショット: runLoadedFlows から共有のストアが渡されればそれを使い、無ければ(snapshot を使うフローに限り)
   // このフロー 1 回の実行専用のストアを作る。--replay は基準を書かない
   const usesSnapshot = flow.steps.some((step) => step.assert?.snapshot !== undefined);
+  const keyProblem = usesSnapshot ? findSnapshotKeyProblem(flow) : undefined;
+  if (keyProblem !== undefined) throw new ParseError(keyProblem.message, filePath);
   const snapshotStore =
     options.snapshotStore ??
     (usesSnapshot
@@ -1716,6 +1719,11 @@ export async function runLoadedFlows(
     ci: options.snapshots?.ci === true,
     readOnly: options.recording?.mode === "replay",
   });
+  // キーが曖昧・重複するフローは、何も実行する前に定義エラー(exit 2)にする
+  for (const { filePath, flow } of entries) {
+    const keyProblem = findSnapshotKeyProblem(flow);
+    if (keyProblem !== undefined) throw new ParseError(keyProblem.message, filePath);
+  }
   for (const warning of await snapshotStore.preload(
     entries.map(({ filePath, flow }) => ({
       filePath,

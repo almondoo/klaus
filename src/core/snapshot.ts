@@ -10,8 +10,8 @@
  *
  * core の依存方向を保つため、CLI・server のどちらにも依存しない。
  */
-import { constants } from "node:fs";
-import { mkdir, open, realpath, rename, unlink } from "node:fs/promises";
+import { constants, lstatSync } from "node:fs";
+import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { GuardRefusalError, ParseError } from "./errors.js";
 import type { HistoryEntry } from "./history.js";
@@ -30,7 +30,7 @@ import {
   isRealPathWithinDir,
 } from "./path-guard.js";
 import { selectRunEntries } from "./run-diff.js";
-import type { SnapshotAssertionDef } from "./schema.js";
+import type { Flow, SnapshotAssertionDef } from "./schema.js";
 import type {
   AssertionResult,
   FlowResult,
@@ -101,6 +101,37 @@ export function buildSnapshotKey(
   name: string | undefined,
 ): string {
   return `${stepName}${iteration !== undefined ? ` #${iteration}` : ""}${name !== undefined ? ` :: ${name}` : ""}`;
+}
+
+/**
+ * フローの snapshot のキーが、曖昧でなく一意かを検査する。問題があればメッセージを返す(無ければ undefined)。
+ * キーは `<ステップ名>[ #<反復番号>][ :: <name>]` なので、ステップ名が ` :: ` を含む、または ` #<数字>` で終わると、
+ * 別のステップ・反復・name と同じキーになり得る。そうしたステップ名と、同じキーになる複数のステップを定義エラーにする。
+ */
+export function findSnapshotKeyProblem(
+  flow: Pick<Flow, "steps">,
+): { stepIndex: number; message: string } | undefined {
+  const seen = new Map<string, number>();
+  for (const [index, step] of flow.steps.entries()) {
+    const def = step.assert?.snapshot;
+    if (def === undefined) continue;
+    if (step.name.includes(" :: ") || /\s#\d+$/.test(step.name)) {
+      return {
+        stepIndex: index,
+        message: `step "${step.name}" has assert.snapshot, so its name must not contain " :: " or end with " #<number>" (they are used to build the snapshot key)`,
+      };
+    }
+    const key = buildSnapshotKey(step.name, undefined, normalizeSnapshotSpec(def).name);
+    const first = seen.get(key);
+    if (first !== undefined) {
+      return {
+        stepIndex: index,
+        message: `steps ${first + 1} and ${index + 1} would use the same snapshot key "${key}"; give one of them a different step name or snapshot name`,
+      };
+    }
+    seen.set(key, index);
+  }
+  return undefined;
 }
 
 /** フローファイルに対応するスナップショットファイルの絶対パス */
@@ -272,15 +303,30 @@ function toSnapshotEntry(value: unknown): SnapshotEntry | undefined {
     }
     entry.headers = result;
   }
-  if ("body" in value) entry.body = value.body;
+  if ("body" in value) {
+    // 深すぎる本文は(整形・比較の再帰で落ちないよう)基準として受け付けない
+    if (exceedsDepth(value.body, MAX_SNAPSHOT_DEPTH)) return undefined;
+    entry.body = value.body;
+  }
   return entry;
 }
 
 /** O_NOFOLLOW でファイルを開いて全体を読む(最終要素がシンボリックリンクなら失敗する) */
-async function readFileNoFollow(path: string, maxBytes: number): Promise<string | "too-large"> {
-  const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+async function readFileNoFollow(
+  path: string,
+  maxBytes: number,
+): Promise<string | "too-large" | "not-regular"> {
+  // 名前付きパイプ・デバイスを blocking で開くと実行が止まるため、先に lstat し、O_NONBLOCK で開いて fstat でも確かめる
+  const before = await lstat(path);
+  if (!before.isFile()) return "not-regular";
+  const handle = await open(
+    path,
+    constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+  );
   try {
-    const { size } = await handle.stat();
+    const info = await handle.stat();
+    if (!info.isFile()) return "not-regular";
+    const { size } = info;
     if (size > maxBytes) return "too-large";
     return await handle.readFile("utf-8");
   } finally {
@@ -293,13 +339,16 @@ async function readFileNoFollow(path: string, maxBytes: number): Promise<string 
  * 参照先が意図しないファイルでも、その内容を出力に載せないため。
  */
 async function loadSnapshotFile(absPath: string): Promise<LoadedSnapshotFile> {
-  let text: string | "too-large";
+  let text: string | "too-large" | "not-regular";
   try {
     text = await readFileNoFollow(absPath, MAX_SNAPSHOT_FILE_BYTES);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === "ENOENT") return { baseline: undefined };
     return { baseline: undefined, loadError: "the file cannot be read" };
+  }
+  if (text === "not-regular") {
+    return { baseline: undefined, loadError: "the path is not a regular file" };
   }
   if (text === "too-large") {
     return {
@@ -355,7 +404,27 @@ export function findUnsafeSnapshotPath(cwd: string, absPath: string): string | u
     return `"${toRelative(root, absPath)}" is not a snapshot file path (<dir>/${SNAPSHOT_DIR}/<name>${SNAPSHOT_SUFFIX})`;
   }
   if (!isPathWithinDir(root, absPath) || !isRealPathWithinDir(root, absPath)) {
-    return `snapshot path resolves outside the current directory: "${absPath}"`;
+    return `snapshot path resolves outside the current directory: "${isPathWithinDir(root, absPath) ? toRelative(root, absPath) : "(outside the current directory)"}"`;
+  }
+  const display = toRelative(root, absPath);
+  // .git などの隠しディレクトリの下には置かない(フックなどを書き換える足場にしないため)
+  if (
+    display
+      .split("/")
+      .slice(0, -1)
+      .some((segment) => segment.startsWith("."))
+  ) {
+    return `refusing to use a snapshot file under a hidden directory: "${display}"`;
+  }
+  // __snapshots__ ディレクトリと基準ファイル自体は、行き先が cwd 内であってもシンボリックリンクを辿らない
+  for (const part of [dirname(absPath), absPath]) {
+    try {
+      if (lstatSync(part).isSymbolicLink()) {
+        return `refusing to use the snapshot file: "${toRelative(root, part)}" is a symbolic link`;
+      }
+    } catch {
+      // まだ存在しない要素は、後で通常のディレクトリ・ファイルとして作る
+    }
   }
   const unsafe = findUnsafeSymlinkInWritePath(root, absPath);
   if (unsafe) return `refusing to use the snapshot file: ${unsafe}`;
@@ -409,6 +478,75 @@ async function writeSnapshotFile(
     await unlink(temp).catch(() => {});
     throw error;
   }
+}
+
+/** ロックを待つ最長時間(ms)と、これより古いロックファイルを放置されたものとして扱う時間(ms) */
+const LOCK_TIMEOUT_MS = 10_000;
+const LOCK_STALE_MS = 30_000;
+
+/**
+ * ロックファイル(`<スナップショット>.lock`。O_EXCL で作る)を取って fn を実行する。
+ * 別の実行(UI サーバーの同時実行など)が同じファイルを書き換えている間は待つ。
+ */
+async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
+  const started = Date.now();
+  for (;;) {
+    try {
+      const handle = await open(
+        lockPath,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+        0o644,
+      );
+      await handle.close();
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        const info = await lstat(lockPath);
+        if (Date.now() - info.mtimeMs > LOCK_STALE_MS) {
+          await unlink(lockPath).catch(() => {});
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() - started > LOCK_TIMEOUT_MS) {
+        throw new Error("timed out waiting for another run to finish writing the snapshot file");
+      }
+      await new Promise((done) => setTimeout(done, 15 + Math.random() * 30));
+    }
+  }
+  try {
+    return await fn();
+  } finally {
+    await unlink(lockPath).catch(() => {});
+  }
+}
+
+/**
+ * スナップショットファイルを、ロックの下で「読み直して → mutate で書き換えて → 書く」。
+ * 別の実行が先に書いたキーを失わないよう、書く直前のファイルの内容に対して変更を適用する。
+ * mutate が undefined を返したら何も書かない。
+ */
+async function updateSnapshotFile(
+  cwd: string,
+  absPath: string,
+  mutate: (current: LoadedSnapshotFile) => Map<string, SnapshotEntry> | undefined,
+): Promise<void> {
+  const root = resolve(cwd);
+  const unsafe = findUnsafeSnapshotPath(root, absPath);
+  if (unsafe) throw new GuardRefusalError(unsafe);
+  await mkdir(dirname(absPath), { recursive: true });
+  const realParent = await realpath(dirname(absPath));
+  if (!isPathWithinDir(await realpath(root), realParent)) {
+    throw new GuardRefusalError(
+      `snapshot path resolves outside the current directory: "${toRelative(root, absPath)}"`,
+    );
+  }
+  await withFileLock(`${absPath}.lock`, async () => {
+    const next = mutate(await loadSnapshotFile(absPath));
+    if (next !== undefined) await writeSnapshotFile(root, absPath, next);
+  });
 }
 
 /** SnapshotStore のオプション */
@@ -550,7 +688,8 @@ export class SnapshotStore {
       return snapshotResult(false, detail("mismatch"), `snapshot "${key}": ${error.message}`);
     }
 
-    const canWrite = this.options.update && !this.options.readOnly;
+    // --update-snapshots でも、同じステップの他のアサーションが失敗した応答は基準にしない
+    const canWrite = this.options.update && !this.options.readOnly && input.otherAssertionsOk;
     const baseline = state.baseline?.get(key);
     if (baseline !== undefined) {
       const differences = compareSnapshot(baseline, candidate, input.spec);
@@ -572,7 +711,9 @@ export class SnapshotStore {
           differenceCount: differences.length,
           candidate,
         }),
-        mismatchMessage(key, differences),
+        input.otherAssertionsOk
+          ? mismatchMessage(key, differences)
+          : `${mismatchMessage(key, differences)} (not updated because the step's other assertions failed)`,
       );
     }
 
@@ -648,10 +789,19 @@ export class SnapshotStore {
       const removing = canWrite ? obsolete : [];
       if (state.pending.size === 0 && removing.length === 0) continue;
 
-      const next = new Map(baseline ?? []);
-      for (const key of removing) next.delete(key);
-      for (const [key, entry] of state.pending) next.set(key, entry);
-      await writeSnapshotFile(this.options.cwd, state.absPath, next);
+      await updateSnapshotFile(this.options.cwd, state.absPath, (current) => {
+        // 実行中に別の実行が壊した場合は、上書きしない(最初から壊れていたものは --update-snapshots が作り直す)
+        if (current.loadError !== undefined && state.loadError === undefined) {
+          throw new ParseError(
+            `snapshot file "${state.display}" is corrupt: ${current.loadError}. Fix it, delete it, or run with --update-snapshots to recreate it`,
+          );
+        }
+        // 書く直前の内容に、この実行の変更だけを重ねる(別の実行が書いたキーを失わない)
+        const next = new Map(current.baseline ?? []);
+        for (const key of removing) next.delete(key);
+        for (const [key, entry] of state.pending) next.set(key, entry);
+        return next;
+      });
       files.push(state.display);
     }
     return { files: files.sort(), obsoleteEntries, warnings };
@@ -706,6 +856,13 @@ export interface SnapshotMismatch {
   message: string;
   differences: SnapshotDifference[];
   differenceCount: number;
+  /** 同じステップの snapshot 以外のアサーション(OpenAPI を含む)が失敗していた。true の承認は acceptSnapshot が拒否する */
+  otherAssertionsFailed: boolean;
+}
+
+/** ステップの snapshot 以外のアサーションに、失敗したものがあるか */
+function hasFailedOtherAssertion(entry: HistoryEntry): boolean {
+  return entry.assertions.some((assertion) => !assertion.ok && assertion.snapshot === undefined);
 }
 
 /** 承認の対象になる snapshot の詳細か(候補を持つ mismatch / missing) */
@@ -750,6 +907,7 @@ function collectMismatches(entries: readonly HistoryEntry[], runId: string): Sna
         message: assertion.message,
         differences: detail.differences ?? [],
         differenceCount: detail.differenceCount ?? detail.differences?.length ?? 0,
+        otherAssertionsFailed: hasFailedOtherAssertion(entry),
       });
     }
   }
@@ -768,9 +926,10 @@ export type AcceptSnapshotResult =
       ok: false;
       /**
        * not-found: run に該当する承認待ちが無い / unsafe: 書き込み先として許可できない /
-       * corrupt: 既存のスナップショットファイルが壊れている
+       * corrupt: 既存のスナップショットファイル、または履歴の候補が壊れている /
+       * failed-step: 候補を記録したステップの他のアサーション(OpenAPI を含む)が失敗していた
        */
-      kind: "not-found" | "unsafe" | "corrupt";
+      kind: "not-found" | "unsafe" | "corrupt" | "failed-step";
       message: string;
     };
 
@@ -788,6 +947,7 @@ export async function acceptSnapshot(
 ): Promise<AcceptSnapshotResult> {
   const history = await readAllHistoryEntries(cwd);
   let candidate: SnapshotEntry | undefined;
+  let otherAssertionsFailed = false;
   // 同じキーが複数あれば最後(最新)の記録を採用する
   for (const entry of selectRunEntries(history, runId)) {
     for (const assertion of entry.assertions) {
@@ -798,6 +958,7 @@ export async function acceptSnapshot(
         detail.file === target.snapshotFile
       ) {
         candidate = detail.candidate;
+        otherAssertionsFailed = hasFailedOtherAssertion(entry);
       }
     }
   }
@@ -809,29 +970,47 @@ export async function acceptSnapshot(
     };
   }
 
+  // 履歴の候補は信用せず、基準ファイルのエントリと同じ検証を通す(形が不正なら書かない)
+  const accepted = toSnapshotEntry(candidate);
+  if (accepted === undefined) {
+    return {
+      ok: false,
+      kind: "corrupt",
+      message: `the candidate recorded in history for snapshot "${target.key}" is malformed and cannot be written`,
+    };
+  }
+  if (otherAssertionsFailed) {
+    return {
+      ok: false,
+      kind: "failed-step",
+      message: `snapshot "${target.key}" was recorded from a step whose other assertions failed; fix the step and run it again instead of accepting this response`,
+    };
+  }
+
   const root = resolve(cwd);
   const absPath = resolve(root, target.snapshotFile);
   const unsafe = findUnsafeSnapshotPath(root, absPath);
   if (unsafe) return { ok: false, kind: "unsafe", message: unsafe };
 
-  const loaded = await loadSnapshotFile(absPath);
-  if (loaded.loadError !== undefined) {
-    return {
-      ok: false,
-      kind: "corrupt",
-      message: `snapshot file "${target.snapshotFile}" is corrupt: ${loaded.loadError}. Fix or delete it first`,
-    };
-  }
-  const entries = new Map(loaded.baseline ?? []);
-  const state = entries.has(target.key) ? "updated" : "written";
-  entries.set(target.key, candidate);
+  let state: "written" | "updated" = "written";
+  let corrupt: string | undefined;
   try {
-    await writeSnapshotFile(root, absPath, entries);
+    await updateSnapshotFile(root, absPath, (current) => {
+      if (current.loadError !== undefined) {
+        corrupt = `snapshot file "${target.snapshotFile}" is corrupt: ${current.loadError}. Fix or delete it first`;
+        return undefined;
+      }
+      const entries = new Map(current.baseline ?? []);
+      state = entries.has(target.key) ? "updated" : "written";
+      entries.set(target.key, accepted);
+      return entries;
+    });
   } catch (error) {
     if (error instanceof GuardRefusalError) {
       return { ok: false, kind: "unsafe", message: error.message };
     }
     throw error;
   }
+  if (corrupt !== undefined) return { ok: false, kind: "corrupt", message: corrupt };
   return { ok: true, state, snapshotFile: target.snapshotFile, key: target.key };
 }
