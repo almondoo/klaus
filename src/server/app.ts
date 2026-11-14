@@ -6,7 +6,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
-import { type GuardOptions, loadFlow, ParseError } from "../core/index.js";
+import { type GuardOptions, type HttpConfig, loadFlow, ParseError } from "../core/index.js";
 import { createHistoryWatcher, type HistoryWatcher } from "./history-watcher.js";
 import {
   handleGetEnvironmentDetail,
@@ -16,7 +16,9 @@ import {
 } from "./routes/environments.js";
 import { listFlows, summarizeStep } from "./routes/flows.js";
 import { getHistoryPage } from "./routes/history.js";
+import { handleHistoryDiff } from "./routes/history-diff.js";
 import { handleHistoryEvents } from "./routes/history-events.js";
+import { handleHistoryPromote } from "./routes/history-promote.js";
 import { handleSingleRequest } from "./routes/request.js";
 import { handleRunRequest } from "./routes/runs.js";
 import { createStaticHandler } from "./routes/static.js";
@@ -40,6 +42,12 @@ export interface CreateAppOptions {
   host?: string;
   /** 送信先ホストの許可リストなどの安全柵。POST /api/runs と POST /api/request の実行に渡す */
   guard?: GuardOptions | undefined;
+  /**
+   * HTTP クライアント設定(klaus.config.yaml の `http`: リダイレクト追従・cookie・proxy・TLS)。
+   * POST /api/runs と POST /api/request の実行に渡す。guard と同じく起動時に一度だけ渡され、
+   * リクエストボディからは受け付けない
+   */
+  http?: HttpConfig | undefined;
   /** 履歴変更通知(GET /api/history/events)用のウォッチャー。未指定なら createApp 内で生成する(サーバー停止時に close したい呼び出し元が渡す) */
   historyWatcher?: HistoryWatcher | undefined;
 }
@@ -57,7 +65,7 @@ function timingSafeTokenEqual(a: string, b: string): boolean {
 }
 
 export function createApp(options: CreateAppOptions): Hono {
-  const { cwd, token, port, staticDir, host = "127.0.0.1", guard } = options;
+  const { cwd, token, port, staticDir, host = "127.0.0.1", guard, http } = options;
   const historyWatcher = options.historyWatcher ?? createHistoryWatcher(cwd);
   const app = new Hono();
 
@@ -164,12 +172,16 @@ export function createApp(options: CreateAppOptions): Hono {
     handlePostEnvironmentCapture(c, cwd, c.req.param("name")),
   );
 
-  app.post("/api/runs", (c) => handleRunRequest(c, cwd, guard));
+  app.post("/api/runs", (c) => handleRunRequest(c, cwd, guard, http));
 
-  app.post("/api/request", (c) => handleSingleRequest(c, cwd, guard));
+  app.post("/api/request", (c) => handleSingleRequest(c, cwd, guard, http));
 
   // /api/history より前に登録する(順序に依存しないが、意図を明確にするため)
   app.get("/api/history/events", (c) => handleHistoryEvents(c, historyWatcher));
+
+  app.get("/api/history/diff", (c) => handleHistoryDiff(c, cwd));
+
+  app.post("/api/history/promote", (c) => handleHistoryPromote(c, cwd));
 
   app.get("/api/history", async (c) => {
     const flow = c.req.query("flow");

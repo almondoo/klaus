@@ -1,4 +1,14 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import { connect } from "node:net";
 import { join } from "node:path";
@@ -1852,5 +1862,635 @@ describe("GET /api/history/events", () => {
     } finally {
       again.close();
     }
+  });
+});
+
+describe("http 設定(startServer の http オプション)", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let dir: string;
+  let target: ReturnType<typeof createServer>;
+  let targetBase: string;
+  let plain: StartServerResult;
+  let following: StartServerResult;
+
+  function post(server: StartServerResult, path: string, body: unknown) {
+    return fetch(`http://127.0.0.1:${server.port}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": server.token,
+        Cookie: `klaus_token=${server.token}`,
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function singleStatus(server: StartServerResult, body: unknown): Promise<number> {
+    const res = await post(server, "/api/request", body);
+    const payload = (await res.json()) as { result: { response?: { status: number } } };
+    return payload.result.response?.status ?? 0;
+  }
+
+  async function flowStatus(server: StartServerResult, body: unknown): Promise<number> {
+    const events = await collectSseEvents(await post(server, "/api/runs", body));
+    const last = events.at(-1)?.data as {
+      flow: { steps: Array<{ response?: { status: number } }> };
+    };
+    return last.flow.steps[0]?.response?.status ?? 0;
+  }
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    dir = await mkdtemp(join(tmpRoot, "klaus-server-http-"));
+    target = createServer((req, res) => {
+      if (req.url === "/redirect") {
+        res.writeHead(302, { Location: "/final" });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ final: true }));
+    });
+    targetBase = (await listenEphemeral(target)).baseUrl;
+    await writeFile(
+      join(dir, "redirect.yaml"),
+      [
+        "name: redirect flow",
+        "steps:",
+        "  - name: go",
+        "    request:",
+        "      method: GET",
+        `      url: "${targetBase}/redirect"`,
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    plain = await startServer({ cwd: dir, port: 0 });
+    following = await startServer({ cwd: dir, port: 0, http: { followRedirects: true } });
+  });
+
+  afterAll(async () => {
+    await plain.close();
+    await following.close();
+    await closeServer(target);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const single = { request: { method: "GET", url: "" } };
+
+  it("http 未指定なら従来どおりリダイレクトを追わない(POST /api/request・POST /api/runs)", async () => {
+    expect(
+      await singleStatus(plain, { request: { ...single.request, url: `${targetBase}/redirect` } }),
+    ).toBe(302);
+    expect(await flowStatus(plain, { path: "redirect.yaml" })).toBe(302);
+  });
+
+  it("http.followRedirects を渡すと POST /api/request と POST /api/runs の両方に効く", async () => {
+    expect(
+      await singleStatus(following, {
+        request: { ...single.request, url: `${targetBase}/redirect` },
+      }),
+    ).toBe(200);
+    expect(await flowStatus(following, { path: "redirect.yaml" })).toBe(200);
+  });
+
+  it("リクエストボディの http は無視される(設定は起動時に渡したものだけ)", async () => {
+    const url = `${targetBase}/redirect`;
+    expect(
+      await singleStatus(plain, {
+        request: { ...single.request, url },
+        http: { followRedirects: true },
+      }),
+    ).toBe(302);
+    expect(
+      await flowStatus(plain, { path: "redirect.yaml", http: { followRedirects: true } }),
+    ).toBe(302);
+  });
+});
+
+describe("保護環境の拒否メッセージ(UI 起点のフロー実行)", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let dir: string;
+  let server: StartServerResult;
+
+  async function runStepError(
+    path: string,
+  ): Promise<{ stream: string; error: string | undefined }> {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/runs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": server.token,
+        Cookie: `klaus_token=${server.token}`,
+      },
+      body: JSON.stringify({ path }),
+    });
+    const events = await collectSseEvents(res);
+    const last = events.at(-1)?.data as { flow: { steps: Array<{ error?: string }> } };
+    const stepResult = events.find((e) => e.event === "step-result")?.data as {
+      result: { error?: string };
+    };
+    return { stream: stepResult.result.error ?? "", error: last.flow.steps[0]?.error };
+  }
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    dir = await mkdtemp(join(tmpRoot, "klaus-server-hint-"));
+    await mkdir(join(dir, "environments"), { recursive: true });
+    await writeFile(join(dir, "environments", "prod.yaml"), "$protected: true\nbaseUrl: x\n");
+    await writeFile(join(dir, "environments", "stg.yaml"), "$protected: readonly\nbaseUrl: x\n");
+    for (const [file, env, method] of [
+      ["blocked.yaml", "prod", "GET"],
+      ["readonly-post.yaml", "stg", "POST"],
+    ]) {
+      await writeFile(
+        join(dir, file as string),
+        [
+          `name: ${file}`,
+          `env: ${env}`,
+          "steps:",
+          "  - name: call",
+          "    request:",
+          `      method: ${method}`,
+          '      url: "http://127.0.0.1:9/x"',
+          "",
+        ].join("\n"),
+      );
+    }
+    server = await startServer({ cwd: dir, port: 0 });
+  });
+
+  afterAll(async () => {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it.each(["blocked.yaml", "readonly-post.yaml"])(
+    "%s: 案内が UI 向け(--allow-protected を渡せない旨)に差し替わり、ストリームの step-result と run-result の両方に反映される",
+    async (path) => {
+      const { stream, error } = await runStepError(path);
+      for (const text of [stream, error ?? ""]) {
+        expect(text).toContain("protected");
+        expect(text).not.toContain("Pass --allow-protected");
+        expect(text).toContain("klaus ui cannot override environment protection");
+        expect(text).toContain("klaus run --allow-protected");
+      }
+    },
+  );
+
+  it("履歴に記録される拒否理由は core のまま(配信する文字列だけを差し替える)", async () => {
+    const entries = await readAllHistoryEntries(dir);
+    const recorded = entries.find((entry) => entry.step === "call" && entry.error);
+    expect(recorded?.error).toContain("--allow-protected");
+  });
+});
+
+/** 履歴の差分・フロー保存の API 用に、決定的な履歴を書き込むヘルパー */
+function runEntries(
+  runId: string,
+  startedAt: string,
+  variant: { status: string; createdAt: string; flow?: string },
+): HistoryEntry[] {
+  const flow = variant.flow ?? "orders";
+  const t = (ms: number) => new Date(Date.parse(startedAt) + ms).toISOString();
+  return [
+    {
+      v: 1,
+      runId,
+      flow,
+      step: "create",
+      startedAt: t(0),
+      durationMs: 5,
+      status: "passed",
+      request: {
+        method: "POST",
+        url: "http://localhost:4000/orders",
+        headers: { "content-type": "application/json" },
+        body: { name: "widget" },
+      },
+      response: {
+        status: 201,
+        headers: { "content-type": "application/json" },
+        body: { id: "order-12345678", name: "widget", createdAt: variant.createdAt },
+      },
+      assertions: [],
+    },
+    {
+      v: 1,
+      runId,
+      flow,
+      step: "get",
+      startedAt: t(10),
+      durationMs: 5,
+      status: "passed",
+      request: {
+        method: "GET",
+        url: "http://localhost:4000/orders/order-12345678",
+        headers: {},
+      },
+      response: {
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: { id: "order-12345678", status: variant.status },
+      },
+      assertions: [],
+    },
+  ];
+}
+
+describe("GET /api/history/diff と POST /api/history/promote", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let dir: string;
+  let outside: string;
+  let server: StartServerResult;
+  let base: string;
+
+  const auth = () => ({ "X-Klaus-Token": server.token });
+  const authWrite = () => ({
+    "Content-Type": "application/json",
+    "X-Klaus-Token": server.token,
+    Cookie: `klaus_token=${server.token}`,
+  });
+  const getDiff = (query: string) =>
+    fetch(`${base}/api/history/diff?${query}`, { headers: auth() });
+  const promote = (body: unknown) =>
+    fetch(`${base}/api/history/promote`, {
+      method: "POST",
+      headers: authWrite(),
+      body: JSON.stringify(body),
+    });
+
+  async function exists(path: string): Promise<boolean> {
+    try {
+      await stat(path);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    dir = await mkdtemp(join(tmpRoot, "klaus-server-diffpromote-"));
+    outside = await mkdtemp(join(tmpRoot, "klaus-server-outside-"));
+    const seed: HistoryEntry[] = [
+      ...runEntries("run-a", "2026-05-01T00:00:00.000Z", {
+        status: "new",
+        createdAt: "2026-05-01T00:00:00Z",
+      }),
+      ...runEntries("run-b", "2026-05-02T00:00:00.000Z", {
+        status: "shipped",
+        createdAt: "2026-05-02T00:00:00Z",
+      }),
+      // 2 つのフローが混在する run(promote に flow の指定が必要)
+      ...runEntries("run-mixed", "2026-05-03T00:00:00.000Z", {
+        status: "new",
+        createdAt: "x",
+        flow: "alpha",
+      }).slice(0, 1),
+      ...runEntries("run-mixed", "2026-05-03T00:00:01.000Z", {
+        status: "new",
+        createdAt: "x",
+        flow: "beta",
+      }).slice(0, 1),
+      // マスク済みのヘッダー(OS 環境変数の値)を含む単発リクエスト
+      {
+        v: 1,
+        runId: "run-single",
+        flow: "(single)",
+        step: "ping",
+        startedAt: "2026-05-04T00:00:00.000Z",
+        durationMs: 1,
+        status: "passed",
+        source: "single",
+        request: {
+          method: "GET",
+          url: "http://localhost:4000/ping",
+          headers: { "x-api-key": "***" },
+        },
+        response: { status: 200, headers: {}, body: { ok: true } },
+        assertions: [],
+      },
+      // リテラルの "{{" を含む記録(生成は拒否される)
+      {
+        v: 1,
+        runId: "run-template",
+        flow: "(single)",
+        step: "tmpl",
+        startedAt: "2026-05-05T00:00:00.000Z",
+        durationMs: 1,
+        status: "passed",
+        source: "single",
+        request: {
+          method: "POST",
+          url: "http://localhost:4000/x",
+          headers: {},
+          body: { note: "hello {{env.SECRET_TOKEN}}" },
+        },
+        response: { status: 200, headers: {}, body: { ok: true } },
+        assertions: [],
+      },
+      // 全ステップが skipped の run(フロー化できるステップが無い)
+      {
+        v: 1,
+        runId: "run-skipped",
+        flow: "skipped-flow",
+        step: "only",
+        startedAt: "2026-05-06T00:00:00.000Z",
+        durationMs: 0,
+        status: "skipped",
+        assertions: [],
+      },
+    ];
+    for (const entry of seed) await appendHistory(dir, entry);
+    server = await startServer({ cwd: dir, port: 0 });
+    base = `http://127.0.0.1:${server.port}`;
+  });
+
+  afterAll(async () => {
+    await server.close();
+    await rm(dir, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  });
+
+  describe("GET /api/history/diff", () => {
+    it("トークンが無ければ 401", async () => {
+      expect((await fetch(`${base}/api/history/diff?a=run-a&b=run-b`)).status).toBe(401);
+    });
+
+    it("2 つの run の差分を返す(klaus diff --json から version を除いた形)", async () => {
+      const res = await getDiff("a=run-a&b=run-b");
+      expect(res.status).toBe(200);
+      const diff = (await res.json()) as {
+        status: string;
+        version?: number;
+        runs: { a: { runId: string }; b: { runId: string } };
+        counts: { same: number; different: number };
+        steps: Array<{
+          step: string;
+          change: string;
+          body?: { kind: string; differences: Array<{ path: string; kind: string }> };
+        }>;
+      };
+      expect(diff.version).toBeUndefined();
+      expect(diff.status).toBe("different");
+      expect(diff.runs.a.runId).toBe("run-a");
+      expect(diff.runs.b.runId).toBe("run-b");
+      expect(diff.counts.different).toBe(2);
+      const get = diff.steps.find((step) => step.step === "get");
+      expect(get?.body?.differences.map((d) => d.path)).toEqual(["$.status"]);
+    });
+
+    it("ignorePath(繰り返し指定)で差分から除外され、全て除外すると same になる", async () => {
+      const res = await getDiff(
+        `a=run-a&b=run-b&ignorePath=${encodeURIComponent("$.status")}&ignorePath=${encodeURIComponent("$..createdAt")}`,
+      );
+      const diff = (await res.json()) as { status: string; counts: { same: number } };
+      expect(diff.status).toBe("same");
+      expect(diff.counts.same).toBe(2);
+    });
+
+    it("flow 指定の latest / previous を解決できる", async () => {
+      const res = await getDiff(`a=previous&b=latest&flow=orders`);
+      expect(res.status).toBe(200);
+      const diff = (await res.json()) as { runs: { a: { runId: string }; b: { runId: string } } };
+      expect(diff.runs.a.runId).toBe("run-a");
+      expect(diff.runs.b.runId).toBe("run-b");
+    });
+
+    it.each([
+      ["b が無い", "a=run-a"],
+      ["a が空", "a=&b=run-b"],
+      ["run ID の形式が不正", "a=run-a&b=../etc/passwd"],
+      ["a が複数", "a=run-a&a=run-b&b=run-b"],
+      ["flow が制御文字を含む", `a=run-a&b=run-b&flow=${encodeURIComponent("x\ny")}`],
+      ["latest は flow が必須", "a=latest&b=run-b"],
+      ["ignorePath が JSONPath として解釈できない", "a=run-a&b=run-b&ignorePath=nope"],
+      [
+        "ignorePath の .. が多すぎる",
+        `a=run-a&b=run-b&ignorePath=${encodeURIComponent("$..a..b..c")}`,
+      ],
+    ])("400: %s", async (_label, query) => {
+      const res = await getDiff(query);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { error: string }).error.length).toBeGreaterThan(0);
+    });
+
+    it("400: ignorePath が多すぎる(21 個)", async () => {
+      const query = Array.from({ length: 21 }, () => `ignorePath=${encodeURIComponent("$.x")}`);
+      const res = await getDiff(`a=run-a&b=run-b&${query.join("&")}`);
+      expect(res.status).toBe(400);
+    });
+
+    it("404: 存在しない run、flow に該当する run が無い", async () => {
+      expect((await getDiff("a=run-a&b=no-such-run")).status).toBe(404);
+      expect((await getDiff("a=no-such-run&b=run-b")).status).toBe(404);
+      // run-single は flow "orders" のエントリを持たない
+      expect((await getDiff("a=run-a&b=run-single&flow=orders")).status).toBe(404);
+      expect((await getDiff("a=previous&b=latest&flow=unknown-flow")).status).toBe(404);
+    });
+  });
+
+  describe("POST /api/history/promote", () => {
+    it("トークンが無ければ 401、CSRF Cookie が無ければ 403", async () => {
+      const noToken = await fetch(`${base}/api/history/promote`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ runIds: ["run-a"], dryRun: true }),
+      });
+      expect(noToken.status).toBe(401);
+      const noCookie = await fetch(`${base}/api/history/promote`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...auth() },
+        body: JSON.stringify({ runIds: ["run-a"], dryRun: true }),
+      });
+      expect(noCookie.status).toBe(403);
+      const badOrigin = await fetch(`${base}/api/history/promote`, {
+        method: "POST",
+        headers: { ...authWrite(), Origin: "http://evil.example.com" },
+        body: JSON.stringify({ runIds: ["run-a"], dryRun: true }),
+      });
+      expect(badOrigin.status).toBe(403);
+      expect(await exists(join(dir, "flows"))).toBe(false);
+    });
+
+    it("dryRun: YAML とサマリーを返し、何も書かない", async () => {
+      const res = await promote({ runIds: ["run-a"], dryRun: true });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        dryRun: boolean;
+        written: boolean;
+        file: string;
+        exists: boolean;
+        yaml: string;
+        steps: unknown[];
+        notice: string;
+        captures: Array<{ name: string }>;
+      };
+      expect(body).toMatchObject({ dryRun: true, written: false, file: "flows/orders.yaml" });
+      expect(body.exists).toBe(false);
+      expect(body.yaml).toContain("name: orders");
+      expect(body.steps).toHaveLength(2);
+      expect(body.notice).toContain("sensitive");
+      // 先行ステップのレスポンス値(id)が後続のリクエスト URL に再登場するため capture が推論される
+      expect(body.captures.length).toBeGreaterThan(0);
+      expect(await exists(join(dir, "flows"))).toBe(false);
+      expect(await exists(join(dir, "api"))).toBe(false);
+    });
+
+    it("オプション(assert / baseUrlVar / name / out)が反映され、マスク済みの値はプレースホルダーとして返る", async () => {
+      const res = await promote({
+        runIds: ["run-single", "run-a"],
+        assert: "status",
+        baseUrlVar: "BASE_URL",
+        chain: false,
+        name: "my flow",
+        out: "custom/my-flow.yaml",
+        dryRun: true,
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        file: string;
+        flow: string;
+        assert: string;
+        yaml: string;
+        variables: Array<{ name: string; value: string }>;
+        placeholders: Array<{ name: string }>;
+        captures: unknown[];
+      };
+      expect(body.file).toBe("custom/my-flow.yaml");
+      expect(body.flow).toBe("my flow");
+      expect(body.assert).toBe("status");
+      expect(body.variables).toEqual([{ name: "BASE_URL", value: "http://localhost:4000" }]);
+      expect(body.yaml).toContain("{{BASE_URL}}");
+      expect(body.yaml).toContain("{{env.TODO_");
+      expect(body.placeholders.length).toBeGreaterThan(0);
+      expect(body.captures).toEqual([]);
+      expect(body.yaml).not.toContain("***");
+      expect(await exists(join(dir, "custom"))).toBe(false);
+    });
+
+    it("書き込み: 新規ファイルを作り、フロー一覧に現れ、2 回目は 409 で内容を変えない", async () => {
+      const res = await promote({ runIds: ["run-b"], out: "written/orders.yaml" });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { written: boolean; file: string; yaml: string };
+      expect(body).toMatchObject({ written: true, file: "written/orders.yaml" });
+      const onDisk = await readFile(join(dir, "written", "orders.yaml"), "utf-8");
+      expect(onDisk).toBe(body.yaml);
+
+      const flows = (await (
+        await fetch(`${base}/api/flows`, { headers: auth() })
+      ).json()) as Array<{
+        path: string;
+      }>;
+      expect(flows.map((f) => f.path)).toContain("written/orders.yaml");
+
+      const dry = await promote({ runIds: ["run-b"], out: "written/orders.yaml", dryRun: true });
+      expect(((await dry.json()) as { exists: boolean }).exists).toBe(true);
+
+      const again = await promote({ runIds: ["run-a"], out: "written/orders.yaml" });
+      expect(again.status).toBe(409);
+      expect(((await again.json()) as { error: string }).error).toContain("already exists");
+      expect(await readFile(join(dir, "written", "orders.yaml"), "utf-8")).toBe(onDisk);
+    });
+
+    it("既存のフローファイルは上書きされない(409)", async () => {
+      await mkdir(join(dir, "manual"), { recursive: true });
+      await writeFile(join(dir, "manual", "keep.yaml"), "sentinel: true\n", "utf-8");
+      const res = await promote({ runIds: ["run-a"], out: "manual/keep.yaml" });
+      expect(res.status).toBe(409);
+      expect(await readFile(join(dir, "manual", "keep.yaml"), "utf-8")).toBe("sentinel: true\n");
+    });
+
+    it.each([
+      ["親ディレクトリへの脱出", "../escape.yaml"],
+      ["絶対パス", "/tmp/klaus-escape.yaml"],
+      ["拡張子が yaml / yml ではない", "flows/x.txt"],
+      ["隠しディレクトリ", ".git/hooks/x.yaml"],
+      ["フロー探索の対象外ディレクトリ(environments)", "environments/x.yaml"],
+      ["フロー探索の対象外ディレクトリ(node_modules)", "node_modules/x.yaml"],
+      ["設定ファイル名", "klaus.config.yaml"],
+      ["cwd 自身", "."],
+    ])("403: 出力先の規則 — %s", async (_label, out) => {
+      const res = await promote({ runIds: ["run-a"], out });
+      expect(res.status).toBe(403);
+      expect(await exists(join(dir, "..", "escape.yaml"))).toBe(false);
+      expect(await exists(join(dir, "klaus.config.yaml"))).toBe(false);
+      expect(await exists(join(dir, "environments"))).toBe(false);
+      // dryRun でも同じ規則で拒否される
+      const dry = await promote({ runIds: ["run-a"], out, dryRun: true });
+      expect(dry.status).toBe(403);
+    });
+
+    it("403: cwd の外を指すシンボリックリンク(途中のディレクトリ・最終要素)経由では書かない", async () => {
+      await symlink(outside, join(dir, "linkdir"));
+      const viaDir = await promote({ runIds: ["run-a"], out: "linkdir/x.yaml" });
+      expect(viaDir.status).toBe(403);
+
+      await mkdir(join(dir, "final"), { recursive: true });
+      await symlink(join(outside, "created.yaml"), join(dir, "final", "f.yaml"));
+      const viaFile = await promote({ runIds: ["run-a"], out: "final/f.yaml" });
+      expect(viaFile.status).toBe(403);
+
+      expect(await readdir(outside)).toEqual([]);
+    });
+
+    it.each([
+      ["JSON として不正な本文", "{not json"],
+      ["runIds が無い", {}],
+      ["runIds が空", { runIds: [] }],
+      ["runIds が文字列", { runIds: "run-a" }],
+      ["run ID の形式が不正", { runIds: ["../x"] }],
+      ["runIds が多すぎる", { runIds: Array.from({ length: 51 }, (_, i) => `r${i}`) }],
+      ["assert が不正", { runIds: ["run-a"], assert: "everything" }],
+      ["baseUrlVar が不正", { runIds: ["run-a"], baseUrlVar: "not valid!" }],
+      ["chain が真偽値ではない", { runIds: ["run-a"], chain: "yes" }],
+      ["name が空", { runIds: ["run-a"], name: "" }],
+      ["out が文字列ではない", { runIds: ["run-a"], out: 1 }],
+      ["force は UI に無い", { runIds: ["run-a"], force: true }],
+      ["allowTemplateLiterals は UI に無い", { runIds: ["run-a"], allowTemplateLiterals: true }],
+      ["本文が配列", [1]],
+    ])("400: %s", async (_label, body) => {
+      const res = await fetch(`${base}/api/history/promote`, {
+        method: "POST",
+        headers: authWrite(),
+        body: typeof body === "string" ? body : JSON.stringify(body),
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("400(usage): 複数フローを含む run は flow の指定が必要で、指定すれば生成できる", async () => {
+      const res = await promote({ runIds: ["run-mixed"], dryRun: true });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { kind: string }).kind).toBe("usage");
+
+      const ok = await promote({ runIds: ["run-mixed"], flow: "alpha", dryRun: true });
+      expect(ok.status).toBe(200);
+    });
+
+    it("404: 履歴に無い runId", async () => {
+      const res = await promote({ runIds: ["run-a", "no-such-run"], dryRun: true });
+      expect(res.status).toBe(404);
+    });
+
+    it("422: 記録値にリテラルの {{ があるとテンプレート展開による漏洩を防ぐため拒否する(dryRun でも書き込みでも)", async () => {
+      for (const dryRun of [true, false]) {
+        const res = await promote({ runIds: ["run-template"], dryRun, out: "tmpl/x.yaml" });
+        expect(res.status).toBe(422);
+        const body = (await res.json()) as { error: string; kind: string; code?: string };
+        expect(body.kind).toBe("content");
+        expect(body.code).toBe("template-literal");
+        expect(body.error).toContain("{{");
+      }
+      expect(await exists(join(dir, "tmpl"))).toBe(false);
+    });
+
+    it("422: フロー化できるステップが無い run", async () => {
+      const res = await promote({ runIds: ["run-skipped"], dryRun: true });
+      expect(res.status).toBe(422);
+      const body = (await res.json()) as { error: string; code?: string };
+      expect(body.error).toContain("no promotable steps");
+      expect(body.code).toBeUndefined();
+    });
   });
 });

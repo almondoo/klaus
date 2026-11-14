@@ -20,8 +20,12 @@ import type {
   FlowDetail,
   FlowListEntry,
   FlowResult,
+  GetHistoryDiffParams,
   GetHistoryParams,
   HistoryPage,
+  PromoteRequestBody,
+  PromoteResponse,
+  RunDiff,
   RunRequestBody,
   SingleRequestRequestBody,
   SingleRequestResultPayload,
@@ -136,6 +140,75 @@ export async function getHistory(params: GetHistoryParams = {}): Promise<History
   const page = entries.slice(0, limit);
   const nextBefore = entries.length > limit ? page[page.length - 1]?.startedAt : undefined;
   return { entries: page, nextBefore };
+}
+
+/** GET /api/history/diff のモック。固定の差分を返す(開発時の見た目確認用) */
+export async function getHistoryDiff(params: GetHistoryDiffParams): Promise<RunDiff> {
+  await delay(150);
+  const summary = (runId: string, startedAt: string) => ({
+    runId,
+    flows: ["mock flow"],
+    startedAt,
+    steps: 2,
+    status: "passed" as const,
+  });
+  return {
+    status: "different",
+    runs: {
+      a: summary(params.a, "2026-05-01T00:00:00.000Z"),
+      b: summary(params.b, "2026-05-02T00:00:00.000Z"),
+    },
+    counts: { same: 1, different: 1, added: 0, removed: 0 },
+    steps: [
+      { flow: "mock flow", step: "create", change: "same" },
+      {
+        flow: "mock flow",
+        step: "get",
+        change: "different",
+        httpStatus: { a: 200, b: 500 },
+        body: {
+          kind: "json",
+          total: 2,
+          omitted: 0,
+          differences: [
+            { path: "$.status", kind: "changed", before: "new", after: "shipped" },
+            { path: "$.updatedAt", kind: "changed", before: "2026-05-01", after: "2026-05-02" },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+/** POST /api/history/promote のモック。固定の生成結果を返す(何も書かない) */
+export async function promoteHistory(body: PromoteRequestBody): Promise<PromoteResponse> {
+  await delay(200);
+  return {
+    dryRun: body.dryRun === true,
+    written: body.dryRun !== true,
+    file: body.out ?? "flows/mock-flow.yaml",
+    exists: false,
+    yaml: "name: mock flow\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: http://localhost:4000/orders\n",
+    flow: body.name ?? "mock flow",
+    assert: body.assert ?? "schema",
+    steps: [
+      {
+        name: "get",
+        method: "GET",
+        url: "http://localhost:4000/orders",
+        from: { runId: body.runIds[0] ?? "", flow: "mock flow", step: "get" },
+      },
+    ],
+    placeholders: [],
+    variables: [],
+    captures: [],
+    skipped: [],
+    redacted: [],
+    templateLiterals: [],
+    notes: [],
+    notice:
+      "Generated from recorded traffic: review this file for sensitive data (tokens, passwords, personal data) before committing it.",
+  };
 }
 
 /** POST /api/runs のモック。setTimeout で step-start/step-result を逐次流し、最後に run-result を返す */

@@ -6,7 +6,7 @@
 ## Purpose and scope
 
 - `klaus ui` starts a local server and opens the UI in a browser
-- The UI's role is **runner + viewer**. Editing flow definitions is out of scope (git-native philosophy: YAML editing is done in an editor. Editing from the UI remains a future candidate)
+- The UI's role is **runner + viewer**. Editing existing flow definitions is out of scope (git-native philosophy: YAML editing is done in an editor). The one exception is creating a **new** flow file from recorded history (`POST /api/history/promote`; an existing file is never overwritten)
 - Cloud sync and account mechanisms will never be built (as per the requirements)
 
 ## Architecture

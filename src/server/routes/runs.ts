@@ -9,6 +9,7 @@ import { streamSSE } from "hono/streaming";
 import type { FlowResult, GuardOptions, HttpConfig } from "../../core/index.js";
 import { executeFlow, loadFlow, ParseError } from "../../core/index.js";
 import { parseJsonBody } from "../json-body.js";
+import { adaptFlowResult, adaptStepResult } from "../protection-hint.js";
 import type {
   RunRequestBody,
   RunResultPayload,
@@ -109,7 +110,8 @@ export async function handleRunRequest(
           const payload: StepResultPayload = {
             flow: context.flow,
             file: context.file,
-            result: context.result,
+            // 保護環境の拒否メッセージの案内を UI 向けに差し替える(--allow-protected は UI から渡せないため)
+            result: adaptStepResult(context.result),
           };
           await safeWriteSSE({ event: "step-result", data: JSON.stringify(payload) });
         },
@@ -141,7 +143,7 @@ export async function handleRunRequest(
       };
     }
 
-    const runResultPayload: RunResultPayload = { flow: flowResult };
+    const runResultPayload: RunResultPayload = { flow: adaptFlowResult(flowResult) };
     await safeWriteSSE({ event: "run-result", data: JSON.stringify(runResultPayload) });
   });
 }

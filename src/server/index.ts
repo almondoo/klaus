@@ -8,7 +8,7 @@ import { createServer as createNodeServer } from "node:http";
 import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { GuardOptions } from "../core/index.js";
+import type { GuardOptions, HttpConfig } from "../core/index.js";
 import { createApp } from "./app.js";
 import { createHistoryWatcher } from "./history-watcher.js";
 import { bridgeHonoApp } from "./node-bridge.js";
@@ -27,6 +27,11 @@ export interface StartServerOptions {
    * (UI からのフロー実行・単発リクエストの両方に適用する)。設定は起動時に一度だけ読むため、変更後は再起動が必要
    */
   guard?: GuardOptions | undefined;
+  /**
+   * HTTP クライアント設定(klaus.config.yaml の `http`)。`klaus ui` が読んで渡す(UI からのフロー実行・単発リクエストの
+   * 両方に適用する)。guard と同じく起動時に一度だけ読むため変更後は再起動が必要で、リクエストからは指定できない
+   */
+  http?: HttpConfig | undefined;
 }
 
 export interface StartServerResult {
@@ -90,6 +95,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
     staticDir,
     host: bindHost,
     guard: options.guard,
+    http: options.http,
     historyWatcher,
   });
   currentHandler = bridgeHonoApp(app, `127.0.0.1:${port}`);

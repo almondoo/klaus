@@ -17,6 +17,8 @@ export const getEnvironmentDetail = impl.getEnvironmentDetail;
 export const updateEnvironment = impl.updateEnvironment;
 export const captureToEnvironment = impl.captureToEnvironment;
 export const getHistory = impl.getHistory;
+export const getHistoryDiff = impl.getHistoryDiff;
+export const promoteHistory = impl.promoteHistory;
 export const runFlow = impl.runFlow;
 export const runSingleRequest = impl.runSingleRequest;
 
@@ -25,6 +27,8 @@ export type { RunStreamCallbacks } from "./sse";
 export { getToken, onUnauthorized } from "./token";
 export type {
   AssertionResult,
+  BodyDiff,
+  DifferenceList,
   EnvironmentCaptureRequestBody,
   EnvironmentDetail,
   EnvironmentListEntry,
@@ -32,13 +36,21 @@ export type {
   FlowDetail,
   FlowListEntry,
   FlowResult,
+  GetHistoryDiffParams,
   GetHistoryParams,
+  HeaderDiff,
   HistoryEntry,
   HistoryPage,
+  JsonDifference,
+  PromoteRequestBody,
+  PromoteResponse,
+  RunDiff,
   RunRequestBody,
   RunResultPayload,
+  RunSummary,
   SingleRequestRequestBody,
   SingleRequestResultPayload,
+  StepDiff,
   StepResult,
   StepResultPayload,
   StepStartPayload,

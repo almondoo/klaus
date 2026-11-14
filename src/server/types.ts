@@ -4,6 +4,7 @@
  * ここで独立して定義し、レスポンス形状を手動で同期する)。
  */
 import type { HistoryPage as CoreHistoryPage } from "../core/history-query.js";
+import type { PromoteResult } from "../core/index.js";
 import type { FlowResult, StepResult } from "../core/types.js";
 
 /** GET /api/flows の1エントリ */
@@ -97,4 +98,44 @@ export interface StepResultPayload {
 /** SSE event: run-result(単一フロー実行の最終結果) */
 export interface RunResultPayload {
   flow: FlowResult;
+}
+
+/** POST /api/history/promote のリクエストボディ(検証前の生の値。許可するキー以外は 400) */
+export interface PromoteRequestBody {
+  runIds?: unknown;
+  flow?: unknown;
+  assert?: unknown;
+  baseUrlVar?: unknown;
+  chain?: unknown;
+  name?: unknown;
+  out?: unknown;
+  dryRun?: unknown;
+}
+
+/**
+ * POST /api/history/promote の成功レスポンス。klaus promote --json の出力に yaml と dryRun / exists を加えた形
+ * (ui/src/api/types.ts の PromoteResponse と手動同期する)
+ */
+export interface PromoteResponse {
+  dryRun: boolean;
+  /** ファイルを書いたか(dryRun は false) */
+  written: boolean;
+  /** 出力先(書いた、または書く予定の cwd 相対パス。POSIX 区切り) */
+  file: string;
+  /** dryRun のときのみ。出力先に既に何かあるか(あれば保存は 409 になる) */
+  exists?: boolean;
+  yaml: string;
+  flow: string;
+  assert: PromoteResult["assert"];
+  steps: PromoteResult["steps"];
+  /** 実行前に OS 環境変数として設定するプレースホルダー({{env.NAME}}) */
+  placeholders: PromoteResult["placeholders"];
+  /** baseUrlVar で置き換えた origin。環境ファイルに書くべき値 */
+  variables: PromoteResult["baseUrls"];
+  captures: PromoteResult["captures"];
+  skipped: PromoteResult["skipped"];
+  redacted: PromoteResult["redacted"];
+  templateLiterals: PromoteResult["templateLiterals"];
+  notes: string[];
+  notice: string;
 }

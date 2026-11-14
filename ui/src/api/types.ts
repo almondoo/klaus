@@ -183,3 +183,170 @@ export interface SingleRequestRequestBody {
 export interface SingleRequestResultPayload {
   result: StepResult;
 }
+
+/** GET /api/history/diff のクエリパラメータ */
+export interface GetHistoryDiffParams {
+  /** run ID(flow 指定時は "latest" / "previous" も可) */
+  a: string;
+  b: string;
+  flow?: string;
+  /** 比較から除外する JSONPath(例: $.items[*].createdAt) */
+  ignorePaths?: string[];
+}
+
+/**
+ * 以下は GET /api/history/diff のレスポンス(src/core/run-diff.ts の RunDiff)と同一契約。
+ * このファイル冒頭のコメントのとおり手動で同期する(core からの runtime import はしない)。
+ */
+export type JsonDifferenceKind = "added" | "removed" | "changed" | "type-changed" | "too-deep";
+
+export interface JsonDifference {
+  path: string;
+  kind: JsonDifferenceKind;
+  /** added / too-deep では省略 */
+  before?: unknown;
+  /** removed / too-deep では省略 */
+  after?: unknown;
+}
+
+export interface Change<T> {
+  a?: T;
+  b?: T;
+}
+
+export interface HeaderDiff {
+  added: Record<string, string>;
+  removed: Record<string, string>;
+  changed: Record<string, { a: string; b: string }>;
+}
+
+export interface DifferenceList {
+  /** 打ち切り前の差分の総数 */
+  total: number;
+  /** サーバーが省略した件数(total - differences.length) */
+  omitted: number;
+  differences: JsonDifference[];
+}
+
+export interface LineChange {
+  op: "+" | "-";
+  line: string;
+}
+
+export type BodyDiff =
+  | ({ kind: "json" } & DifferenceList)
+  | { kind: "text"; added: number; removed: number; omitted: number; lines: LineChange[] };
+
+export interface RequestDiff {
+  method?: Change<string>;
+  url?: Change<string>;
+  body?: BodyDiff;
+}
+
+export type StepChange = "same" | "different" | "added" | "removed";
+
+export interface StepDiff {
+  flow: string;
+  step: string;
+  iteration?: number;
+  change: StepChange;
+  status?: Change<string>;
+  httpStatus?: Change<number>;
+  /** リクエスト自体の差(レスポンスの差とは別に扱う) */
+  request?: RequestDiff;
+  responseHeaders?: HeaderDiff;
+  body?: BodyDiff;
+  events?: DifferenceList;
+  error?: Change<string>;
+  durationMs?: { a: number; b: number; delta: number };
+}
+
+export interface RunSummary {
+  runId: string;
+  flows: string[];
+  startedAt: string;
+  steps: number;
+  status: "passed" | "failed" | "error";
+  env?: string;
+  file?: string;
+  actor?: HistoryActor;
+  git?: HistoryGit;
+}
+
+export interface RunDiff {
+  status: "same" | "different";
+  runs: { a: RunSummary; b: RunSummary };
+  counts: { same: number; different: number; added: number; removed: number };
+  steps: StepDiff[];
+}
+
+export type PromoteAssertMode = "status" | "schema" | "values" | "all";
+
+/**
+ * POST /api/history/promote のリクエストボディ(履歴から新規フローを作る。既存フローの編集・上書きはできない)。
+ * server/types.ts の PromoteRequestBody と手動同期する契約。
+ */
+export interface PromoteRequestBody {
+  runIds: string[];
+  flow?: string;
+  assert?: PromoteAssertMode;
+  baseUrlVar?: string;
+  chain?: boolean;
+  name?: string;
+  out?: string;
+  /** true で生成結果のプレビューだけを返す(何も書かない) */
+  dryRun?: boolean;
+}
+
+export interface PromotePlaceholder {
+  name: string;
+  locations: string[];
+}
+
+export interface PromoteCaptureLink {
+  name: string;
+  from: { step: string; path: string };
+  used: { step: string; location: string }[];
+}
+
+export interface PromoteRedaction {
+  name: string;
+  location: string;
+  reason: "sensitive key" | "token-like value";
+}
+
+export interface PromoteSkipped {
+  runId: string;
+  flow: string;
+  step: string;
+  reason: string;
+}
+
+/** POST /api/history/promote の成功レスポンス。server/types.ts の PromoteResponse と手動同期する契約 */
+export interface PromoteResponse {
+  dryRun: boolean;
+  written: boolean;
+  /** 出力先(書いた、または書く予定の cwd 相対パス) */
+  file: string;
+  /** dryRun のときのみ。出力先に既に何かあるか(あれば保存は 409 になる) */
+  exists?: boolean;
+  yaml: string;
+  flow: string;
+  assert: PromoteAssertMode;
+  steps: Array<{
+    name: string;
+    method: string;
+    url: string;
+    from: { runId: string; flow: string; step: string };
+  }>;
+  /** 実行前に OS 環境変数として設定するプレースホルダー({{env.NAME}}) */
+  placeholders: PromotePlaceholder[];
+  /** baseUrlVar で置き換えた origin。環境ファイルに書くべき値 */
+  variables: Array<{ name: string; value: string }>;
+  captures: PromoteCaptureLink[];
+  skipped: PromoteSkipped[];
+  redacted: PromoteRedaction[];
+  templateLiterals: Array<{ step: string; location: string }>;
+  notes: string[];
+  notice: string;
+}

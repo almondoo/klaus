@@ -16,9 +16,12 @@ import {
 import { useHistory } from "@/hooks/useHistory";
 import { cn } from "@/lib/utils";
 import { formatDateTime, formatDuration } from "@/utils/format";
-import { groupHistoryByRun, resolveStepStatus } from "@/utils/history";
+import { groupHistoryByRun, type HistoryRunGroup, resolveStepStatus } from "@/utils/history";
 import { formatActor, pickAudit } from "@/utils/historyEvents";
+import { commonFlow, findPreviousRun, isSingleGroup, orderRunPair } from "@/utils/runDiff";
 import { JsonBlock } from "./JsonBlock";
+import { PromoteDialog } from "./PromoteDialog";
+import { RunDiffPanel } from "./RunDiffPanel";
 import { Spinner } from "./Spinner";
 import { StatusBadge } from "./StatusBadge";
 
@@ -51,13 +54,55 @@ function rowToggleProps(expanded: boolean, toggle: () => void) {
   };
 }
 
-/** 履歴ブラウザ: 新しい順テーブル(run 単位グルーピング → ステップ詳細ドリルダウン) */
+/** 行内のボタン操作が、行の開閉トグル(クリック・Enter / Space)まで伝わらないようにする共通 props */
+const stopRowToggle = {
+  onClick: (e: React.MouseEvent) => e.stopPropagation(),
+  onKeyDown: (e: React.KeyboardEvent) => e.stopPropagation(),
+};
+
+/** 開いている比較(a: 古い方 / b: 新しい方) */
+interface DiffTarget {
+  a: string;
+  b: string;
+  flow?: string;
+}
+
+/** 履歴ブラウザ: 新しい順テーブル(run 単位グルーピング → ステップ詳細ドリルダウン)。run の比較・フローとしての保存もここから行う */
 export function HistoryBrowser({ flows }: HistoryBrowserProps) {
   const [flowFilter, setFlowFilter] = useState("");
   const history = useHistory(flowFilter || undefined);
   const groups = useMemo(() => groupHistoryByRun(history.entries), [history.entries]);
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [expandedStep, setExpandedStep] = useState<string | null>(null);
+  // 比較: 1 つ目の run を選んで 2 つ目を待っている状態(comparingFrom)と、開いている比較(diffTarget)
+  const [comparingFrom, setComparingFrom] = useState<HistoryRunGroup | null>(null);
+  const [diffTarget, setDiffTarget] = useState<DiffTarget | null>(null);
+  // フローとして保存: チェックで選んだ run(runId)と、開いているダイアログの対象
+  const [selectedRunIds, setSelectedRunIds] = useState<ReadonlySet<string>>(new Set());
+  const [promoteGroups, setPromoteGroups] = useState<HistoryRunGroup[] | null>(null);
+
+  const previousOfComparing = useMemo(
+    () => (comparingFrom ? findPreviousRun(groups, comparingFrom) : undefined),
+    [groups, comparingFrom],
+  );
+  const selectedGroups = useMemo(
+    () => groups.filter((group) => selectedRunIds.has(group.runId)),
+    [groups, selectedRunIds],
+  );
+
+  const toggleSelected = (runId: string) =>
+    setSelectedRunIds((current) => {
+      const next = new Set(current);
+      if (next.has(runId)) next.delete(runId);
+      else next.add(runId);
+      return next;
+    });
+
+  const openDiff = (x: HistoryRunGroup, y: HistoryRunGroup) => {
+    const { a, b } = orderRunPair(x, y);
+    setDiffTarget({ a, b, ...commonFlow(x, y) });
+    setComparingFrom(null);
+  };
 
   const flowNames = useMemo(
     () => Array.from(new Set(flows.filter((f) => f.name).map((f) => f.name as string))),
@@ -86,6 +131,71 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
         </div>
       </div>
 
+      {diffTarget && (
+        <RunDiffPanel
+          // 別の比較を開いたら、除外パスなどの入力状態を作り直す
+          key={`${diffTarget.a}:${diffTarget.b}:${diffTarget.flow ?? ""}`}
+          a={diffTarget.a}
+          b={diffTarget.b}
+          flow={diffTarget.flow}
+          onClose={() => setDiffTarget(null)}
+        />
+      )}
+
+      {comparingFrom && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center gap-3 rounded-md border border-running/40 bg-running/10 px-3 py-2 text-sm"
+        >
+          <span>
+            比較元: <span className="font-mono">{comparingFrom.flow}</span>(
+            {formatDateTime(comparingFrom.startedAt)})。比較する相手の run
+            で「これと比較」を選んでください
+          </span>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={previousOfComparing === undefined}
+            onClick={() => previousOfComparing && openDiff(previousOfComparing, comparingFrom)}
+          >
+            前回の同じフローと比較
+          </Button>
+          <Button type="button" variant="outline" size="sm" onClick={() => setComparingFrom(null)}>
+            比較をやめる
+          </Button>
+          {previousOfComparing === undefined && (
+            <span className="text-xs text-muted-foreground">
+              {isSingleGroup(comparingFrom)
+                ? "単発リクエストには「前回の同じフロー」がありません。比較する run を一覧から選んでください"
+                : history.hasMore
+                  ? "同じフローの前回の run が読み込み済みの履歴にありません。「さらに読み込む」で履歴を増やすか、一覧から選んでください"
+                  : "同じフローの前回の run がありません"}
+            </span>
+          )}
+        </div>
+      )}
+
+      {selectedGroups.length > 0 && (
+        <div
+          role="status"
+          className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-card px-3 py-2 text-sm"
+        >
+          <span>{selectedRunIds.size} 件の run を選択中(実行順にフローのステップになります)</span>
+          <Button type="button" size="sm" onClick={() => setPromoteGroups(selectedGroups)}>
+            選択した run をフローとして保存
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setSelectedRunIds(new Set())}
+          >
+            選択を解除
+          </Button>
+        </div>
+      )}
+
       {history.error && <p className="text-sm text-fail">{history.error}</p>}
 
       {!history.error && groups.length === 0 && !history.loading && (
@@ -106,6 +216,9 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
           <Table>
             <TableHeader>
               <TableRow className="bg-popover hover:bg-popover">
+                <TableHead className="w-10">
+                  <span className="sr-only">フローとして保存する run の選択</span>
+                </TableHead>
                 <TableHead>状態</TableHead>
                 <TableHead>フロー</TableHead>
                 <TableHead>開始時刻</TableHead>
@@ -118,6 +231,7 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                 <TableHead>ステップ数</TableHead>
                 <TableHead>実行者</TableHead>
                 <TableHead>環境</TableHead>
+                <TableHead>操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -137,6 +251,15 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                         setExpandedRun(runExpanded ? null : groupKey),
                       )}
                     >
+                      <TableCell {...stopRowToggle}>
+                        <input
+                          type="checkbox"
+                          checked={selectedRunIds.has(group.runId)}
+                          onChange={() => toggleSelected(group.runId)}
+                          aria-label={`${group.flow}(${formatDateTime(group.startedAt)})をフローとして保存する対象に選ぶ`}
+                          className="size-4 cursor-pointer accent-primary"
+                        />
+                      </TableCell>
                       <TableCell>
                         <StatusBadge status={group.status} />
                       </TableCell>
@@ -162,6 +285,45 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                       </TableCell>
                       <TableCell className="font-mono text-muted-foreground">
                         {audit.env ?? "-"}
+                      </TableCell>
+                      <TableCell {...stopRowToggle}>
+                        <div className="flex flex-wrap gap-1.5">
+                          {comparingFrom === null ? (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              aria-label={`${group.flow}(${formatDateTime(group.startedAt)})を比較する`}
+                              onClick={() => setComparingFrom(group)}
+                            >
+                              比較
+                            </Button>
+                          ) : comparingFrom.runId === group.runId ? (
+                            <span className="text-xs text-muted-foreground">比較元</span>
+                          ) : (
+                            <Button
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              className="h-7 px-2 text-xs"
+                              aria-label={`${group.flow}(${formatDateTime(group.startedAt)})とこれから選んだ run を比較する`}
+                              onClick={() => openDiff(comparingFrom, group)}
+                            >
+                              これと比較
+                            </Button>
+                          )}
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-7 px-2 text-xs"
+                            aria-label={`${group.flow}(${formatDateTime(group.startedAt)})をフローとして保存`}
+                            onClick={() => setPromoteGroups([group])}
+                          >
+                            フローとして保存
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
 
@@ -191,6 +353,7 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                                 setExpandedStep(stepExpanded ? null : stepKey),
                               )}
                             >
+                              <TableCell />
                               <TableCell>
                                 <StatusBadge status={stepStatus} />
                               </TableCell>
@@ -211,10 +374,11 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                               </TableCell>
                               <TableCell />
                               <TableCell />
+                              <TableCell />
                             </TableRow>
                             {stepExpanded && (
                               <TableRow className="bg-popover hover:bg-popover">
-                                <TableCell colSpan={7} className="whitespace-normal py-3">
+                                <TableCell colSpan={9} className="whitespace-normal py-3">
                                   {hasStepDetail ? (
                                     <JsonBlock value={stepDetail} />
                                   ) : (
@@ -253,6 +417,10 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
         >
           さらに読み込む
         </Button>
+      )}
+
+      {promoteGroups && (
+        <PromoteDialog groups={promoteGroups} onClose={() => setPromoteGroups(null)} />
       )}
     </div>
   );

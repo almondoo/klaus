@@ -8,8 +8,12 @@ import type {
   EnvironmentUpdateRequestBody,
   FlowDetail,
   FlowListEntry,
+  GetHistoryDiffParams,
   GetHistoryParams,
   HistoryPage,
+  PromoteRequestBody,
+  PromoteResponse,
+  RunDiff,
   RunRequestBody,
   SingleRequestRequestBody,
   SingleRequestResultPayload,
@@ -50,6 +54,23 @@ export function getHistory(params: GetHistoryParams = {}): Promise<HistoryPage> 
   if (params.before) search.set("before", params.before);
   const query = search.toString();
   return apiFetchJson<HistoryPage>(`/api/history${query ? `?${query}` : ""}`);
+}
+
+/** GET /api/history/diff: 2 つの run の差分(履歴はマスク済みのまま比較される) */
+export function getHistoryDiff(params: GetHistoryDiffParams): Promise<RunDiff> {
+  const search = new URLSearchParams({ a: params.a, b: params.b });
+  if (params.flow) search.set("flow", params.flow);
+  for (const path of params.ignorePaths ?? []) search.append("ignorePath", path);
+  return apiFetchJson<RunDiff>(`/api/history/diff?${search.toString()}`);
+}
+
+/** POST /api/history/promote: 履歴から新規フローを生成する(dryRun でプレビュー、それ以外は新規ファイルとして保存) */
+export function promoteHistory(body: PromoteRequestBody): Promise<PromoteResponse> {
+  return apiFetchJson<PromoteResponse>("/api/history/promote", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 export function runFlow(
