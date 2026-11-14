@@ -1,6 +1,6 @@
 # CLI リファレンス
 
-klaus のコマンドは `run`(フロー実行)・`req`(単発リクエストの送信)・`ui`(localhost Web UI 起動)・`validate`(スキーマ検証)・`schema`(JSON Schema 出力)・`generate`(OpenAPI 仕様からのフロー生成。[OpenAPI からのフロー生成](./generate.md)を参照)・`init`(雛形生成)・`history`(実行履歴の参照)の8つ。
+klaus のコマンドは `run`(フロー実行)・`req`(単発リクエストの送信)・`ui`(localhost Web UI 起動)・`validate`(スキーマ検証)・`schema`(JSON Schema 出力)・`generate`(OpenAPI 仕様からのフロー生成。[OpenAPI からのフロー生成](./generate.md)を参照)・`init`(雛形生成)・`history`(実行履歴の参照)・`diff`(2つの run の比較)・`promote`(履歴からのフロー生成)・`mock`(記録済みカセットのモックサーバー化)の11個。
 
 ## --help
 
@@ -21,7 +21,7 @@ klaus run <files...> [options]
 | `--var <key=value>` | その場限りのテンプレート変数を設定する(繰り返し指定可。値自体に `=` を含められる。最初の `=` のみを区切りとして扱う)。環境ファイルの値と同じ名前空間(裸の <code v-pre>{{name}}</code>)に入り、環境から読み込んだ同名キーを上書きする | — |
 | `--json` | TTY でも JSON 出力を強制 | — |
 | `--text` | 非 TTY でも text 出力を強制(`--json` とは併用不可) | — |
-| `--report <list>` | 生成するレポート形式のカンマ区切りリスト: `junit`、`tap`(例: `junit,tap`) | — |
+| `--report <list>` | 生成するレポート形式のカンマ区切りリスト: `junit`、`tap`、`html`、`github`(例: `junit,html`) | — |
 | `--report-file <path>` | `--report` で指定したレポート形式の出力先(繰り返し指定可。詳細は後述) | フォーマットごとの既定値(後述) |
 | `--no-history` | 履歴 JSONL への書き込みを無効化 | 履歴有効 |
 | `--no-mask` | stdout(JSON/text 出力とも)へのシークレットマスキングを無効化 | マスク有効 |
@@ -35,7 +35,7 @@ klaus run <files...> [options]
 | `--jobs <n>` | 実行ユニットをこの数だけ並列実行する(1-32 の整数。詳細は後述の「並列実行(--jobs)」を参照)。`--record` とは併用不可 | 1(逐次実行) |
 | `--dry-run` | 何も送信せず、各ステップの展開後リクエストと、安全柵が拒否するかどうかを出力する(後述の「ドライラン(--dry-run)」を参照)。`--record`・`--replay`・`--report` とは併用不可 | — |
 
-`--report` はカンマ区切りのフォーマット一覧を受け取る(各要素は trim され、`junit` か `tap` のいずれかでなければならない)。未知のフォーマットや空要素を1つでも渡すと stderr にエラーを出して exit 1。`--report` はフォーマットの重複(例: `--report junit,junit`)や、`--report-file` の解決先パスがフォーマット間で同一になる場合も同様に stderr にエラーを出して exit 1 で拒否する(どちらも同一ファイルへの書き込みが競合するため)。`--report` に N 個のフォーマットを渡した場合、`--report-file` は**同じ順序でちょうど N 回**指定する(1個目の `--report-file` が1個目のフォーマットとペアになる)か、**一度も指定しない**(この場合フォーマットごとの既定ファイル名 — `junit` は `klaus-report.xml`、`tap` は `klaus-report.tap` — に書き出される)かのいずれかにする。それ以外の回数(例: 2フォーマットに対して `--report-file` を1回だけ)はエラーとして拒否され、exit 1 でどのファイルも書き出さない。これは単一フォーマットの従来挙動をそのまま一般化したものであり、`--report junit` 単体は変わらず `klaus-report.xml` が既定値になる。`--json` と `--text`、または `-e`/`--env` と `--env-file` を同時に指定した場合も同様に stderr にエラーを出して exit 1(何も実行しない)。この `-e`/`--env` と `--env-file` の併用エラーは、**コマンドラインで明示的に指定した** `-e`/`--env` に対してのみ発生する。`klaus.config.yaml` の `run.env` による既定値は、明示指定された `--env-file` と衝突せずそちらに道を譲る([CLI オプションの既定値](config.md)参照)。
+`--report` はカンマ区切りのフォーマット一覧を受け取る(各要素は trim され、`junit`・`tap`・`html`・`github` のいずれかでなければならない)。未知のフォーマットや空要素を1つでも渡すと stderr にエラーを出して exit 1。`--report` はフォーマットの重複(例: `--report junit,junit`)や、`--report-file` の解決先パスがフォーマット間で同一になる場合も同様に stderr にエラーを出して exit 1 で拒否する(どちらも同一ファイルへの書き込みが競合するため)。`--report` に N 個のフォーマットを渡した場合、`--report-file` は**同じ順序でちょうど N 回**指定する(1個目の `--report-file` が1個目のフォーマットとペアになる)か、**一度も指定しない**(この場合フォーマットごとの既定ファイル名 — `junit` は `klaus-report.xml`、`tap` は `klaus-report.tap`、`html` は `klaus-report.html`、`github` は `klaus-report.md`(例外は [GitHub レポート](#github-レポート) を参照) — に書き出される)かのいずれかにする。それ以外の回数(例: 2フォーマットに対して `--report-file` を1回だけ)はエラーとして拒否され、exit 1 でどのファイルも書き出さない。これは単一フォーマットの従来挙動をそのまま一般化したものであり、`--report junit` 単体は変わらず `klaus-report.xml` が既定値になる。`--json` と `--text`、または `-e`/`--env` と `--env-file` を同時に指定した場合も同様に stderr にエラーを出して exit 1(何も実行しない)。この `-e`/`--env` と `--env-file` の併用エラーは、**コマンドラインで明示的に指定した** `-e`/`--env` に対してのみ発生する。`klaus.config.yaml` の `run.env` による既定値は、明示指定された `--env-file` と衝突せずそちらに道を譲る([CLI オプションの既定値](config.md)参照)。
 
 `--env-file` は、読み込んだファイルの `$protected` を名前付き環境と全く同じように尊重する(後述)。
 
@@ -228,6 +228,22 @@ request/response スナップショットや assertions などの詳細を持つ
 マスキングは JUnit レポートと同じ規則に従う(<code v-pre>{{env.X}}</code> 由来のシークレットを制御文字のサニタイズより先にマスクし、`--no-mask` の影響を受けない)。
 
 `--report` にカンマ区切りリストを渡す(例: `--report junit,tap`)と、1回の実行で両方のフォーマットを生成できる。ペアリングの規則は前述の `--report`/`--report-file` の説明を参照。
+
+### HTML レポート
+
+`--report html` で、自己完結した単一の HTML ファイルを `--report-file`(既定は `klaus-report.html`)に書き出す。CSS はインラインのみで、外部アセットも JavaScript も使わない。実行ヘッダー(ステータス、開始時刻、所要時間、run ID、判明していれば env・actor・git commit)、集計件数、フローごとのセクション(1ステップ1行: ステータス、リクエスト行、レスポンスステータス、所要時間)を表示する。`failed` と `error` のステップは既定で展開され(`<details>` 要素)、失敗したアサーションの期待値/実測値と、request/response(ボディは JSON 出力と同じく 500 文字で切り詰め)を表示する。ブラウザのライト/ダーク設定に追従し、印刷もできる。動的なテキストはすべて HTML エスケープされる。マスクは JUnit レポートと同じ規則(`--no-mask` の影響を受けない)。
+
+### GitHub レポート
+
+`--report github` は GitHub Actions 向けで、2種類の出力を行う。
+
+- **ジョブサマリー(Markdown)**: ステータス行、件数の表、failed/error ステップの表(フロー、ステップ、最初の失敗メッセージ)、フローごとの折りたたみ(`<details>`)。表のセルは切り詰められ(200 文字、メッセージは 300 文字)、エスケープされる(パイプ、バッククォート、`*`、`_`、`[`、改行、HTML。URL は無効化され、クリック可能なリンクは作られない)。サマリー全体は 512 KiB を上限として強制する(GitHub のステップサマリーの上限は 1 MiB): failed ステップの表は 200 行まで、折りたたみの詳細は予算を超えた時点で注記つきで打ち切り、最終手段として行境界で切って開いた `<details>` を閉じる。出力先は次の順で決まり、stdout には決して書かない(`--json` の機械可読な出力を壊さないため)。
+  1. このフォーマットに `--report-file` が指定されている: そのパスへ Markdown を書き出す(上書き)。
+  2. そうでなく `GITHUB_STEP_SUMMARY` が設定されている: そのファイルへ Markdown を追記する。
+  3. どちらでもない: `klaus-report.md` に書き出す。
+- **アノテーション**: `GITHUB_ACTIONS=true` のとき、failed/error ステップごとに `::error file=<フローファイル>,title=<フロー> / <ステップ>::<メッセージ>` を1行出力する。workflow command のエスケープ規則(`%`、CR、LF、およびプロパティ内の `:` と `,`)を適用する。出力先は stdout で、stdout が JSON を運ぶ場合(`--json`、または非 TTY)は stderr になる(GitHub はどちらからも workflow command を解釈する)。長いタイトルとメッセージは切り詰められる(200 文字と 4000 文字)。GitHub Actions 外ではアノテーションを出さない。実行結果にステップのソース位置が含まれないため、`line=` は付かない。
+
+マスクは JUnit レポートと同じ規則に従う。
 
 ## exit code
 
@@ -499,3 +515,86 @@ $ klaus history show 3fa1c2e0-... --step get-me
 ```
 
 `klaus history` の一覧出力に含まれる `runId` / `step` を使って、詳細が必要なエントリだけをこのコマンドで掘り下げる、という使い方を想定している。
+
+## klaus diff
+
+履歴に記録された2つの run をステップ単位で比較する。詳細(比較される内容、揮発する値の除外、JSON の形)は [run の比較](history.md#run-の比較)を参照。
+
+```
+klaus diff [runA] [runB] [options]
+```
+
+runId を2つ(完全一致)、または `latest` / `previous` と `--flow` の組み合わせで指定する。`--flow <name>` だけで runId を省略すると、`previous` と `latest` を比較する。
+
+| オプション | 説明 | デフォルト |
+|---|---|---|
+| `--flow <name>` | フロー名。`latest` / `previous` には必須で、比較をそのフローに限定する | — |
+| `--ignore-header <name>` | 比較から除外するレスポンスヘッダー(複数指定可、大文字小文字を区別しない)。既定の一覧に追加される | — |
+| `--no-default-ignores` | 既定で除外される揮発性のレスポンスヘッダーを除外しない | — |
+| `--ignore-path <jsonpath>` | ボディ比較から除外する JSON パス(複数指定可)。例: `$.id`、`$.items[*].createdAt`、`$..updatedAt` | — |
+| `--duration-threshold <ms>` | 所要時間の変化がこのミリ秒を超えたステップを差分として報告する | 所要時間は無視 |
+| `--max-differences <n>` | ステップ・セクションごとに保持する差分の件数。超過分は「and N more」として数える | 50 |
+| `--max-value-length <n>` | 出力中の値を n 文字に切り詰める | text は 80、JSON は無制限 |
+| `--json` | TTY でも JSON 出力を強制する | — |
+| `--text` | 非 TTY でも text 出力を強制する | — |
+
+出力は通常の TTY 判定に従う(stdout が TTY でなければ JSON)。`--json` と `--text` は併用できない。
+
+| exit code | 意味 |
+|---|---|
+| 0 | 差分なし |
+| 1 | 引数が不正(フラグの併用・不正な `--ignore-path`・`--flow` なしの `latest` / `previous` を含む)、runId が見つからない・該当する `latest` / `previous` が無い(`klaus history show` と同じ)、または予期しないエラー |
+| 4 | 差分あり |
+
+## klaus promote
+
+履歴の記録から、観測したレスポンスをもとにアサーションを推論した、再実行可能なフロー YAML を生成する。詳細(リクエストの再構成、推論されるアサーション、値のチェイン)は [run のフロー化](history.md#run-のフロー化)を参照。
+
+```
+klaus promote <runId...> [options]
+```
+
+| オプション | 説明 | デフォルト |
+|---|---|---|
+| `-o, --out <path>` | 出力ファイル。カレントディレクトリからの相対パスで、配下に収まること | 1ステップなら `api/<name>.yaml`、複数なら `flows/<name>.yaml` |
+| `--stdout` | ファイルを書かず YAML を stdout に出力する(サマリーは stderr) | — |
+| `--force` | 出力ファイルが既にある場合に上書きする | — |
+| `--assert <mode>` | 推論するアサーション: `status`、`schema`(status + content-type + bodySchema)、`values`(status + content-type + 安定したスカラー値の equals)、`all` | `schema` |
+| `--base-url-var <name>` | すべての URL のオリジンを <code v-pre>{{name}}</code> に置き換え、環境ファイルに入れる値を出力する | — |
+| `--no-chain` | ステップ間の capture 連鎖を推論しない | — |
+| `--allow-template-literals` | 記録されたリクエスト値にリテラルの <code v-pre>{{</code> が含まれていても、拒否せずに出力する(フロー実行時にテンプレートとして展開されるため、1件ずつ確認すること) | — |
+| `--name <name>` | フロー名 | 記録されたフロー名、またはホストから導出 |
+| `--flow <name>` | run に複数のフローが含まれる場合に、対象とするフロー | — |
+| `--json` | TTY でも JSON のサマリー出力を強制する | — |
+| `--text` | 非 TTY でも text のサマリー出力を強制する | — |
+
+複数の runId は指定した順に連結される。`--stdout` は `--out` / `--force` と、`--json` は `--text` と併用できない。
+
+| exit code | 意味 |
+|---|---|
+| 0 | フローを生成した(`--stdout` でなければ書き出した) |
+| 1 | 引数が不正、runId が見つからない、複数フローの run で `--flow` が無い(`klaus history show` と同じ)、または予期しないエラー |
+| 2 | 出力ファイルが既に存在する、カレントディレクトリ外または安全でないシンボリックリンク経由の出力パス、フロー化できるステップが無い、記録値にリテラルの <code v-pre>{{</code> が含まれる(`--allow-template-literals` なし)、再現できないマスク値がある、または生成されたフローが不正 |
+
+履歴にマスクされずに保存される秘密情報(環境ファイル・`--var`・capture 由来の値)は、秘密情報を示すキー・ヘッダーの下にある場合やトークンらしい値の場合に <code v-pre>{{env.TODO_*}}</code> のプレースホルダーに置き換えられ、コマンドは常に、コミット前に機微情報を確認するよう促す注意を出力する。
+
+## klaus mock
+
+`klaus run --record <dir>` で記録した応答を、ネットワークに出ずにローカル HTTP サーバーから返す。詳細(マッチング規則、応答、使用例)は[モックサーバー](record-replay.md#モックサーバー)を参照。
+
+```
+klaus mock <dir> [options]
+```
+
+| オプション | 説明 | デフォルト |
+|---|---|---|
+| `-p, --port <n>` | 待ち受けるポート(`0` で空きポートを自動選択) | 4885 |
+| `-H, --host <host>` | バインドするアドレス(外部からの接続を許可するには `0.0.0.0`) | `127.0.0.1` |
+| `--cors` | 寛容な CORS ヘッダーを付け、preflight に応答する | — |
+| `--delay <ms>` | すべての応答に加える固定遅延 | — |
+| `--ignore-query` | メソッドとパスのみでマッチする | — |
+| `--sequence` | 同じリクエストの複数の記録を記録順に返す | — |
+| `--origin <url>` | このオリジンで記録されたエントリだけを返す | — |
+| `--json` | 起動行(stdout)とリクエストログ(stderr)を JSON Lines にする | — |
+
+サーバーは SIGINT / SIGTERM まで動き続け、停止すると exit 0 で終わる。終了コードは、カセットが無い・不正・空の場合、または `--origin` に該当する記録が無い場合が **2**。不正なオプション値(`--port 99999` や形式の誤った `--origin` など)、ポート使用中、その他の実行時エラーは **1**。

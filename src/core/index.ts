@@ -23,6 +23,7 @@ export {
   cassetteEntryToHttpResponse,
   cassetteFilePath,
   findCassetteEntry,
+  loadCassetteEntries,
   loadCassetteIndex,
 } from "./cassette.js";
 export { CookieJar, splitSetCookieHeader } from "./cookie-jar.js";
@@ -76,6 +77,18 @@ export type { HttpRequestOptions, HttpResponse, RawHttpResponse } from "./http.j
  */
 export { DEFAULT_TIMEOUT_MS, sendRawRequest, sendRequest } from "./http.js";
 export { DEFAULT_MAX_REDIRECTS, mergeHttpConfig, resolveHttpTlsPaths } from "./http-session.js";
+export type {
+  DiffJsonOptions,
+  JsonDifference,
+  JsonDifferenceKind,
+  JsonPathPattern,
+} from "./json-diff.js";
+export {
+  diffJson,
+  formatJsonPath,
+  MAX_DESCENDANT_OPERATORS,
+  parseJsonPathPattern,
+} from "./json-diff.js";
 export type { FlowIssue, FlowValidationResult } from "./loader.js";
 export {
   describeFlowSchemaIssues,
@@ -89,7 +102,52 @@ export {
   validateFlowFile,
   validateFlowYaml,
 } from "./loader.js";
-export { isPathWithinDir, isRealPathWithinDir, toDisplayPath } from "./path-guard.js";
+export type { MockCollision, MockMatcher, MockMatcherOptions, MockResponse } from "./mock.js";
+export {
+  buildMockResponse,
+  createMockMatcher,
+  normalizeOrigin,
+  parseRequestTarget,
+} from "./mock.js";
+export {
+  findUnsafeSymlinkInWritePath,
+  isPathWithinDir,
+  isRealPathWithinDir,
+  toDisplayPath,
+} from "./path-guard.js";
+export type {
+  PromoteAssertMode,
+  PromoteCaptureLink,
+  PromotedFlow,
+  PromotedStepInfo,
+  PromoteOptions,
+  PromoteOutcome,
+  PromotePlaceholder,
+  PromoteResult,
+  PromoteRunInput,
+  PromoteSkipped,
+} from "./promote.js";
+export { inferJsonSchema, promoteRuns, renderPromotedYaml } from "./promote.js";
+export type {
+  BodyDiff,
+  Change,
+  DifferenceList,
+  HeaderDiff,
+  RequestDiff,
+  ResolveRunResult,
+  RunDiff,
+  RunDiffOptions,
+  RunSummary,
+  StepDiff,
+} from "./run-diff.js";
+export {
+  DEFAULT_IGNORED_HEADERS,
+  diffRuns,
+  resolveRunRef,
+  selectRunEntries,
+  sortRunEntries,
+  summarizeRun,
+} from "./run-diff.js";
 export type {
   CaptureResponse,
   ExecuteSingleRequestOptions,
@@ -168,6 +226,8 @@ export type { SseResult } from "./sse.js";
 export { receiveSse } from "./sse.js";
 export type { TemplateContext } from "./template.js";
 export { renderDeep, renderHeaders, renderString } from "./template.js";
+export type { LineChange, LineDiff } from "./text-diff.js";
+export { diffLines } from "./text-diff.js";
 export * from "./types.js";
 export type { WsConnectOptions, WsConnectResult } from "./ws.js";
 /**

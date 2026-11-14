@@ -5,6 +5,62 @@ API の現在の仕様は各リファレンス([CLI](../ja/guide/cli.md) / [フ�
 
 0.2.0〜0.14.4 は git 履歴(`chore: vX.Y.Z` のバージョン更新コミットを境界に、直前の更新から当該コミットまでの変更をそのバージョンとして)から後追いで復元したもの。ユーザーに見える変更(feat / fix)だけを短くまとめ、内部リファクタ・テスト・依存更新の細部は省いている。
 
+## 未リリース
+
+バージョンは未確定(統合時に付け替える)。実装済みでまだコミットされていない機能。
+
+### `klaus mock <dir>`
+
+`klaus run --record <dir>` で記録したカセットを返すだけのローカル HTTP サーバーを起動する。ネットワークへは一切転送せず、未マッチは 404(`closest` に近い記録済みパスを返すが、記録済みボディは含めない)。マッチングは **メソッド + パス + クエリ**(記録時のホストは捨てる。ホストまで見る replay とはここが違う)。既定の bind は `127.0.0.1`、ポートは UI(4884)と衝突しない 4885。`--cors` / `--delay` / `--ignore-query` / `--sequence` / `--origin` / `--json` を備える。カセットが無い・不正・空なら exit 2。記録時にマスクされたシークレットは `***` のまま返し、復元しない。
+
+### `--report html` / `--report github`
+
+- `html`: 外部アセット・JavaScript を使わない自己完結の単一 HTML(既定 `klaus-report.html`)。失敗・エラーのステップは既定で展開する
+- `github`: GitHub Actions 向け。ジョブサマリー(Markdown)を `--report-file`、なければ `GITHUB_STEP_SUMMARY` への追記、なければ `klaus-report.md` に書き、`GITHUB_ACTIONS=true` のときは失敗ステップごとに `::error` アノテーションを出す。stdout にはサマリーを書かない(`--json` の機械可読出力を壊さないため)
+
+### `klaus diff`
+
+履歴の2つの run をステップ単位で比較する(ステータス・ヘッダー・ボディの構造的な JSON 差分または行差分・リクエストの変化)。差分があれば **exit 4**(`run` のアサーション失敗と同じ「失敗」の意味合いで揃えた)、run が見つからない・引数不正は 2。`Date` などの揮発するヘッダーは既定で除外し、`--ignore-path` / `--ignore-header` で追加する。履歴のシークレットは `***` で保存されるため、シークレット値の変化は差分に現れない。
+
+### `klaus promote`
+
+履歴の run から、観測したレスポンスをもとにアサーションを推論した再実行可能なフロー YAML を生成する(`--assert status|schema|values|all`、既定は `schema`)。マスク値は復元できないため `{{env.TODO_*}}` のプレースホルダーに置き換えて一覧で示し、生成物に `***` が残る場合は書き込まない。既存ファイルは `--force` なしでは上書きせず、出力先はカレントディレクトリ配下に限る。書き込み前に生成物をスキーマ検証する。前のレスポンスの特徴的な値が後のリクエストに現れるときは `capture` として連鎖させる(`--no-chain` で無効化)。
+
+## 0.19.0
+
+実行単位の HTTP クライアントを追加した。
+
+- フローの最上位 `http:` と `klaus.config.yaml` の `http:` に `followRedirects`(既定 `false`)/ `maxRedirects`(既定 10)/ `cookies`(既定 `false`)を追加。リダイレクトは core で1ホップずつ処理し、**各ホップで `guard.allowedHosts` と保護環境を再判定**する。別オリジンへ移るときは `Authorization` / `Cookie` / `Proxy-Authorization` を落とし、経由した URL を結果と履歴の `redirects` に記録する
+- cookie jar はメモリ上のみで永続化しない。cookie 値はシークレットとしてマスクする。公開サフィックス一覧を持たないため、`Domain` 属性は保守的な規則で受け入れる
+- `http.proxy` と `http.tls`(`ca` / `cert` / `key` / `insecure`)は通信の行き先・信頼先を決めるため、`klaus.config.yaml` でのみ指定できる。フローに書くと検証エラー(exit 2)。CLI フラグ・`klaus req` のオプション・UI パラメーターも設けていない。環境変数の proxy(`HTTP_PROXY` 等)や undici のグローバル設定は読まない
+- SSE と WebSocket にも同じクライアント設定を適用する。`tls.insecure` は実行ごとに stderr へ警告を出す
+- 利用者向けの `Dockerfile`(非 root)と、`klaus run` を実行してジョブサマリーを出す composite GitHub Action(`action.yml`)の定義をリポジトリに追加した。レジストリや Marketplace への公開はしていない
+
+## 0.18.0
+
+`klaus ui` の履歴をライブ更新するようにした。
+
+- `GET /api/history/events`(SSE)で履歴ディレクトリの変化を通知し、UI は通知を受けて履歴を再取得する。CLI やエージェントが外から実行した結果が自動で反映され、別タブ表示中は新着バッジを出す
+- 履歴一覧に実行者(`actor`)と環境(`env`)の列を追加した
+
+## 0.17.0
+
+`klaus run --dry-run` を追加した。
+
+- 何も送信せずに、各ステップの展開後リクエスト(メソッド・URL・ヘッダー・ボディ)を出力する。前段の capture に依存する変数は `{{name}}` のまま残して `unresolved` に列挙し、capture でも環境でもない変数は実行時と同じエラーとして報告する
+- `guard.allowedHosts` と保護環境の判定を実行時と同じ経路で行う。拒否されるステップがあれば **exit 3**、ホストが未解決なら `undetermined`。`if` 条件は評価せず `conditional` として示す
+- 履歴・カセットには触れず、`--record` / `--replay` / `--report` との併用は exit 2
+- `klaus schema --target dry-run-report` を追加した
+
+## 0.16.0
+
+`klaus req` を追加した。
+
+- `klaus req <method> <url>` で、フローファイルなしの単発リクエストを送る。UI の `POST /api/request` と同じ経路(`executeSingleRequest`)を通るため、安全柵・シークレットマスク・履歴記録が `run` と同じように効く。エージェントが探索で `curl` を使うと安全柵を迂回してしまうので、その代わりに使う想定
+- 出力は `run` と同じ規約(非 TTY は JSON、ボディは 500 文字で切り詰め、`historyRef` つき)。exit code は、応答を受け取れば 0(HTTP ステータスは問わない。アサーションがないため)、送信エラーと安全柵の拒否で 3、不正な入力で 2。`--allow-protected` は意図的に設けていない
+- `--body @<file>` はカレントディレクトリ配下のファイルに限る
+- `klaus schema --target req-report` を追加した
+
 ## 0.15.0
 
 安全柵(guardrails)を追加した。人間だけでなくエージェントも klaus を使う前提で、誤った送信先・保護すべき環境への書き込みを機械的に止めるための仕組み。

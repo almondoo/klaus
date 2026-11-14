@@ -46,7 +46,7 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
 - \`klaus run <files...>\`: run flow definition YAML files
   - \`--env <name>\`: overrides the flow's env with the values in environments/<name>.yaml
   - \`--json\`: force JSON output even when running on a TTY
-  - \`--report <list>\` / \`--report-file <path>\`: also write additional report formats, \`junit\` and/or \`tap\` (comma-separated)
+  - \`--report <list>\` / \`--report-file <path>\`: also write additional report formats, \`junit\`, \`tap\`, \`html\`, and/or \`github\` (comma-separated)
   - \`--no-history\`: disable writing to the execution history (.klaus/history/*.jsonl)
   - \`--allow-protected\`: required to run against an environment marked \`$protected: true\`, and to send anything other than GET/HEAD/OPTIONS to one marked \`$protected: readonly\` (otherwise refused with exit code 3)
   - \`--dry-run\`: send nothing; print each step's expanded request plus whether the guards would refuse it (variables that depend on an earlier capture stay as \`{{name}}\`; exits 3 if any step would be refused); cannot combine with \`--record\`/\`--replay\`/\`--report\`
@@ -59,6 +59,9 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
 - \`klaus schema\`: print the flow YAML's JSON Schema to stdout (useful for editor completion and improving flow generation accuracy)
 - \`klaus history\`: list execution history (\`--flow <name>\` / \`--failed\` / \`--last <n>\` / \`--fields <csv>\`; the default output is a summary without bodies)
 - \`klaus history show <runId> [--step <name>]\`: fetch the full (masked) history entries as JSON
+- \`klaus promote <runId...>\`: turn recorded history into a re-runnable flow YAML with inferred assertions (\`--assert status|schema|values|all\`; never overwrites an existing file without \`--force\`); masked values become \`{{env.TODO_*}}\` placeholders to set before running
+- \`klaus diff [<runA> <runB>]\`: compare two recorded runs per step (\`latest\` / \`previous\` need \`--flow <name>\`; \`--ignore-path <jsonpath>\` hides volatile fields); exit 0 when identical, 4 when they differ, 2 for an unknown run
+- \`klaus mock <dir>\`: serve the responses recorded with \`klaus run --record <dir>\` from a local HTTP server (default port 4885; unmatched requests get 404); waits until stopped, so run it in the background; exit 2 for a missing or invalid cassette
 - \`klaus generate <spec>\`: generate flow YAML skeletons from an OpenAPI spec (\`--out-dir <dir>\`, default \`api\`; \`--json\`)
 - \`klaus init\`: generate a minimal flows/environments/AGENTS.md starting point in the current directory (existing files are never overwritten)
 - \`klaus ui\`: launch the localhost Web UI (runner + viewer)

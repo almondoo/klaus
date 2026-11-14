@@ -14,7 +14,7 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
   - `--env-file <path>`: load env variables from an arbitrary YAML file instead of a named environment (mutually exclusive with `-e/--env`)
   - `--var <key=value>`: set an ad-hoc template variable (repeatable); overrides same-named env values but is NOT masked as a secret — use an OS environment variable with `{{env.X}}` for real secrets
   - `--json`: force JSON output even when running on a TTY
-  - `--report <list>` / `--report-file <path>`: comma-separated additional report formats, `junit` and/or `tap` (e.g. `--report junit,tap`); `--report-file` is repeatable, one per format in the same order (defaults: `klaus-report.xml` / `klaus-report.tap`)
+  - `--report <list>` / `--report-file <path>`: comma-separated additional report formats, `junit`, `tap`, `html` (one self-contained file) and/or `github` (Markdown job summary written to `$GITHUB_STEP_SUMMARY`, or `klaus-report.md`, plus `::error` annotations when `GITHUB_ACTIONS=true`) (e.g. `--report junit,tap`); `--report-file` is repeatable, one per format in the same order (defaults: `klaus-report.xml` / `klaus-report.tap` / `klaus-report.html`)
   - `--no-history`: disable writing to the execution history (.klaus/history/*.jsonl)
   - `--data <path>`: data-driven run — a JSON/YAML file of rows; runs every given flow once per row, row values land in the template env namespace, and each result gets a 1-based `iteration` number
   - `--tags <list>` / `--exclude-tags <list>`: comma-separated flow-level tag filters (OR semantics for `--tags`; `--exclude-tags` wins on overlap)
@@ -31,6 +31,18 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
 - `klaus schema`: print the flow YAML's JSON Schema to stdout (useful for editor completion and improving flow generation accuracy); a project-level `klaus.config.yaml` can set per-project defaults for `run`/`ui` options (schema via `klaus schema --target config`)
 - `klaus history`: list execution history (`--flow <name>` / `--failed` / `--last <n>` / `--fields <csv>`; the default output is a summary without bodies)
 - `klaus history show <runId> [--step <name>]`: fetch the full (masked) history entries as JSON
+- `klaus promote <runId...>`: turn recorded history into a re-runnable flow YAML with assertions inferred from the observed responses (`--assert status|schema|values|all`, default `schema` = status + content-type + `bodySchema`)
+  - Writes `api/<name>.yaml` (one step) or `flows/<name>.yaml` (several) and never overwrites an existing file unless `--force`; `-o, --out <path>` (must stay inside the cwd) / `--stdout` change the destination
+  - Masked values (`***`) become `{{env.TODO_*}}` placeholders listed in the output — set them as OS environment variables before running; `--base-url-var <name>` replaces every URL origin with `{{name}}` and prints the value for the environment file
+  - A distinctive value (UUID, or 8+ characters with a digit) from an earlier JSON response that reappears in a later request becomes a `capture` plus a `{{name}}` reference (`--no-chain` disables it); each inferred link is listed in the output, so check them
+  - Skips steps with no response (guard refusals, `error`), skipped steps, and WebSocket steps, and says why; several run IDs are concatenated in order
+  - Safety: recorded values containing a literal `{{` are refused (exit 2) unless `--allow-template-literals` (klaus has no escape for `{{`, so such a value, e.g. `{{env.X}}` echoed by a hostile server, would be expanded when the flow runs); values under sensitive keys/headers (`password`, `apiKey`, `authorization`, `cookie`, ...) and token-like values (JWTs, `sk_...`, long random strings) become `{{env.TODO_*}}` placeholders listed in `redacted`; the output always carries a NOTICE to review the file for sensitive data before committing; a symbolic link as the output path is refused
+  - Exit 1 on invalid arguments or an unknown run (like `klaus history show`), 2 when the content cannot be promoted safely (existing output file, unsafe output path, template literal, masked key, nothing promotable)
+- `klaus diff [<runA> <runB>]`: compare two recorded runs per step (status, HTTP status, response headers, response body as a structural JSON diff or a line diff, and request changes reported separately)
+  - Run IDs are exact matches; `latest` / `previous` need `--flow <name>`, and `klaus diff --flow <name>` alone compares the previous run with the latest
+  - `--ignore-path <jsonpath>` (repeatable; `$.id`, `$.items[*].createdAt`, `$..updatedAt`) hides volatile fields, `--ignore-header <name>` / `--no-default-ignores` control the header list, `--duration-threshold <ms>` includes duration changes, `--max-differences <n>` / `--max-value-length <n>` bound the output
+  - Exit 0 when there are no differences, 4 when there are, 1 for an unknown run or invalid arguments (like `klaus history show`). Secrets are stored as `***`, so a changed secret value is invisible
+- `klaus mock <dir>`: serve the responses recorded with `klaus run --record <dir>` from a local HTTP server (default `127.0.0.1:4885`, nothing is forwarded to the network; unmatched requests get 404); `--port <n>` / `--cors` / `--delay <ms>` / `--ignore-query` / `--sequence` / `--origin <url>` / `--json`; waits until Ctrl+C like `klaus ui`, so run it in the background; exit 2 for a missing or invalid cassette
 - `klaus generate <spec>`: generate flow YAML skeletons from an OpenAPI 3.x spec
 - `klaus init`: generate a minimal flows/environments/AGENTS.md starting point in the current directory (existing files are never overwritten)
 - `klaus ui`: launch the localhost Web UI (runner + viewer) — starts a server and waits forever; do not launch it as part of a validate/run workflow
@@ -44,6 +56,12 @@ Non-TTY output (pipes, CI, agent execution, etc.) is automatically JSON. Result 
 2. `klaus validate <file>` — catches schema errors before spending time on a real HTTP call.
 3. `klaus run <file>` — executes it. Check the exit code (table below) to decide where to look next.
 4. On failure, use `klaus history show <runId> --step <name>` to see the full, unmasked-by-length request/response for the failing step.
+
+### Explore, lock in, then diff
+
+1. Explore the API with `klaus req` (or a flow without `assert`). Pass secrets as `{{env.X}}` so they are masked in history.
+2. `klaus promote <runId...>` (take the run IDs from `historyRef` / `klaus history`) to turn the evidence into a flow, set the `TODO_*` environment variables it lists, then `klaus validate` and `klaus run` the generated file to confirm it passes. Review the inferred assertions, capture links, and the replaced sensitive values before committing the file.
+3. After changing the API or the flow, run it again and use `klaus diff --flow "<flow name>" --ignore-path '$.id'` (add the other volatile fields) to see exactly what changed; exit 4 means the runs differ.
 
 ## YAML schema essentials
 

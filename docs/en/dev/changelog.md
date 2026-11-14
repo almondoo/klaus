@@ -5,6 +5,62 @@ The current spec lives in the respective references ([CLI](../../guide/cli.md) /
 
 0.2.0 through 0.14.4 were reconstructed after the fact from the git history (taking the `chore: vX.Y.Z` version-bump commits as boundaries: everything between the previous bump and a given bump belongs to that version). Only user-visible changes (feat / fix) are summarized, briefly; internal refactors, tests, and dependency-update details are left out.
 
+## Unreleased
+
+No version assigned yet (to be renamed at integration time). Features that are implemented but not yet committed.
+
+### `klaus mock <dir>`
+
+Starts a local HTTP server that only serves the cassette recorded with `klaus run --record <dir>`. It never forwards anything to the network, and an unmatched request gets a 404 (with `closest` recorded paths, but never a recorded body). Matching is on **method + path + query** (the recorded host is dropped; this is where it differs from replay, which matches the full URL). It binds to `127.0.0.1` by default, on port 4885 so it does not collide with the UI (4884). Options: `--cors` / `--delay` / `--ignore-query` / `--sequence` / `--origin` / `--json`. A missing, invalid, or empty cassette exits 2. Secrets masked at record time are served as `***` and are not restored.
+
+### `--report html` / `--report github`
+
+- `html`: a single self-contained HTML file with no external assets or JavaScript (default `klaus-report.html`). Failed and error steps are expanded by default
+- `github`: for GitHub Actions. The Markdown job summary goes to `--report-file`, otherwise is appended to `GITHUB_STEP_SUMMARY`, otherwise is written to `klaus-report.md`; when `GITHUB_ACTIONS=true`, one `::error` annotation is printed per failed step. The summary is never written to stdout (so the machine-readable `--json` output stays intact)
+
+### `klaus diff`
+
+Compares two runs from history step by step (status, headers, a structural JSON diff or a line diff of the body, and request changes). It exits **4** when the runs differ (aligned with the "failure" meaning of an assertion failure in `run`), and 2 for an unknown run or invalid arguments. Volatile headers such as `Date` are excluded by default; add more with `--ignore-path` / `--ignore-header`. History stores secrets as `***`, so a change to a secret value does not show up in a diff.
+
+### `klaus promote`
+
+Turns runs from history into a re-runnable flow YAML with assertions inferred from the observed responses (`--assert status|schema|values|all`, default `schema`). Masked values cannot be reconstructed, so they become `{{env.TODO_*}}` placeholders that are listed in the output, and nothing is written if a `***` would remain in the result. An existing file is never overwritten without `--force`, and the output path must stay inside the current directory. The generated flow is schema-validated before it is written. When a distinctive value from an earlier response shows up in a later request, it is chained as a `capture` (`--no-chain` disables this).
+
+## 0.19.0
+
+Added a per-run HTTP client.
+
+- `followRedirects` (default `false`) / `maxRedirects` (default 10) / `cookies` (default `false`) added to the flow's top-level `http:` and to `http:` in `klaus.config.yaml`. Redirects are handled in core one hop at a time, and **every hop is re-checked against `guard.allowedHosts` and protected environments**. Moving to another origin drops `Authorization` / `Cookie` / `Proxy-Authorization`, and the visited URLs are recorded in `redirects` in the result and history
+- The cookie jar lives in memory only and is never persisted. Cookie values are masked as secrets. Because there is no public suffix list, the `Domain` attribute is accepted under conservative rules
+- `http.proxy` and `http.tls` (`ca` / `cert` / `key` / `insecure`) decide where traffic goes and whom it trusts, so they can only be set in `klaus.config.yaml`. Writing them in a flow is a validation error (exit 2). There is no CLI flag, `klaus req` option, or UI parameter either. Proxy environment variables (`HTTP_PROXY` etc.) and undici's global settings are never read
+- The same client settings apply to SSE and WebSocket. `tls.insecure` prints a warning on stderr for every run
+- Added a `Dockerfile` (non-root) and a composite GitHub Action (`action.yml`) that runs `klaus run` and writes a job summary to the repository. Neither is published to a registry or the Marketplace
+
+## 0.18.0
+
+`klaus ui` now updates its history live.
+
+- `GET /api/history/events` (SSE) announces changes in the history directory, and the UI re-fetches history when notified. Runs executed externally by the CLI or an agent show up automatically, with a new-entries badge while another tab is open
+- The history list gained actor (`actor`) and environment (`env`) columns
+
+## 0.17.0
+
+Added `klaus run --dry-run`.
+
+- Prints each step's expanded request (method, URL, headers, body) without sending anything. Variables that depend on an earlier capture stay as `{{name}}` and are listed in `unresolved`; a variable that is neither a capture nor in the environment is reported as the same error as at run time
+- The `guard.allowedHosts` and protected-environment checks use the same path as a real run. If any step would be refused it **exits 3**, and an unresolved host is `undetermined`. `if` conditions are not evaluated and are shown as `conditional`
+- History and cassettes are untouched, and combining it with `--record` / `--replay` / `--report` exits 2
+- Added `klaus schema --target dry-run-report`
+
+## 0.16.0
+
+Added `klaus req`.
+
+- `klaus req <method> <url>` sends a single request with no flow file. It goes through the same path as the UI's `POST /api/request` (`executeSingleRequest`), so guards, secret masking, and history recording work as in `run`. It is meant to replace `curl` during exploration, since `curl` bypasses the guards
+- Output follows the same conventions as `run` (JSON when not a TTY, bodies truncated to 500 characters, with `historyRef`). Exit code: 0 whenever a response arrives (any HTTP status, since there are no assertions), 3 for a send error or a guard refusal, 2 for invalid input. `--allow-protected` is deliberately not provided
+- `--body @<file>` only accepts files inside the current directory
+- Added `klaus schema --target req-report`
+
 ## 0.15.0
 
 Added guardrails. klaus is used by agents as well as humans, so this mechanically stops requests to the wrong destination and writes to environments that must be protected.

@@ -19,6 +19,8 @@ Documentation site: https://almondoo.github.io/klaus/
 - **Read-only protected environments**: `$protected: readonly` lets only GET / HEAD / OPTIONS run without `--allow-protected`
 - **Dry run**: `klaus run --dry-run` prints each step's expanded request and whether the guards would refuse it, without sending anything
 - **Ad-hoc requests**: `klaus req` sends a single request with the same guards and secret masking as `klaus run` and records it in the history, so agents can use it instead of `curl`
+- **Record, diff, promote, mock**: `klaus diff` compares two recorded runs, `klaus promote` turns recorded runs into a re-runnable flow with inferred assertions, and `klaus mock` serves a recorded cassette as a local mock server
+- **Reports**: `--report` writes `junit`, `tap`, `html` (a single self-contained file), and `github` (a job summary with annotations for GitHub Actions)
 - **Local-first**: Execution history is appended to `.klaus/history/*.jsonl`. No cloud sync or account mechanism
 
 ## Installation
@@ -27,6 +29,8 @@ Documentation site: https://almondoo.github.io/klaus/
 npm install -g @almondoo/klaus
 # Requires Node.js >= 22.19.0
 ```
+
+The repository also contains a `Dockerfile` for building a klaus image yourself and a composite GitHub Action (`action.yml`); neither is published to a registry or the Marketplace.
 
 ## Quick Start
 
@@ -91,6 +95,9 @@ The full syntax for templates, assertions, and SSE / GraphQL / WebSocket flows i
 | `klaus generate <spec>` | Generates flow YAML scaffolding per operation from an OpenAPI spec |
 | `klaus init` | Generates a minimal flows/environments setup in the current directory |
 | `klaus history [show <runId>]` | Lists execution history, or prints one entry as JSON |
+| `klaus diff [runA] [runB]` | Compares two recorded runs from history (exit 4 when they differ) |
+| `klaus promote <runId...>` | Turns recorded runs into a re-runnable flow YAML with inferred assertions |
+| `klaus mock <dir>` | Serves a recorded cassette as a local mock server |
 
 See the [CLI reference](https://almondoo.github.io/klaus/guide/cli) for the full option list of each subcommand.
 
@@ -117,6 +124,7 @@ See the [CLI reference](https://almondoo.github.io/klaus/guide/cli) for the full
 - [record / replay mode](https://almondoo.github.io/klaus/guide/record-replay) — Cassette-based testing for network-isolated or destructive-API scenarios
 - [Web UI](https://almondoo.github.io/klaus/guide/ui) — The `klaus ui` runner + history viewer, and its token / CSRF / Host-validation security model
 - [Execution History](https://almondoo.github.io/klaus/guide/history) — The `.klaus/history/*.jsonl` schema and file conventions
+- [Comparison with other tools](https://almondoo.github.io/klaus/guide/comparison) — How klaus differs from similar API testing tools
 - [Troubleshooting](https://almondoo.github.io/klaus/guide/troubleshooting) — Error messages klaus actually prints, with cause and fix
 - [Agent Skill (Claude Code / Codex)](https://almondoo.github.io/klaus/guide/agent-skill) — Install locations and what the bundled SKILL.md teaches agents
 

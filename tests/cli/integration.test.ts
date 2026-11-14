@@ -59,9 +59,10 @@ function runCli(
   args: string[],
   cwd: string,
   entryPath: string = cliPath,
+  env?: NodeJS.ProcessEnv,
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("node", [entryPath, ...args], { cwd });
+    const child = spawn("node", [entryPath, ...args], { cwd, ...(env ? { env } : {}) });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {
@@ -358,6 +359,48 @@ describe("cli integration", () => {
     const xml = await readFile(reportPath, "utf-8");
     expect(xml).toContain("<testsuite");
     expect(xml).toContain('<testcase name="ok"');
+  });
+
+  it("(e3) --report html,github: HTML ファイルが生成され、GitHub 環境ではサマリー追記 + stderr アノテーションで stdout の JSON は壊れない", async () => {
+    const flowPath = join(workDir, "ng-for-html-github.yaml");
+    await writeFile(
+      flowPath,
+      `name: ng flow\nsteps:\n  - name: bad\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 201\n`,
+      "utf-8",
+    );
+    const htmlPath = join(workDir, "report.html");
+    const summaryPath = join(workDir, "step-summary.md");
+
+    const result = await runCli(
+      [
+        "run",
+        flowPath,
+        "--no-history",
+        "--report",
+        "html,github",
+        "--report-file",
+        htmlPath,
+        "--report-file",
+        join(workDir, "gh.md"),
+      ],
+      workDir,
+      cliPath,
+      { ...process.env, GITHUB_ACTIONS: "true", GITHUB_STEP_SUMMARY: summaryPath },
+    );
+    expect(result.status).toBe(4);
+    expect(JSON.parse(result.stdout).status).toBe("failed");
+    expect(result.stderr).toContain("::error file=");
+    expect(await readFile(htmlPath, "utf-8")).toContain("<!DOCTYPE html>");
+
+    // --report-file 未指定なら GITHUB_STEP_SUMMARY へ追記される
+    const result3 = await runCli(
+      ["run", flowPath, "--no-history", "--report", "github"],
+      workDir,
+      cliPath,
+      { ...process.env, GITHUB_ACTIONS: "true", GITHUB_STEP_SUMMARY: summaryPath },
+    );
+    expect(result3.status).toBe(4);
+    expect(await readFile(summaryPath, "utf-8")).toContain("## klaus run: FAILED");
   });
 
   it("(e2) --report junit,tap + --report-file を2回指定すると両方のレポートファイルが生成される", async () => {
@@ -1193,4 +1236,51 @@ steps:
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout).properties.dryRun).toBeDefined();
   });
+  it("(mock) klaus mock: 記録済みレスポンスを返し、SIGTERM で exit 0 になる。カセットが無ければ exit 2、不正な --port は exit 1", async () => {
+    const mockDir = join(workDir, "mock-scenario");
+    await mkdir(mockDir, { recursive: true });
+    const entry = {
+      v: 1,
+      method: "GET",
+      url: "http://api.example.com/hello?x=1",
+      status: 200,
+      headers: { "content-type": "application/json" },
+      bodyText: '{"hello":"***"}',
+    };
+    await writeFile(join(mockDir, "cassette.jsonl"), `${JSON.stringify(entry)}\n`, "utf-8");
+
+    const child = spawn("node", [cliPath, "mock", mockDir, "--port", "0", "--json"], {
+      cwd: workDir,
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf-8");
+    });
+    child.on("error", () => {});
+    const exited = new Promise<number | null>((resolve) => {
+      child.once("exit", (code) => resolve(code));
+    });
+
+    try {
+      const deadline = Date.now() + 15000;
+      while (!stdout.includes("\n") && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const startup = JSON.parse(stdout.split("\n")[0] ?? "");
+      expect(startup.event).toBe("listening");
+
+      const hit = await fetch(`${startup.url}/hello?x=1`);
+      expect(hit.status).toBe(200);
+      expect(await hit.text()).toBe('{"hello":"***"}');
+      expect((await fetch(`${startup.url}/unknown`)).status).toBe(404);
+    } finally {
+      child.kill("SIGTERM");
+    }
+    expect(await exited).toBe(0);
+
+    const missing = await runCli(["mock", join(workDir, "no-such-cassette")], workDir);
+    expect(missing.status).toBe(2);
+    const badPort = await runCli(["mock", mockDir, "--port", "99999"], workDir);
+    expect(badPort.status).toBe(1);
+  }, 30000);
 });

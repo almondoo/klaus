@@ -19,6 +19,8 @@
 - **読み取り専用の保護環境**: `$protected: readonly` で、`--allow-protected` なしでも GET / HEAD / OPTIONS のみ実行可能
 - **ドライラン**: `klaus run --dry-run` は、何も送信せずに各ステップの展開後リクエストと、安全柵が拒否するかどうかを出力する
 - **単発リクエスト**: `klaus req` は `klaus run` と同じ安全柵・シークレットマスクのもとで1件のリクエストを送り、履歴に記録する。エージェントは `curl` の代わりに使える
+- **記録・比較・フロー化・モック**: `klaus diff` は記録済みの2つの run を比較し、`klaus promote` は記録済みの run からアサーションを推論した再実行可能なフローを生成し、`klaus mock` は記録済みカセットをローカルのモックサーバーとして提供する
+- **レポート**: `--report` で `junit`・`tap`・`html`(自己完結の単一ファイル)・`github`(GitHub Actions 向けのジョブサマリーとアノテーション)を出力
 - **ローカルファースト**: 実行履歴は `.klaus/history/*.jsonl` に追記。クラウド同期・アカウント機構はない
 
 ## インストール
@@ -27,6 +29,8 @@
 npm install -g @almondoo/klaus
 # 要 Node.js >= 22.19.0
 ```
+
+リポジトリには、自分で klaus イメージをビルドするための `Dockerfile` と、composite GitHub Action(`action.yml`)も含まれている。どちらもレジストリや Marketplace には公開していない。
 
 ## クイックスタート
 
@@ -91,6 +95,9 @@ klaus run api/auth-flow.yaml
 | `klaus generate <spec>` | OpenAPI スペックから操作ごとのフロー YAML 雛形を生成 |
 | `klaus init` | flows/environments の最小構成をカレントディレクトリに生成 |
 | `klaus history [show <runId>]` | 実行履歴を一覧表示、または1件を JSON で出力 |
+| `klaus diff [runA] [runB]` | 履歴の記録済み2 run を比較(差分があれば exit 4) |
+| `klaus promote <runId...>` | 記録済みの run からアサーションを推論した再実行可能なフロー YAML を生成 |
+| `klaus mock <dir>` | 記録済みカセットをローカルのモックサーバーとして提供 |
 
 各サブコマンドの全オプションは [CLI リファレンス](https://almondoo.github.io/klaus/ja/guide/cli) を参照。
 
@@ -117,6 +124,7 @@ klaus run api/auth-flow.yaml
 - [record / replay モード](https://almondoo.github.io/klaus/ja/guide/record-replay) — ネットワーク隔離環境や破壊的 API 向けのカセットベース検証
 - [Web UI](https://almondoo.github.io/klaus/ja/guide/ui) — `klaus ui` のランナー + 履歴ビューアと、トークン / CSRF / Host 検証のセキュリティモデル
 - [実行履歴](https://almondoo.github.io/klaus/ja/guide/history) — `.klaus/history/*.jsonl` のスキーマとファイル規約
+- [他ツールとの比較](https://almondoo.github.io/klaus/ja/guide/comparison) — klaus と類似の API テストツールとの違い
 - [トラブルシューティング](https://almondoo.github.io/klaus/ja/guide/troubleshooting) — klaus が実際に出すエラーメッセージと原因・対処
 - [Agent Skill(Claude Code / Codex)](https://almondoo.github.io/klaus/ja/guide/agent-skill) — 配置場所と、同梱の SKILL.md がエージェントに教える内容
 

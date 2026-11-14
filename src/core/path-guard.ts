@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, join, relative, sep } from "node:path";
 
 /**
@@ -88,4 +88,50 @@ export function isRealPathWithinDir(dir: string, candidate: string): boolean {
 /** 絶対パスを cwd 相対の POSIX 形式(/ 区切り)の表示用パスに変換する */
 export function toDisplayPath(cwd: string, path: string): string {
   return relative(cwd, path).split(sep).join("/");
+}
+
+/**
+ * dir 配下の新規書き込み先 target について、書き込みを拒否すべきシンボリックリンクの有無を調べる。
+ * 戻り値は拒否理由(問題なければ undefined)。dir・target は resolve 済みの絶対パスを渡すこと。
+ * isRealPathWithinDir は「存在しない(宙づりの)リンク」を新規ファイルと見なして通してしまい、書き込みがリンクを
+ * 辿って境界外に作られるため、dir から target までの各要素を lstat して個別に判定する:
+ * - 最終要素がシンボリックリンクなら(行き先が境界内でも、宙づりでも)拒否する。書き込み側は O_NOFOLLOW で開く前提
+ * - 途中のディレクトリがシンボリックリンクの場合は、実在し、かつ境界内を指すときだけ許可する
+ *   (宙づり・境界外は拒否)
+ * まだ存在しない要素に達したら、以降は呼び出し側が通常のディレクトリ・ファイルとして作るので問題なしとする。
+ */
+export function findUnsafeSymlinkInWritePath(dir: string, target: string): string | undefined {
+  let realDir: string;
+  try {
+    realDir = realpathSync(dir);
+  } catch {
+    realDir = dir;
+  }
+  const segments = relative(dir, target)
+    .split(sep)
+    .filter((segment) => segment !== "");
+  let current = dir;
+  for (let i = 0; i < segments.length; i++) {
+    current = join(current, segments[i] as string);
+    let isSymlink: boolean;
+    try {
+      isSymlink = lstatSync(current).isSymbolicLink();
+    } catch (error) {
+      if (isEnoent(error)) return undefined;
+      return `cannot inspect "${toDisplayPath(dir, current)}"`;
+    }
+    if (!isSymlink) continue;
+    const display = toDisplayPath(dir, current);
+    if (i === segments.length - 1) return `"${display}" is a symbolic link`;
+    let real: string;
+    try {
+      real = realpathSync(current);
+    } catch {
+      return `"${display}" is a dangling symbolic link`;
+    }
+    if (!isPathWithinDir(realDir, real)) {
+      return `"${display}" is a symbolic link that resolves outside the current directory`;
+    }
+  }
+  return undefined;
 }

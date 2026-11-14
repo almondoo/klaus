@@ -1,6 +1,6 @@
 # CLI Reference
 
-klaus has eight commands: `run` (executes flows), `req` (sends a single ad-hoc request), `ui` (launches the localhost web UI), `validate` (schema-validates flows), `schema` (prints a JSON Schema), `generate` (generates flows from an OpenAPI spec; see [Generating Flows from OpenAPI](./generate.md)), `init` (scaffolds a starting point), and `history` (inspects execution history).
+klaus has eleven commands: `run` (executes flows), `req` (sends a single ad-hoc request), `ui` (launches the localhost web UI), `validate` (schema-validates flows), `schema` (prints a JSON Schema), `generate` (generates flows from an OpenAPI spec; see [Generating Flows from OpenAPI](./generate.md)), `init` (scaffolds a starting point), `history` (inspects execution history), `diff` (compares two recorded runs), `promote` (turns recorded runs into a flow), and `mock` (serves a recorded cassette as a local mock server).
 
 ## --help
 
@@ -21,7 +21,7 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 | `--var <key=value>` | Sets an ad-hoc template variable (repeatable; the value may itself contain `=`, only the first `=` is treated as the separator). Lands in the same namespace as environment file values (bare <code v-pre>{{name}}</code>), overriding same-named keys loaded from the environment | — |
 | `--json` | Forces JSON output even on a TTY | — |
 | `--text` | Forces text output even when not a TTY (cannot be combined with `--json`) | — |
-| `--report <list>` | Comma-separated list of report formats to generate: `junit`, `tap` (e.g. `junit,tap`) | — |
+| `--report <list>` | Comma-separated list of report formats to generate: `junit`, `tap`, `html`, `github` (e.g. `junit,html`) | — |
 | `--report-file <path>` | Output path for the report format(s) given via `--report` (repeatable; see below) | per-format default (see below) |
 | `--no-history` | Disables writing to the history JSONL | history enabled |
 | `--no-mask` | Disables secret masking in stdout output (JSON/text) | masking enabled |
@@ -35,7 +35,7 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 | `--jobs <n>` | Run this many execution units in parallel (integer 1-32; see "Parallel execution (`--jobs`)" below). Cannot be combined with `--record` | 1 (sequential) |
 | `--dry-run` | Send nothing: print each step's expanded request and whether the guards would refuse it (see "Dry run (`--dry-run`)" below). Cannot be combined with `--record`, `--replay`, or `--report` | — |
 
-`--report` takes a comma-separated list of formats (entries are trimmed; each must be `junit` or `tap`). Passing an unknown or empty format entry prints an error to stderr and exits with 1. `--report` also rejects a duplicated format (e.g. `--report junit,junit`) and rejects `--report-file` values that resolve to the same output path across formats, both with an error to stderr and exit 1, since either would make two writes race on one file. With N formats given to `--report`, `--report-file` must be passed either **exactly N times** (in the same order, pairing the 1st `--report-file` with the 1st format and so on) or **not at all** (in which case each format is written to its own default filename: `klaus-report.xml` for `junit`, `klaus-report.tap` for `tap`). Any other count — e.g. one `--report-file` for two formats — is rejected with an error and exits with 1 without writing any file. This generalizes the single-format behavior: `--report junit` alone still defaults to `klaus-report.xml`, unchanged from before. Passing `--json` and `--text` together, or `-e`/`--env` and `--env-file` together, also prints an error to stderr and exits with 1 (nothing is run). This `-e`/`--env` + `--env-file` conflict only fires for an `-e`/`--env` **typed on the command line**; a `run.env` default coming from `klaus.config.yaml` yields to an explicit `--env-file` instead of conflicting with it (see [Default CLI options](config.md)).
+`--report` takes a comma-separated list of formats (entries are trimmed; each must be `junit`, `tap`, `html`, or `github`). Passing an unknown or empty format entry prints an error to stderr and exits with 1. `--report` also rejects a duplicated format (e.g. `--report junit,junit`) and rejects `--report-file` values that resolve to the same output path across formats, both with an error to stderr and exit 1, since either would make two writes race on one file. With N formats given to `--report`, `--report-file` must be passed either **exactly N times** (in the same order, pairing the 1st `--report-file` with the 1st format and so on) or **not at all** (in which case each format is written to its own default filename: `klaus-report.xml` for `junit`, `klaus-report.tap` for `tap`, `klaus-report.html` for `html`, `klaus-report.md` for `github`; see [GitHub Report](#github-report) for the one exception). Any other count — e.g. one `--report-file` for two formats — is rejected with an error and exits with 1 without writing any file. This generalizes the single-format behavior: `--report junit` alone still defaults to `klaus-report.xml`, unchanged from before. Passing `--json` and `--text` together, or `-e`/`--env` and `--env-file` together, also prints an error to stderr and exits with 1 (nothing is run). This `-e`/`--env` + `--env-file` conflict only fires for an `-e`/`--env` **typed on the command line**; a `run.env` default coming from `klaus.config.yaml` yields to an explicit `--env-file` instead of conflicting with it (see [Default CLI options](config.md)).
 
 `--env-file` honors a `$protected` key in the loaded file exactly like a named environment (see below).
 
@@ -228,6 +228,22 @@ With `--report tap`, a [TAP version 13](https://testanything.org/) file is writt
 Masking follows the same rules as the JUnit report (secrets from <code v-pre>{{env.X}}</code>, masked before control-character sanitization, unaffected by `--no-mask`).
 
 Pass a comma-separated list to `--report` (e.g. `--report junit,tap`) to generate both formats in one run — see the `--report`/`--report-file` pairing rule above.
+
+### HTML Report
+
+With `--report html`, a single self-contained HTML file is written to `--report-file` (default `klaus-report.html`): inline CSS only, no external assets, and no JavaScript. It shows the run header (status, start time, duration, run ID, and the env, actor, and git commit when known), the summary counts, and one section per flow with one row per step (status, request line, response status, duration). `failed` and `error` steps are expanded by default (a `<details>` element) and list the failed assertions with expected/actual values plus the request and response, with bodies truncated to 500 characters as in the JSON output. The page follows the light/dark colour scheme of the browser and is printable. All dynamic text is HTML-escaped. Masking follows the same rules as the JUnit report (unaffected by `--no-mask`).
+
+### GitHub Report
+
+`--report github` is for GitHub Actions. It produces two outputs.
+
+- **Job summary (Markdown)**: a status line, a counts table, a table of failed/error steps (flow, step, first failure message), and a collapsed `<details>` section per flow. Table cells are truncated (200 characters, messages 300) and escaped (pipes, backticks, `*`, `_`, `[`, newlines, HTML; URLs are defanged so no clickable link can be produced). The whole summary is hard-capped at 512 KiB (GitHub's step summary limit is 1 MiB): the failed-step table is capped at 200 rows, the collapsed details are cut off with a note when the budget runs out, and as a last resort the output is cut at a line boundary with open `<details>` closed. The destination is chosen as follows, and it is never stdout (so `--json` output stays machine-readable):
+  1. `--report-file` given for this format: the Markdown is written (overwritten) to that path.
+  2. Otherwise, if `GITHUB_STEP_SUMMARY` is set: the Markdown is appended to that file.
+  3. Otherwise: written to `klaus-report.md`.
+- **Annotations**: when `GITHUB_ACTIONS=true`, one `::error file=<flow file>,title=<flow> / <step>::<message>` line is printed per failed/error step, with the workflow-command escaping rules applied (`%`, CR, LF, and also `:` and `,` inside the properties). They go to stdout, or to stderr when stdout carries JSON (`--json`, or non-TTY); GitHub parses workflow commands from both. Long titles and messages are truncated (200 and 4000 characters). Outside GitHub Actions no annotation is printed. Annotations carry no `line=` because step source positions are not part of the run result.
+
+Masking follows the same rules as the JUnit report.
 
 ## Exit code
 
@@ -499,3 +515,86 @@ $ klaus history show 3fa1c2e0-... --step get-me
 ```
 
 The intended workflow is to use the `runId` / `step` from `klaus history`'s list output, then drill into the entries that need full detail with this command.
+
+## klaus diff
+
+Compare two recorded runs from history, step by step. Details (what is compared, ignoring volatile values, the JSON shape) are in [Comparing Runs](history.md#comparing-runs).
+
+```
+klaus diff [runA] [runB] [options]
+```
+
+Pass two run IDs (exact match), or `latest` / `previous` together with `--flow`. With `--flow <name>` and no run IDs, `previous` is compared with `latest`.
+
+| Option | Description | Default |
+|---|---|---|
+| `--flow <name>` | Flow name. Required for `latest` / `previous`, and limits the comparison to that flow | — |
+| `--ignore-header <name>` | Response header to exclude (repeatable, case-insensitive), in addition to the default list | — |
+| `--no-default-ignores` | Do not exclude the default volatile response headers | — |
+| `--ignore-path <jsonpath>` | JSON path to exclude from body comparisons (repeatable), e.g. `$.id`, `$.items[*].createdAt`, `$..updatedAt` | — |
+| `--duration-threshold <ms>` | Report a step as different when its duration changed by more than this many milliseconds | durations ignored |
+| `--max-differences <n>` | Differences kept per step and section; the rest is counted as "and N more" | 50 |
+| `--max-value-length <n>` | Truncate values in the output to n characters | 80 in text, no limit in JSON |
+| `--json` | Force JSON output even on a TTY | — |
+| `--text` | Force text output even when stdout is not a TTY | — |
+
+Output follows the usual TTY convention (JSON when stdout is not a TTY). `--json` and `--text` cannot be combined.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | No differences |
+| 1 | Invalid arguments (including conflicting flags, a bad `--ignore-path`, `latest` / `previous` without `--flow`), an unknown run ID or no matching `latest` / `previous` (like `klaus history show`), or an unexpected error |
+| 4 | Differences found |
+
+## klaus promote
+
+Turn recorded history into a re-runnable flow YAML with assertions inferred from the observed responses. Details (request reconstruction, inferred assertions, chained values) are in [Promoting Runs to a Flow](history.md#promoting-runs-to-a-flow).
+
+```
+klaus promote <runId...> [options]
+```
+
+| Option | Description | Default |
+|---|---|---|
+| `-o, --out <path>` | Output file, relative to the current directory and inside it | `api/<name>.yaml` for one step, `flows/<name>.yaml` for several |
+| `--stdout` | Print the YAML to stdout instead of writing a file (the summary goes to stderr) | — |
+| `--force` | Overwrite the output file if it exists | — |
+| `--assert <mode>` | Assertions to infer: `status`, `schema` (status + content-type + bodySchema), `values` (status + content-type + stable scalar equals), `all` | `schema` |
+| `--base-url-var <name>` | Replace the origin of every URL with <code v-pre>{{name}}</code> and print the value to put in the environment file | — |
+| `--no-chain` | Do not infer capture links between steps | — |
+| `--allow-template-literals` | Emit recorded request values that contain a literal <code v-pre>{{</code> instead of refusing (they are expanded as templates when the flow runs; review each one) | — |
+| `--name <name>` | Flow name | the recorded flow name, or derived from the host |
+| `--flow <name>` | When a run contains several flows, the flow to promote | — |
+| `--json` | Force JSON summary output even on a TTY | — |
+| `--text` | Force text summary output even when stdout is not a TTY | — |
+
+Several run IDs are concatenated in the given order. `--stdout` cannot be combined with `--out` or `--force`, and `--json` cannot be combined with `--text`.
+
+| Exit code | Meaning |
+|---|---|
+| 0 | The flow was generated (and written, unless `--stdout`) |
+| 1 | Invalid arguments, an unknown run ID, a run with several flows and no `--flow` (like `klaus history show`), or an unexpected error |
+| 2 | The output file already exists, an output path outside the current directory or through an unsafe symbolic link, nothing promotable, a recorded value containing a literal <code v-pre>{{</code> (without `--allow-template-literals`), a masked value that cannot be reproduced, or a generated flow that is invalid |
+
+Secrets that history stores unmasked (values from environment files, `--var`, or captures) are replaced with <code v-pre>{{env.TODO_*}}</code> placeholders when they sit under sensitive keys or headers or look like tokens, and the command always prints a notice to review the file for sensitive data before committing it.
+
+## klaus mock
+
+Serve the responses recorded with `klaus run --record <dir>` from a local HTTP server, without any network access. Details (matching rule, responses, an example) are in [Mock server](record-replay.md#mock-server).
+
+```
+klaus mock <dir> [options]
+```
+
+| Option | Description | Default |
+|---|---|---|
+| `-p, --port <n>` | Port to listen on (`0` picks a free port) | 4885 |
+| `-H, --host <host>` | Address to bind (`0.0.0.0` to accept outside connections) | `127.0.0.1` |
+| `--cors` | Add permissive CORS headers and answer preflight requests | — |
+| `--delay <ms>` | Fixed latency added to every response | — |
+| `--ignore-query` | Match on method and path only | — |
+| `--sequence` | Serve repeated recordings of the same request in recorded order | — |
+| `--origin <url>` | Serve only entries recorded for this origin | — |
+| `--json` | Startup line (stdout) and request logs (stderr) as JSON Lines | — |
+
+The server runs until SIGINT / SIGTERM, then exits 0. Exit codes: **2** when the cassette is missing, invalid, or empty, or `--origin` matches no recorded entry; **1** for invalid option values (such as `--port 99999` or a malformed `--origin`), for the port being in use, and for any other runtime failure.

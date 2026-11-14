@@ -13,6 +13,7 @@ import {
   loadCliConfig,
   resolveGuardOptions,
 } from "./config.js";
+import { registerDiffCommand } from "./diff.js";
 import { type GenerateCommandOptions, generateCommand } from "./generate.js";
 import {
   DEFAULT_HISTORY_FIELDS,
@@ -22,6 +23,7 @@ import {
   historyShowCommand,
 } from "./history.js";
 import { initCommand } from "./init.js";
+import { registerMockCommand } from "./mock.js";
 import {
   collectHeaderOption,
   collectQueryOption,
@@ -30,6 +32,7 @@ import {
   parseMethodArgument,
   parseTimeoutOption,
 } from "./option-parsers.js";
+import { registerPromoteCommand } from "./promote.js";
 import { type ReqCommandOptions, reqCommand } from "./req.js";
 import { type RunCommandOptions, runCommand } from "./run.js";
 import { schemaCommand } from "./schema.js";
@@ -154,11 +157,11 @@ program
   .option("--text", "force text output (prints text even when stdout is not a TTY)")
   .option(
     "--report <list>",
-    'output one or more additional report formats: a comma-separated list from "junit", "tap" (e.g. "junit,tap")',
+    'output one or more additional report formats: a comma-separated list from "junit", "tap", "html", "github" (e.g. "junit,html")',
   )
   .option(
     "--report-file <path>",
-    "output path for the report format(s) given via --report (repeatable). With N formats, pass this exactly N times, in the same order, to pair each path with its format; omit it entirely to use the per-format default filenames (klaus-report.xml for junit, klaus-report.tap for tap)",
+    "output path for the report format(s) given via --report (repeatable). With N formats, pass this exactly N times, in the same order, to pair each path with its format; omit it entirely to use the per-format default filenames (klaus-report.xml for junit, klaus-report.tap for tap, klaus-report.html for html, klaus-report.md for github; github appends to $GITHUB_STEP_SUMMARY instead when that is set and no --report-file is given)",
     (value: string, previous: string[]) => [...previous, value],
     [] as string[],
   )
@@ -473,6 +476,11 @@ historyCommand
       process.exitCode = await historyShowCommand(runId, options);
     });
   });
+
+// 別ファイルで定義したコマンドを登録する。
+registerDiffCommand(program);
+registerPromoteCommand(program);
+registerMockCommand(program);
 
 // このモジュールが直接実行された(node dist/cli.js ...)場合のみパースする。
 // テストから import した際に process.argv(vitest 自身の起動引数)を誤ってパースしないためのガード。
