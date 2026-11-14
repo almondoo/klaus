@@ -92,7 +92,7 @@ Flow definitions may declare `tags: [smoke, auth]` at the top level (see [Flow D
 
 `--dry-run` shows what `klaus run` would send, without sending it. For every step it prints the request after template expansion (method, URL with the query merged in, headers, body; for an SSE step the same, for a WebSocket step the URL, headers, and the messages that would be sent), together with the result of the same guard checks that run right before sending. Use it to check a flow against `guard.allowedHosts` and `$protected` environments before a real run.
 
-Nothing is sent and nothing is written: no history entries, no cassette reads or writes, no retries, no assertions, no `capture`. The flow files, `--data`, `--tags`, `--exclude-tags`, `--env`, `--env-file`, `--var`, and `--allow-protected` are interpreted exactly as for a normal run, and parse errors still exit with 2. `--jobs` is accepted, but nothing runs concurrently and the output order stays the same (rows outer, flows inner, as with `--data`). `--dry-run` cannot be combined with `--record`, `--replay`, or `--report`; that is an argument error and exits with 2 without running anything. A `run.report` default in `klaus.config.yaml` is ignored under `--dry-run`. It cannot be set from `klaus.config.yaml`.
+Nothing is sent and nothing is written: no history entries, no cassette reads or writes, no retries, no assertions, no `capture`. The flow files, `--data`, `--tags`, `--exclude-tags`, `--env`, `--env-file`, `--var`, and `--allow-protected` are interpreted exactly as for a normal run, and parse errors still exit with 2. `--jobs` is accepted, but nothing runs concurrently and the output order stays the same (rows outer, flows inner, as with `--data`). `--dry-run` cannot be combined with `--record`, `--replay`, or `--report`; that is an argument error and exits with 1 without running anything, like the other argument conflicts of `klaus run`. A `run.report` default in `klaus.config.yaml` is ignored under `--dry-run`. It cannot be set from `klaus.config.yaml`.
 
 - **Variables that depend on a capture**: a variable that an earlier step of the same flow defines through `capture` has no value yet, so it stays as <code v-pre>{{name}}</code> in the output and is listed in the step's `unresolved` field. That is not an error. Such a name is treated as unresolved even if the environment defines the same name, because at run time a captured value takes precedence over the environment.
 - **Variables that cannot resolve at run time either**: a variable that is neither defined by an earlier step's `capture` nor in the environment, `--var`, or the data row, and an <code v-pre>{{env.X}}</code> whose OS environment variable is undefined, are reported in the step's `error` with the same message as at run time, and the step has no `request`.
@@ -245,7 +245,7 @@ Details of the decision rules:
 2. A parse error in an environment file (`environments/*.yaml`) encountered during execution also results in exit 2
 3. After execution: if any flow contains a runtime error (status "error"), exit **3**; otherwise if there's an assertion failure (status "failed"), exit **4**; if everything passed, exit **0**. When both 3 and 4 apply, 3 takes priority
 4. A failure to write the history JSONL only produces a warning on stderr — it does not affect step results or the exit code
-5. With `--dry-run` nothing is sent, so only 0, 2, and 3 occur (see [Dry run](#dry-run-dry-run))
+5. With `--dry-run` nothing is sent, so assertions never run and 4 does not occur: 0 (everything would be sent), 1 (an argument error such as combining with `--record` / `--replay` / `--report`, or an empty tag selection), 2 (a parse error), or 3 (a step the guards would refuse, or an expansion error a real run would hit too); see [Dry run](#dry-run-dry-run)
 
 An agent (such as Claude Code) can identify where things went wrong from the exit code alone: 2 means fix the definition, 3 means check whether the target API is up, and 4 means compare the assertion against the response.
 
@@ -311,18 +311,20 @@ The text output starts with a `METHOD URL -> status (duration)` line, then the r
 
 `klaus req` applies the same guards as `klaus run`, evaluated right before sending on the template-expanded request:
 
-- [`guard.allowedHosts`](config.md#host-allowlist-guard-allowedhosts) in `klaus.config.yaml` restricts the target host. `klaus req` reads only the `guard` section of that file. The `run:` defaults (`run.env`, `run.history`, `run.mask`, ...) are for `klaus run` and are not applied to `klaus req`.
+- [`guard.allowedHosts`](config.md#host-allowlist-guard-allowedhosts) in `klaus.config.yaml` restricts the target host. `klaus req` reads only the `guard` and `http` sections of that file. The `run:` defaults (`run.env`, `run.history`, `run.mask`, ...) are for `klaus run` and are not applied to `klaus req`.
 - An environment with `$protected: true` refuses every request. With `$protected: readonly`, only `GET` / `HEAD` / `OPTIONS` are sent, and a request carrying a method-override header is refused. See [Protected environments](#protected-environments-protected).
 
-A refused request is reported as `status: "error"` with exit code 3, and the refusal is recorded in the history.
+A refused request is reported as `status: "error"` with exit code 3, and the refusal is recorded in the history. Because `klaus req` has no `--allow-protected`, a protection refusal ends with a hint to run a flow with `klaus run --allow-protected` instead (see [Troubleshooting](troubleshooting.md)).
+
+`--env-file` may point outside the current directory, for both `klaus run` and `klaus req`: it is an input you chose explicitly, and its values are ordinary variables, not secrets (only <code v-pre>{{env.X}}</code> values are masked).
 
 ### Exit codes
 
 | code | Meaning |
 |---|---|
 | 0 | A response was received (any HTTP status code; there are no assertions) |
-| 1 | Unexpected exception, or a malformed option rejected by the option parser (for example `--header` without a `:`) |
-| 2 | Invalid input: `--json` with `--text`, `-e` with `--env-file`, a `--body` file that is missing or outside the cwd, an invalid request definition, or an invalid environment file or `klaus.config.yaml` |
+| 1 | Invalid arguments: `--json` with `--text`, `-e` with `--env-file`, or a malformed option rejected by the option parser (for example `--header` without a `:`); also an unexpected exception |
+| 2 | Invalid input: a `--body` file that is missing or outside the cwd, an invalid request definition, or an invalid environment file or `klaus.config.yaml` |
 | 3 | Runtime error: connection failure, timeout, unresolved template variable, or a request refused by `$protected` or `guard.allowedHosts` |
 
 Exit code 4 is never returned. To fail on an HTTP status, write a flow with an `assert` and use `klaus run`.

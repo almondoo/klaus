@@ -94,6 +94,12 @@ environment "production" is protected ($protected: readonly) and refuses request
 
 The fix is the same (`--allow-protected`), or switch the step to a safe method. GraphQL steps default to `POST`, so they are refused too. See [Protected environments](cli.md#protected-environments-protected).
 
+`klaus req` and single requests from `klaus ui` have no `--allow-protected` option, so their refusals end with a different hint instead of the `Pass --allow-protected ...` sentence:
+
+```
+Single requests (klaus req, klaus ui) cannot override environment protection; run a flow with `klaus run --allow-protected` instead.
+```
+
 ### "host \"X\" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request."
 
 **Symptom**

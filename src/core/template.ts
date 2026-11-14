@@ -94,7 +94,11 @@ function resolveVariable(name: string, context: TemplateContext): string {
  */
 function formatAvailableVariables(context: TemplateContext): string {
   const envNames = Object.keys(context.env);
-  const captureNames = Object.keys(context.captures);
+  // dry-run は前段の capture をまだ実行しておらず captures が空のため、capture の名前は deferred から補う
+  // (実行時と同じメッセージにするため。実行時は deferred が無く、captures の名前だけを使う)
+  const captureNames = [
+    ...new Set([...Object.keys(context.captures), ...(context.deferred ?? [])]),
+  ];
   const parts: string[] = [];
   if (envNames.length > 0) {
     parts.push(`env: ${envNames.join(", ")}`);

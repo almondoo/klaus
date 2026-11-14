@@ -185,6 +185,37 @@ steps:
       expect(dry.steps[0]?.guard.status).toBe("undetermined");
     });
 
+    it("前段の capture がある場合も、未解決変数のエラーは実行時と同じメッセージ((available: ...) の一覧を含む)", async () => {
+      const capturing = createServer((_req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ token: "t-1" }));
+      });
+      const { baseUrl } = await listenEphemeral(capturing);
+      try {
+        const flow = flowOf(`
+name: missing-after-capture
+steps:
+  - name: login
+    request: { method: GET, url: "${baseUrl}/login" }
+    capture: { token: "$.token" }
+  - name: use
+    request: { method: GET, url: "${baseUrl}/{{nope}}" }
+`);
+
+        const dry = await dryRunFlow(flow, "mc.yaml", { cwd, variables: { region: "eu" } });
+        const real = await executeFlow(flow, "mc.yaml", {
+          cwd,
+          history: false,
+          variables: { region: "eu" },
+        });
+
+        expect(real.steps[1]?.error).toContain("(available: env: region; captures: token)");
+        expect(dry.steps[1]?.error).toBe(real.steps[1]?.error);
+      } finally {
+        await closeServer(capturing);
+      }
+    });
+
     it("後ろのステップや自分自身が capture する名前は、前段の capture とは見なさない", async () => {
       const flow = flowOf(`
 name: order
@@ -410,6 +441,63 @@ steps:
       expect(dry.steps[1]?.guard.status).toBe("allowed");
       expect(dry.steps[1]?.unresolved).toEqual(["id"]);
       expect(dry.steps[2]?.guard.status).toBe("refused");
+    });
+
+    it("ホスト名が確定していれば、ポート・ユーザー情報・パスが未解決でも許可リストを判定する(refused / allowed)", async () => {
+      const flow = flowOf(`
+name: late-parts
+steps:
+  - name: discover
+    request: { method: GET, url: "${fixture.baseUrl}/d" }
+    capture: { port: "$.port", u: "$.u" }
+  - name: bad-port
+    request: { method: GET, url: "http://evil.com:{{port}}/" }
+  - name: bad-userinfo
+    request: { method: GET, url: "http://{{u}}@evil.com/" }
+  - name: ok-userinfo
+    request: { method: GET, url: "http://{{u}}@${new URL(fixture.baseUrl).host}/" }
+`);
+
+      const dry = await dryRunFlow(flow, "lp2.yaml", {
+        cwd,
+        guard: { allowedHosts: [new URL(fixture.baseUrl).host] },
+      });
+
+      expect(dry.steps[1]?.guard.status).toBe("refused");
+      expect(dry.steps[1]?.guard.reason).toContain('host "evil.com"');
+      expect(dry.steps[2]?.guard.status).toBe("refused");
+      expect(dry.steps[3]?.guard.status).toBe("allowed");
+      expect(dry.steps[3]?.unresolved).toEqual(["u"]);
+    });
+
+    it("ポートだけが未解決で、そのホストの許可エントリがすべてポート指定つきなら undetermined(ポート指定なしのエントリがあれば allowed)", async () => {
+      const flow = flowOf(`
+name: late-port
+steps:
+  - name: discover
+    request: { method: GET, url: "${fixture.baseUrl}/d" }
+    capture: { port: "$.port" }
+  - name: use
+    request: { method: GET, url: "http://api.example.com:{{port}}/" }
+`);
+
+      const withPort = await dryRunFlow(flow, "p.yaml", {
+        cwd,
+        guard: { allowedHosts: ["api.example.com:8443"] },
+      });
+      const anyPort = await dryRunFlow(flow, "p.yaml", {
+        cwd,
+        guard: { allowedHosts: ["api.example.com", "api.example.com:8443"] },
+      });
+      const otherHost = await dryRunFlow(flow, "p.yaml", {
+        cwd,
+        guard: { allowedHosts: ["other.example.com:8443"] },
+      });
+
+      expect(withPort.steps[1]?.guard.status).toBe("undetermined");
+      expect(withPort.steps[1]?.guard.reason).toContain("port");
+      expect(anyPort.steps[1]?.guard.status).toBe("allowed");
+      expect(otherHost.steps[1]?.guard.status).toBe("refused");
     });
 
     it("ホストが未解決でも、許可リストが無ければ allowed(判定すべきホスト制限が無い)", async () => {

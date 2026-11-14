@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -275,7 +275,7 @@ describe("reqCommand", () => {
     expect(stderrSpy.join("")).toContain("parse error");
   });
 
-  it("--json と --text、-e と --env-file の同時指定は exit 2", async () => {
+  it("--json と --text、-e と --env-file の同時指定は引数エラーで exit 1(run と同じ)", async () => {
     const jsonText = await reqCommand(
       "GET",
       `${fixture.baseUrl}/x`,
@@ -289,8 +289,8 @@ describe("reqCommand", () => {
       workDir,
     );
 
-    expect(jsonText).toBe(2);
-    expect(envBoth).toBe(2);
+    expect(jsonText).toBe(1);
+    expect(envBoth).toBe(1);
     expect(stdoutSpy.join("")).toBe("");
   });
 
@@ -402,6 +402,100 @@ describe("reqCommand", () => {
     expect(get).toBe(0);
     expect(post).toBe(3);
     expect(readJson().error).toContain("refusing POST");
+  });
+
+  it('$protected: "readonly" の環境では、メソッド上書きヘッダーつきの GET も exit 3 で拒否し、送信しない', async () => {
+    await mkdir(join(workDir, "environments"), { recursive: true });
+    await writeFile(
+      join(workDir, "environments", "stg.yaml"),
+      `$protected: readonly\nbaseUrl: ${fixture.baseUrl}\n`,
+      "utf-8",
+    );
+
+    const code = await reqCommand(
+      "GET",
+      "{{baseUrl}}/ping",
+      opts({ env: "stg", header: { "X-HTTP-Method-Override": "DELETE" } }),
+      workDir,
+    );
+
+    expect(code).toBe(3);
+    const report = readJson();
+    expect(report.error).toContain("x-http-method-override");
+    // 単発リクエストには --allow-protected が無いため、フロー実行向けの案内に切り替わる
+    expect(report.error).toContain("cannot override environment protection");
+    expect(report.error).not.toContain("Pass --allow-protected");
+    expect(report).not.toHaveProperty("response");
+  });
+
+  it("--body @<シンボリックリンク> が cwd の外の実体を指す場合は exit 2 で何も送信しない", async () => {
+    const outside = await mkdtemp(join(tmpRoot, "klaus-req-outside-"));
+    try {
+      await writeFile(join(outside, "secret.json"), '{"leak":true}', "utf-8");
+      await symlink(join(outside, "secret.json"), join(workDir, "link.json"));
+
+      const code = await reqCommand(
+        "POST",
+        `${fixture.baseUrl}/f`,
+        opts({ body: "@link.json" }),
+        workDir,
+      );
+
+      expect(code).toBe(2);
+      expect(stdoutSpy.join("")).toBe("");
+      expect(stderrSpy.join("")).toContain("outside the current directory");
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("--body @<絶対パス> は cwd の外なら exit 2、cwd 配下なら読んで送る", async () => {
+    const outside = await mkdtemp(join(tmpRoot, "klaus-req-outside-"));
+    try {
+      await writeFile(join(outside, "abs.json"), '{"abs":1}', "utf-8");
+      const refused = await reqCommand(
+        "POST",
+        `${fixture.baseUrl}/f`,
+        opts({ body: `@${join(outside, "abs.json")}` }),
+        workDir,
+      );
+      expect(refused).toBe(2);
+      expect(stdoutSpy.join("")).toBe("");
+      expect(stderrSpy.join("")).toContain("outside the current directory");
+
+      await writeFile(join(workDir, "inside.json"), '{"inside":2}', "utf-8");
+      const allowed = await reqCommand(
+        "POST",
+        `${fixture.baseUrl}/f`,
+        opts({ body: `@${join(workDir, "inside.json")}` }),
+        workDir,
+      );
+      expect(allowed).toBe(0);
+      expect(JSON.parse(readEcho().body)).toEqual({ inside: 2 });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("--no-mask(mask: false)でも履歴ファイルのシークレットはマスクされる", async () => {
+    process.env.KLAUS_REQ_TEST_SECRET = "history-secret-value-77";
+    try {
+      const code = await reqCommand(
+        "GET",
+        `${fixture.baseUrl}/s`,
+        { history: true, mask: false, header: { "X-Secret": "{{env.KLAUS_REQ_TEST_SECRET}}" } },
+        workDir,
+      );
+
+      expect(code).toBe(0);
+      // 標準出力は --no-mask なので生の値が出る
+      expect(readJson().request.headers["X-Secret"]).toBe("history-secret-value-77");
+      const history = await readFile(historyFilePath(workDir), "utf-8");
+      expect(history).not.toContain("history-secret-value-77");
+      expect(JSON.parse(history.trim()).request.headers["X-Secret"]).toBe("***");
+    } finally {
+      delete process.env.KLAUS_REQ_TEST_SECRET;
+    }
   });
 
   it("{{env.X}} のシークレットは既定でマスクされ、mask: false(--no-mask)なら生の値が出る", async () => {

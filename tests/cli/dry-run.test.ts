@@ -161,6 +161,66 @@ steps:
     expect(fixture.count()).toBe(0);
   });
 
+  it("query: ブロックと前段 capture 由来のホストを持つステップでもクラッシュせず、{{name}} を保ったまま報告する", async () => {
+    const flow = await writeFlow(
+      "late-host-query.yaml",
+      `name: late
+steps:
+  - name: discover
+    request: { method: GET, url: "${fixture.baseUrl}/d" }
+    capture: { host: "$.host", token: "$.token" }
+  - name: use
+    request:
+      method: GET
+      url: "{{host}}/x"
+      query: { a: "1", t: "{{token}}" }
+`,
+    );
+
+    const code = await runCommand(
+      [flow],
+      baseOptions({ guard: { allowedHosts: ["api.example.com"] } }),
+    );
+
+    // ホストが未解決なので refused ではなく undetermined。exit 1(予期しない例外)にならない
+    expect(code).toBe(3);
+    const report = readJson();
+    const use = report.flows[0]?.steps[1];
+    expect(use?.request?.url).toBe("{{host}}/x?a=1&t={{token}}");
+    expect(use?.unresolved).toEqual(["host", "token"]);
+    expect(use?.guard.status).toBe("undetermined");
+    // discover は許可リスト外なので refused のまま(exit 3 の理由はこちら)
+    expect(report.flows[0]?.steps[0]?.guard.status).toBe("refused");
+    expect(stderrSpy.join("")).not.toContain("unexpected error");
+  });
+
+  it("ホスト名が確定していれば、ポートやユーザー情報が未解決でも許可リストで refused になる(exit 3)", async () => {
+    const flow = await writeFlow(
+      "late-port.yaml",
+      `name: late
+steps:
+  - name: discover
+    request: { method: GET, url: "http://api.example.com/d" }
+    capture: { port: "$.port", u: "$.u" }
+  - name: port
+    request: { method: GET, url: "http://evil.com:{{port}}/" }
+  - name: userinfo
+    request: { method: GET, url: "http://{{u}}@evil.com/" }
+`,
+    );
+
+    const code = await runCommand(
+      [flow],
+      baseOptions({ guard: { allowedHosts: ["api.example.com"] } }),
+    );
+
+    expect(code).toBe(3);
+    const steps = readJson().flows[0]?.steps;
+    expect(steps?.[1]?.guard.status).toBe("refused");
+    expect(steps?.[2]?.guard.status).toBe("refused");
+    expect(steps?.[1]?.guard.reason).toContain('host "evil.com"');
+  });
+
   it("実行時にも失敗する展開エラー(前段の capture でない未解決変数)があれば exit 3", async () => {
     const flow = await writeFlow(
       "missing.yaml",
@@ -200,7 +260,7 @@ steps:
     expect(urls).toEqual(["a#1:/a/1", "c#1:/c/1", "a#2:/a/2", "c#2:/c/2"]);
   });
 
-  it("--record / --replay / --report との併用は引数エラー(exit 2)で、何も出力しない", async () => {
+  it("--record / --replay / --report との併用は引数エラー(exit 1。run の他の引数エラーと同じ)で、何も出力しない", async () => {
     const flow = await writeFlow("chain.yaml", CHAIN_FLOW(fixture.baseUrl));
     const cassette = join(workDir, "cassette");
 
@@ -208,7 +268,7 @@ steps:
     const withReplay = await runCommand([flow], baseOptions({ replay: cassette }));
     const withReport = await runCommand([flow], baseOptions({ report: "junit" }));
 
-    expect([withRecord, withReplay, withReport]).toEqual([2, 2, 2]);
+    expect([withRecord, withReplay, withReport]).toEqual([1, 1, 1]);
     expect(stdoutSpy.join("")).toBe("");
     expect(stderrSpy.join("")).toContain("--dry-run cannot be combined with --record or --replay");
     expect(stderrSpy.join("")).toContain("--dry-run cannot be combined with --report");

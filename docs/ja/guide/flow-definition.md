@@ -47,8 +47,10 @@ steps: [ ... ]
 
 - フローの実行 1 回につき HTTP クライアントを 1 つ作り、全ステップ(HTTP・SSE・WebSocket)で共有する。実行終了時に閉じる。cookie は保存しない。
 - 各キーは `klaus.config.yaml` の `http` セクション([HTTP クライアント](config.md#http-クライアント-http))の同じキーを上書きする。何も指定しなければリダイレクトを追わず、cookie も保持しない。
-- リダイレクトの各ホップは通常のリクエストと同じく `guard.allowedHosts` と `$protected` の判定を通る。拒否されたホップはステップを `error`(終了コード 3)にし、履歴に残る。別オリジンへ移るときは `Authorization`・`Cookie`・`Proxy-Authorization` を落とす。経由した URL はステップ結果と履歴の `redirects` に入る。
-- cookie の値は秘密値として履歴・出力でマスクされる。cookie は各ホップと WebSocket のハンドシェイクのたびに jar から付け直す。
+- リダイレクトの各ホップは通常のリクエストと同じく `guard.allowedHosts` と `$protected` の判定を通る。拒否されたホップはステップを `error`(終了コード 3)にし、履歴に残る。経由した URL はステップ結果と履歴の `redirects` に入る。
+- 別オリジン(スキーム・ホスト・ポートのいずれかが違う。同じホストでの https から http への格下げも含む)へ移るときは、`Authorization`・`Cookie`・`Proxy-Authorization` に加えて、登録済みの秘密値(<code v-pre>{{env.X}}</code> の値・cookie の値とそのエンコード形)を値に含むヘッダーをすべて落とす。API キーは `X-Api-Key` など独自のヘッダーで渡されることが多いためである。秘密値を含まないヘッダー(`Accept`・`User-Agent`・ボディを保つ場合の `Content-Type`・その他の独自ヘッダー)は転送する。落としたヘッダー名(ホップごと、名前のみ)はステップ結果と履歴の `droppedHeaders` に入る。4 文字未満の秘密値は認識されない。
+- cookie の値は秘密値として履歴・出力でマスクされる。cookie は各ホップと WebSocket のハンドシェイクのたびに jar から付け直す。`Secure` cookie は `http://` に送らない。
+- cookie はサブドメイン間で共有されない: `Domain` が親ドメインを指していても、cookie は設定したホストそのものに対してだけ保存する(公開サフィックス一覧を持たないための安全側の挙動)。あるサブドメインでログインして別のサブドメインを呼ぶフローは、ログインのレスポンスから取り出したセッションをヘッダーで明示的に渡す。
 - `proxy` と `tls` は**フローには書けない**(検証エラー、終了コード 2)。通信の行き先と信頼先を決めるため、`klaus.config.yaml` にだけ書ける。
 
 ## request(HTTP ステップ)

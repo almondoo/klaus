@@ -94,6 +94,12 @@ environment "production" is protected ($protected: readonly) and refuses request
 
 対処は同じ(`--allow-protected`)か、ステップを安全なメソッドに変える。GraphQL ステップは既定で `POST` のため、これも拒否される。[保護環境](cli.md#保護環境-protected)を参照。
 
+`klaus req` と `klaus ui` の単発リクエストには `--allow-protected` オプションがないため、拒否メッセージの末尾は `Pass --allow-protected ...` の代わりに次の案内になる。
+
+```
+Single requests (klaus req, klaus ui) cannot override environment protection; run a flow with `klaus run --allow-protected` instead.
+```
+
 ### 「host "X" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request.」
 
 **症状**

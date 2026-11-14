@@ -1,17 +1,17 @@
 /**
  * 実行単位のメモリ上 cookie jar(実行をまたいで保存しない)。
- * ドメイン・パス・Secure・有効期限を判定する。公開サフィックス一覧は持たないため、
- * Domain 属性は「リクエストホストと同じ」か「リクエストホストの親でドットを含むもの」だけ受け付ける
- * (`Domain=com` のような単一ラベルは拒否する)。Domain 属性のない cookie はホスト限定(host-only)になり、
- * サブドメインへは送らない。
+ * ドメイン・パス・Secure・有効期限を判定する。公開サフィックス一覧を持たないため、cookie は常に
+ * リクエストホスト限定(host-only)で保存し、サブドメインや親ドメインとは共有しない。
+ * `Domain` 属性は、リクエストホストと同じか親ドメインを指す場合に限り(host-only として)受け付ける。
+ * これにより `Domain=co.uk` や `Domain=github.io` のような公開サフィックスを使って、同じサフィックス上の
+ * 無関係なサイトに cookie を送らせることはできない。
  */
 
 interface StoredCookie {
   name: string;
   value: string;
-  /** 小文字化・先頭ドット除去済みのドメイン(host-only の場合はリクエストホストそのもの) */
+  /** cookie を設定したレスポンスのホスト(小文字化済み)。送信先ホストが完全一致する場合にだけ送る */
   domain: string;
-  hostOnly: boolean;
   path: string;
   secure: boolean;
   /** 有効期限(エポック ms)。undefined ならセッション cookie(jar の寿命 = 実行の寿命) */
@@ -52,12 +52,6 @@ function pathMatches(requestPath: string, cookiePath: string): boolean {
   if (requestPath === cookiePath) return true;
   if (!requestPath.startsWith(cookiePath)) return false;
   return cookiePath.endsWith("/") || requestPath[cookiePath.length] === "/";
-}
-
-function domainMatches(host: string, cookie: StoredCookie): boolean {
-  if (cookie.hostOnly) return host === cookie.domain;
-  if (host === cookie.domain) return true;
-  return !isIpHost(host) && host.endsWith(`.${cookie.domain}`);
 }
 
 /** Set-Cookie の 1 行を解析した結果 */
@@ -134,27 +128,16 @@ export class CookieJar {
         if (!secure || hasDomainAttr || rawPath !== "/") continue;
       }
 
-      // Domain 属性の受理規則(公開サフィックス一覧を持たないための保守的な規則)
-      let domain = host;
-      let hostOnly = true;
+      // Domain 属性: リクエストホストと同じか親ドメインなら受け付けるが、保存は常にリクエストホスト限定にする
+      // (公開サフィックス一覧を持たないため、親ドメインへの共有は一切行わない)。無関係なドメインは cookie ごと拒否する
+      const domain = host;
       if (hasDomainAttr) {
         const attr = (parsed.attributes.get("domain") ?? "").replace(/^\./, "").toLowerCase();
-        if (attr === "") {
-          // 空の Domain 属性は無視してホスト限定として扱う
-        } else if (attr === host) {
-          domain = attr;
-          hostOnly = false;
-        } else if (!isIpHost(host) && host.endsWith(`.${attr}`) && attr.includes(".")) {
-          domain = attr;
-          hostOnly = false;
-        } else {
-          // リクエストホストの親でない / 単一ラベルの Domain は cookie ごと拒否する
-          continue;
-        }
+        const isParent = !isIpHost(host) && host.endsWith(`.${attr}`);
+        if (attr !== "" && attr !== host && !isParent) continue;
       }
 
-      const path =
-        rawPath !== undefined && rawPath.startsWith("/") ? rawPath : defaultPath(url.pathname);
+      const path = rawPath?.startsWith("/") ? rawPath : defaultPath(url.pathname);
 
       // 有効期限: Max-Age が Expires より優先。過去・0 以下は削除の指示
       let expiresAt: number | undefined;
@@ -188,7 +171,6 @@ export class CookieJar {
         name: parsed.name,
         value: parsed.value,
         domain,
-        hostOnly,
         path,
         secure,
         expiresAt,
@@ -213,7 +195,7 @@ export class CookieJar {
     return this.cookies
       .filter(
         (cookie) =>
-          domainMatches(host, cookie) &&
+          cookie.domain === host &&
           pathMatches(url.pathname || "/", cookie.path) &&
           (!cookie.secure || secureOrigin),
       )

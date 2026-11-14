@@ -92,7 +92,7 @@ klaus run <files...> [options]
 
 `--dry-run` は、`klaus run` が送信するはずの内容を、送信せずに表示する。各ステップについて、テンプレート展開後のリクエスト(メソッド、クエリをマージした URL、ヘッダー、ボディ。SSE ステップも同様で、WebSocket ステップは URL・ヘッダー・送信するメッセージ)と、送信直前に行われるのと同じ安全柵の判定結果を出力する。実際に実行する前に、フローが `guard.allowedHosts` や `$protected` の環境に引っかかるかを確認するために使う。
 
-何も送信せず、何も書き込まない: 履歴エントリ、カセットの読み書き、リトライ、アサーション、`capture` はいずれも行わない。フローファイル、`--data`、`--tags`、`--exclude-tags`、`--env`、`--env-file`、`--var`、`--allow-protected` は通常の実行とまったく同じように解釈され、パースエラーは引き続き exit 2 になる。`--jobs` は受け付けるが、並行して実行するものはなく、出力順は変わらない(`--data` と同じく行が外側、フローが内側)。`--dry-run` は `--record`・`--replay`・`--report` と併用できない。これは引数エラーで、何も実行せず exit 2 になる。`klaus.config.yaml` の `run.report` の既定値は `--dry-run` では無視される。`klaus.config.yaml` からは設定できない。
+何も送信せず、何も書き込まない: 履歴エントリ、カセットの読み書き、リトライ、アサーション、`capture` はいずれも行わない。フローファイル、`--data`、`--tags`、`--exclude-tags`、`--env`、`--env-file`、`--var`、`--allow-protected` は通常の実行とまったく同じように解釈され、パースエラーは引き続き exit 2 になる。`--jobs` は受け付けるが、並行して実行するものはなく、出力順は変わらない(`--data` と同じく行が外側、フローが内側)。`--dry-run` は `--record`・`--replay`・`--report` と併用できない。これは引数エラーで、`klaus run` の他の引数の組み合わせエラーと同じく、何も実行せず exit 1 になる。`klaus.config.yaml` の `run.report` の既定値は `--dry-run` では無視される。`klaus.config.yaml` からは設定できない。
 
 - **capture に依存する変数**: 同じフローの前段のステップが `capture` で定義する変数はまだ値がないため、出力では <code v-pre>{{name}}</code> のまま残り、ステップの `unresolved` フィールドに列挙される。これはエラーではない。環境に同名の値があっても、その名前は未解決として扱う。実行時には capture した値が環境より優先されるため。
 - **実行時にも解決できない変数**: 前段の `capture` が定義するものでも、環境・`--var`・データ行にあるものでもない変数や、OS 環境変数が未定義の <code v-pre>{{env.X}}</code> は、実行時と同じメッセージでステップの `error` に報告され、そのステップに `request` は付かない。
@@ -245,7 +245,7 @@ request/response スナップショットや assertions などの詳細を持つ
 2. 実行中に環境ファイル(`environments/*.yaml`)のパースエラーが出た場合も exit 2
 3. 実行後、runtime エラー(status "error")を含むフローがあれば **3**、なければアサーション失敗(status "failed")があれば **4**、全成功で **0**。3 と 4 が混在する場合は 3 を優先
 4. 履歴 JSONL の書き込み失敗は stderr への警告のみで、ステップ結果・exit code には影響しない
-5. `--dry-run` では何も送信しないため、返るのは 0・2・3 のみ([ドライラン](#ドライラン-dry-run)を参照)
+5. `--dry-run` では何も送信せずアサーションも走らないため、4 は返らない。返るのは 0(すべて送信される)、1(`--record` / `--replay` / `--report` との併用などの引数エラー、またはタグ指定で 0 件)、2(パースエラー)、3(安全柵が拒否するステップ、または実行時にも失敗する展開エラー)のいずれか([ドライラン](#ドライラン-dry-run)を参照)
 
 エージェント(Claude Code 等)は exit code だけで故障箇所を判別できる: 2 なら定義を直す、3 なら対象 API の起動状態を見る、4 ならアサーション内容とレスポンスを比較する。
 
@@ -311,18 +311,20 @@ text 出力は、1行目に `METHOD URL -> status (duration)`、続いて応答�
 
 `klaus req` は `klaus run` と同じ安全柵を、送信直前にテンプレート展開後のリクエストへ適用する。
 
-- `klaus.config.yaml` の [`guard.allowedHosts`](config.md#送信先ホストの許可リスト-guard-allowedhosts)が送信先ホストを制限する。`klaus req` がこのファイルから読むのは `guard` セクションだけ。`run:` の既定値(`run.env`、`run.history`、`run.mask` など)は `klaus run` 用で、`klaus req` には適用しない。
+- `klaus.config.yaml` の [`guard.allowedHosts`](config.md#送信先ホストの許可リスト-guard-allowedhosts)が送信先ホストを制限する。`klaus req` がこのファイルから読むのは `guard` と `http` のセクションだけ。`run:` の既定値(`run.env`、`run.history`、`run.mask` など)は `klaus run` 用で、`klaus req` には適用しない。
 - `$protected: true` の環境ではすべてのリクエストを拒否する。`$protected: readonly` では `GET` / `HEAD` / `OPTIONS` だけを送り、メソッド上書きヘッダーつきのリクエストは拒否する。[保護環境](#保護環境-protected)を参照。
 
-拒否されたリクエストは `status: "error"`・exit code 3 で報告され、拒否は履歴にも記録される。
+拒否されたリクエストは `status: "error"`・exit code 3 で報告され、拒否は履歴にも記録される。`klaus req` には `--allow-protected` がないため、保護環境による拒否のメッセージは、代わりに `klaus run --allow-protected` でフローを実行するよう案内して終わる([トラブルシューティング](troubleshooting.md)を参照)。
+
+`--env-file` は、`klaus run` でも `klaus req` でも、カレントディレクトリの外のファイルを指してよい。利用者が明示的に選んだ入力だからである。ファイルの値は通常の変数であり、秘密値としては扱わない(マスクされるのは <code v-pre>{{env.X}}</code> の値だけ)。
 
 ### exit code
 
 | code | 意味 |
 |---|---|
 | 0 | 応答を受信した(HTTP ステータスは問わない。アサーションは無い) |
-| 1 | 予期しない例外、またはオプションパーサーが拒否した不正なオプション(例: `:` の無い `--header`) |
-| 2 | 入力が不正: `--json` と `--text` の併用、`-e` と `--env-file` の併用、存在しない・cwd の外にある `--body` ファイル、不正なリクエスト定義、不正な環境ファイルまたは `klaus.config.yaml` |
+| 1 | 引数が不正: `--json` と `--text` の併用、`-e` と `--env-file` の併用、またはオプションパーサーが拒否した不正なオプション(例: `:` の無い `--header`)。予期しない例外も 1 |
+| 2 | 入力が不正: 存在しない・cwd の外にある `--body` ファイル、不正なリクエスト定義、不正な環境ファイルまたは `klaus.config.yaml` |
 | 3 | 実行時エラー: 接続不能・タイムアウト・未解決のテンプレート変数、`$protected` や `guard.allowedHosts` によって拒否されたリクエスト |
 
 exit code 4 は返さない。HTTP ステータスで失敗させたい場合は、`assert` を書いたフローを `klaus run` で実行する。

@@ -74,6 +74,11 @@ export interface StepResult {
    * http.followRedirects を使わない通常の実行では省略する
    */
   redirects?: string[];
+  /**
+   * 別オリジンへのリダイレクトで落としたリクエストヘッダー(ホップ番号つきの名前だけ。値は含まない)。
+   * 資格情報のヘッダーと、秘密値を値に含むヘッダーが対象。何も落としていなければ省略する
+   */
+  droppedHeaders?: { hop: number; headers: string[] }[];
 }
 
 /** 1フロー(YAML 1ファイル)の実行結果 */

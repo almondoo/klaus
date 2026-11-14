@@ -1017,7 +1017,7 @@ describe("cli integration", () => {
     expect(JSON.parse(denied.stdout).error).toContain("guard.allowedHosts");
   });
 
-  it("(req-5) req: 不正な引数は exit 0 以外(--header の形式不正は commander、--json と --text の併用・cwd 外の --body ファイルは exit 2)で、何も送信しない", async () => {
+  it("(req-5) req: 不正な引数は exit 0 以外(--header の形式不正は commander、--json と --text の併用は exit 1、cwd 外の --body ファイルは exit 2)で、何も送信しない", async () => {
     const badHeader = await runCli(
       ["req", "GET", `${fixture.baseUrl}/ok`, "-H", "novalue", "--no-history"],
       workDir,
@@ -1031,7 +1031,7 @@ describe("cli integration", () => {
       ["req", "GET", `${fixture.baseUrl}/ok`, "--json", "--text", "--no-history"],
       workDir,
     );
-    expect(both.status).toBe(2);
+    expect(both.status).toBe(1);
     expect(both.stdout).toBe("");
 
     const outside = await runCli(
@@ -1098,7 +1098,7 @@ describe("cli integration", () => {
     await expect(access(join(dryWorkDir, "klaus-report.xml"))).rejects.toThrow();
   });
 
-  it("(dry-3) run --dry-run: --data で行ごとに展開され、--record / --replay / --report との併用は exit 2", async () => {
+  it("(dry-3) run --dry-run: --data で行ごとに展開され、--record / --replay / --report との併用は exit 1", async () => {
     const dryWorkDir = join(workDir, "dry-run-data-scenario");
     await mkdir(dryWorkDir, { recursive: true });
     const flowPath = join(dryWorkDir, "item.yaml");
@@ -1127,7 +1127,7 @@ describe("cli integration", () => {
       ["--report", "junit"],
     ]) {
       const conflict = await runCli(["run", flowPath, "--dry-run", ...extra], dryWorkDir);
-      expect(conflict.status, extra.join(" ")).toBe(2);
+      expect(conflict.status, extra.join(" ")).toBe(1);
       expect(conflict.stdout).toBe("");
       expect(conflict.stderr).toContain("--dry-run cannot be combined with");
     }

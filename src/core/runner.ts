@@ -24,7 +24,7 @@ import type { HistoryActor, HistoryEntry, HistoryGit } from "./history.js";
 import { appendHistory, maskHistoryEntry, toHistoryFilePath } from "./history.js";
 import type { HttpRequestOptions, HttpResponse, RawHttpResponse } from "./http.js";
 import { sendRawRequest, sendRequest } from "./http.js";
-import { HttpSession, mergeHttpConfig } from "./http-session.js";
+import { type FollowResult, HttpSession, mergeHttpConfig } from "./http-session.js";
 import { loadFlow } from "./loader.js";
 import type { Environment, Flow, HttpConfig, RequestDef, Step } from "./schema.js";
 import { requestSchema } from "./schema.js";
@@ -276,9 +276,37 @@ function buildRequestBody(request: RequestDef, templateContext: TemplateContext)
   return request.body !== undefined ? renderDeep(request.body, templateContext) : undefined;
 }
 
+/** URL 文字列中の `{{name}}` 形式のプレースホルダー */
+const PLACEHOLDER_PATTERN = /\{\{\s*([^}]+?)\s*\}\}/g;
+
+/** URLSearchParams(application/x-www-form-urlencoded)と同じ形式で値をエンコードする */
+function formEncode(value: string): string {
+  return new URLSearchParams({ v: value }).toString().slice(2);
+}
+
+/**
+ * query の値をエンコードする。dry-run で前段の capture に依存して未解決のまま残した `{{name}}` は
+ * (エンコードすると `%7B%7Bname%7D%7D` になり未解決であることが読めなくなるため)そのまま残す。
+ */
+function encodeQueryValue(value: string, deferred: ReadonlySet<string> | undefined): string {
+  if (!deferred || deferred.size === 0) return formEncode(value);
+  let result = "";
+  let last = 0;
+  for (const match of value.matchAll(PLACEHOLDER_PATTERN)) {
+    if (!deferred.has((match[1] as string).trim())) continue;
+    result += formEncode(value.slice(last, match.index)) + match[0];
+    last = (match.index as number) + match[0].length;
+  }
+  return result + formEncode(value.slice(last));
+}
+
 /**
  * request.query(テンプレート展開後)を URL のクエリ文字列にマージする。
- * URL に既にある同名キーは query 側の値で上書きする。query 未指定・空の場合は url をそのまま返す。
+ * URL に既にある同名キーは query 側の値で上書きする(最初の出現位置で置き換え、以降の同名は除く)。
+ * query 未指定・空の場合は url をそのまま返す。
+ * URL に書かれたクエリ部分は組み直さず、書かれたままの文字列で保つ(`&` `+` `=` `/` を含む値を
+ * 再分割・再エンコードして壊さないため。マスク対象の値も送信される形のまま一致する)。
+ * 追加するパラメーターだけを form-urlencoded 形式で足す。
  */
 function applyQueryParams(
   url: string,
@@ -286,11 +314,45 @@ function applyQueryParams(
   templateContext: TemplateContext,
 ): string {
   if (!query || Object.keys(query).length === 0) return url;
-  const parsed = new URL(url);
-  for (const [key, value] of Object.entries(query)) {
-    parsed.searchParams.set(key, renderString(value, templateContext));
+
+  const hashIndex = url.indexOf("#");
+  const beforeHash = hashIndex === -1 ? url : url.slice(0, hashIndex);
+  const hash = hashIndex === -1 ? "" : url.slice(hashIndex);
+  const queryIndex = beforeHash.indexOf("?");
+  const rawBase = queryIndex === -1 ? beforeHash : beforeHash.slice(0, queryIndex);
+  const literalQuery = queryIndex === -1 ? "" : beforeHash.slice(queryIndex + 1);
+
+  // dry-run で未解決の `{{name}}` を含む URL は URL として解釈できないため、正規化せずそのまま扱う
+  const hasDeferred =
+    templateContext.deferred !== undefined && new RegExp(PLACEHOLDER_PATTERN).test(rawBase);
+  let base = rawBase;
+  if (!hasDeferred) {
+    try {
+      base = new URL(rawBase).toString();
+    } catch {
+      throw new RuntimeError("request URL is not a valid URL");
+    }
   }
-  return parsed.toString();
+
+  const segments = literalQuery === "" ? [] : literalQuery.split("&");
+  const segmentName = (segment: string): string => {
+    const rawName = segment.split("=", 1)[0] as string;
+    return [...new URLSearchParams(rawName).keys()][0] ?? "";
+  };
+  for (const [key, rawValue] of Object.entries(query)) {
+    const value = renderString(rawValue, templateContext);
+    const encoded = `${formEncode(key)}=${encodeQueryValue(value, templateContext.deferred)}`;
+    const first = segments.findIndex((segment) => segmentName(segment) === key);
+    if (first === -1) {
+      segments.push(encoded);
+      continue;
+    }
+    segments[first] = encoded;
+    for (let i = segments.length - 1; i > first; i--) {
+      if (segmentName(segments[i] as string) === key) segments.splice(i, 1);
+    }
+  }
+  return `${base}${segments.length > 0 ? `?${segments.join("&")}` : ""}${hash}`;
 }
 
 /** expandStepRequest が返す、テンプレート展開済みの送信内容 */
@@ -440,6 +502,18 @@ export interface StepGuard {
   readonlyEnvName?: string;
   /** 送信先ホストの許可リスト等(RunFlowOptions.guard / ExecuteSingleRequestOptions.guard) */
   options?: GuardOptions;
+  /** 単発リクエスト(klaus req / UI の単発実行)の判定か。拒否メッセージの案内を切り替えるために使う */
+  singleRequest?: boolean;
+}
+
+/**
+ * 保護環境による拒否メッセージの末尾に付ける案内。フロー実行(klaus run)には --allow-protected があるが、
+ * 単発リクエストにはそのオプションが無いため、案内を切り替える。
+ */
+function protectionHint(singleRequest: boolean | undefined): string {
+  return singleRequest === true
+    ? "Single requests (klaus req, klaus ui) cannot override environment protection; run a flow with `klaus run --allow-protected` instead."
+    : "Pass --allow-protected to run against this environment intentionally.";
 }
 
 /**
@@ -462,7 +536,7 @@ export function assertSendAllowed(
     throw new GuardRefusalError(
       `environment "${stepGuard.readonlyEnvName}" is protected ($protected: readonly) and only allows GET, HEAD, and OPTIONS by default; ` +
         `refusing ${method === "WS" ? "WebSocket" : method}. ` +
-        "Pass --allow-protected to run against this environment intentionally.",
+        protectionHint(stepGuard.singleRequest),
     );
   }
   // 安全メソッドの GET でも、サーバー側のメソッド上書きヘッダーで書き込みに化けさせられるため拒否する
@@ -471,7 +545,7 @@ export function assertSendAllowed(
   if (overrideHeader !== undefined) {
     throw new GuardRefusalError(
       `environment "${stepGuard.readonlyEnvName}" is protected ($protected: readonly) and refuses requests carrying the ${overrideHeader} header, which can turn a read into a write. ` +
-        "Pass --allow-protected to run against this environment intentionally.",
+        protectionHint(stepGuard.singleRequest),
     );
   }
   if (!skipHostCheck) {
@@ -522,8 +596,11 @@ async function executeStep(
     durationMs: number,
     assertions: StepResult["assertions"],
     captured: Record<string, unknown>,
-    resultExtra: Pick<StepResult, "response" | "events" | "wsMessages" | "redirects">,
-    historyExtra: Pick<HistoryEntry, "response" | "events" | "redirects">,
+    resultExtra: Pick<
+      StepResult,
+      "response" | "events" | "wsMessages" | "redirects" | "droppedHeaders"
+    >,
+    historyExtra: Pick<HistoryEntry, "response" | "events" | "redirects" | "droppedHeaders">,
   ): { result: StepResult; captured: Record<string, unknown>; historyEntry: HistoryEntry } => {
     const status = assertions.every((a) => a.ok) ? "passed" : "failed";
     return {
@@ -616,7 +693,11 @@ async function executeStep(
 
     if (isSseStep(step)) {
       // SSE は HTTP メソッドに従う(record/replay は SSE 非対応のため、ここでは常に実送信になる)
-      const sseFollow: { redirects: string[]; elapsedMs: number } = { redirects: [], elapsedMs: 0 };
+      const sseFollow: Omit<FollowResult<unknown>, "response"> = {
+        redirects: [],
+        elapsedMs: 0,
+        droppedHeaders: [],
+      };
       const sseResult = await receiveSse(
         { method, url, headers, body, timeoutMs: request.timeoutMs },
         step.sse,
@@ -641,6 +722,7 @@ async function executeStep(
           );
           sseFollow.redirects = followed.redirects;
           sseFollow.elapsedMs = followed.elapsedMs;
+          sseFollow.droppedHeaders = followed.droppedHeaders;
           return followed.response;
         },
       );
@@ -664,6 +746,9 @@ async function executeStep(
         response: responseSnapshot,
         events: sseResult.events,
         ...(sseFollow.redirects.length > 0 ? { redirects: sseFollow.redirects } : {}),
+        ...(sseFollow.droppedHeaders.length > 0
+          ? { droppedHeaders: sseFollow.droppedHeaders }
+          : {}),
       };
 
       // capture は JSON レスポンス(SSE 以外)にのみ適用する
@@ -684,7 +769,7 @@ async function executeStep(
       () => {},
       replay,
     );
-    const { redirects } = followed;
+    const { redirects, droppedHeaders } = followed;
     // リダイレクトを追った場合は全ホップの合計を所要時間にする(追わなかった場合は従来どおりの値)
     const response =
       redirects.length > 0
@@ -708,6 +793,7 @@ async function executeStep(
     const extra = {
       response: responseSnapshot,
       ...(redirects.length > 0 ? { redirects } : {}),
+      ...(droppedHeaders.length > 0 ? { droppedHeaders } : {}),
     };
 
     return finish(requestSnapshot, response.durationMs, assertions, captured, extra, extra);
@@ -776,11 +862,12 @@ function checkEnvironmentAllowed(
   envName: string | undefined,
   environment: Environment,
   allowProtected: boolean | undefined,
+  singleRequest: boolean | undefined,
 ): GuardRefusalError | undefined {
   if (getProtectedMode(environment) !== true || allowProtected) return undefined;
   return new GuardRefusalError(
     `environment "${envName}" is protected ($protected: true) and refuses execution by default. ` +
-      "Pass --allow-protected to run against this environment intentionally.",
+      protectionHint(singleRequest),
   );
 }
 
@@ -793,8 +880,10 @@ export function buildStepGuard(
   environment: Environment,
   allowProtected: boolean | undefined,
   guard: GuardOptions | undefined,
+  /** 単発リクエストの判定なら true(拒否メッセージの案内が flow 実行用の --allow-protected から切り替わる) */
+  singleRequest?: boolean,
 ): StepGuard | undefined {
-  const blockedError = checkEnvironmentAllowed(envName, environment, allowProtected);
+  const blockedError = checkEnvironmentAllowed(envName, environment, allowProtected, singleRequest);
   const readonlyEnvName =
     getProtectedMode(environment) === "readonly" && !allowProtected ? String(envName) : undefined;
   if (!blockedError && readonlyEnvName === undefined && guard?.allowedHosts === undefined) {
@@ -804,6 +893,7 @@ export function buildStepGuard(
     ...(blockedError ? { blockedError } : {}),
     ...(readonlyEnvName !== undefined ? { readonlyEnvName } : {}),
     ...(guard ? { options: guard } : {}),
+    ...(singleRequest === true ? { singleRequest } : {}),
   };
 }
 
@@ -1337,6 +1427,7 @@ export async function executeSingleRequest(
     environment,
     undefined,
     options.guard,
+    true,
   );
   const runId = randomUUID();
   const flowName = "(single)";

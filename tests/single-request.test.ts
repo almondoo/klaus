@@ -3,7 +3,8 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { historyFilePath } from "../src/core/history.js";
-import { executeSingleRequest } from "../src/core/runner.js";
+import { executeFlow, executeSingleRequest } from "../src/core/runner.js";
+import { flowSchema } from "../src/core/schema.js";
 import { closeServer, listenEphemeral, reserveClosedPort } from "./support/net.js";
 
 async function startEchoServer() {
@@ -139,6 +140,29 @@ describe("executeSingleRequest", () => {
     expect(result.status).toBe("error");
     expect(result.error).toContain("prod");
     expect(result.error).toContain("--allow-protected");
+    // 単発リクエストには --allow-protected が無いため、「Pass --allow-protected」とは案内しない
+    expect(result.error).not.toContain("Pass --allow-protected");
+    expect(result.error).toContain("cannot override environment protection");
+  });
+
+  it("保護環境の拒否メッセージの案内は入口で切り替わる(フロー実行は --allow-protected を案内し、単発は案内しない)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+    await mkdir(join(cwd, "environments"), { recursive: true });
+    await writeFile(
+      join(cwd, "environments", "prod.yaml"),
+      `$protected: true\nbaseUrl: ${ctx.baseUrl}\n`,
+      "utf-8",
+    );
+    const flow = flowSchema.parse({
+      name: "f",
+      env: "prod",
+      steps: [{ name: "s", request: { method: "GET", url: "{{baseUrl}}/ping" } }],
+    });
+
+    const run = await executeFlow(flow, "f.yaml", { cwd, history: false });
+
+    expect(run.steps[0]?.error).toContain("Pass --allow-protected to run against this environment");
+    expect(run.steps[0]?.error).not.toContain("Single requests");
   });
 
   it('$protected: "readonly" の環境では安全メソッド(GET)のみ許可され、POST は拒否される', async () => {

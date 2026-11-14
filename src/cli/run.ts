@@ -194,6 +194,11 @@ export interface RunCommandOptions {
    * (エージェントが引数で安全柵を外せないようにするため)。index.ts が config から設定して渡す
    */
   guard?: GuardOptions;
+  /**
+   * klaus.config.yaml の `http`(リダイレクト・proxy・TLS・cookie jar の既定値)。未指定なら runCommand が
+   * 設定ファイルから読む。フローの `http` が上書きする。CLI フラグは設けない
+   */
+  http?: HttpConfig;
 }
 
 /**
@@ -229,11 +234,6 @@ function filterFlowsByTags(
 /**
  * --jobs 2 以上の並列実行時、runLoadedFlows が展開する実行ユニット(行 × フローの組)ごとの
  * ステップ数を、buildRunUnits(runner.ts)と同じ入力順(行(外側) × フロー(内側))で並べた配列を返す。
-  /**
-   * klaus.config.yaml の `http`(リダイレクト・proxy・TLS・cookie jar の既定値)。未指定なら runCommand が
-   * 設定ファイルから読む。フローの `http` が上書きする。CLI フラグは設けない
-   */
-  http?: HttpConfig;
  * createOrderedTextFlusher が「そのユニットの全ステップの onStepComplete が揃ったか」を判定するために使う
  * (フロー内の全ステップは skipped であっても必ず onStepStart/onStepComplete が1回ずつ呼ばれるため、
  * flow.steps.length がそのユニットで期待される onStepComplete 回数と一致する。runner.ts 側の実装参照)。
@@ -324,7 +324,7 @@ function createOrderedTextFlusher(
 /**
  * run コマンド本体。
  * 0. --record と --replay、--record と --jobs>1、--json と --text、--report/--report-file の組み合わせを検査
- *    (いずれも stderr + exit 1、何も実行しない)。--dry-run と --record/--replay/--report の組み合わせは exit 2
+ *    (いずれも stderr + exit 1、何も実行しない)。--dry-run と --record/--replay/--report の組み合わせは exit 1
  * 1. 全ファイルを loadFlow でパース検証(--data 指定時は loadDataFile も並行して読み込む。
  *    いずれか1件でも ParseError なら exit 2、何も実行しない)
  * 2. --tags / --exclude-tags でフローを絞り込む(filterFlowsByTags。--data によるイテレーション展開より前、
@@ -340,15 +340,15 @@ function createOrderedTextFlusher(
  */
 export async function runCommand(files: string[], options: RunCommandOptions): Promise<number> {
   // --dry-run は何も送信・記録しないため、record/replay・レポートファイル出力とは意味が衝突する。
-  // 引数の誤りとして exit 2(何も実行しない)にする
+  // 引数の誤りとして、他の引数の組み合わせエラー(--record と --replay 等)と同じ exit 1(何も実行しない)にする
   if (options.dryRun === true) {
     if (options.record !== undefined || options.replay !== undefined) {
       process.stderr.write("klaus: --dry-run cannot be combined with --record or --replay\n");
-      return 2;
+      return 1;
     }
     if (options.report !== undefined) {
       process.stderr.write("klaus: --dry-run cannot be combined with --report\n");
-      return 2;
+      return 1;
     }
   }
 
@@ -497,8 +497,20 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
       : textReporter;
   // 履歴の監査項目。git は履歴を書く場合のみ取得する(--no-history 時に git を起動しない)
   const git = options.history ? await resolveGitState(process.cwd()) : undefined;
+  // klaus.config.yaml の http(未指定の場合のみ設定ファイルから読む)
+  let http: HttpConfig | undefined;
+  try {
+    http = options.http ?? (await loadHttpOptions(process.cwd()));
+  } catch (error) {
+    if (error instanceof ParseError) {
+      process.stderr.write(`klaus: parse error: ${error.message}\n`);
+      return 2;
+    }
+    throw error;
+  }
   const runOptions: RunFlowOptions = {
     guard: options.guard,
+    http,
     actor: detectActor(process.env, options.actor),
     git,
     envNameOverride: options.env,
@@ -532,20 +544,8 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   try {
     runResult = await runLoadedFlows(filteredFlows, runOptions);
   } catch (error) {
-  // klaus.config.yaml の http(未指定の場合のみ設定ファイルから読む)
-  let http: HttpConfig | undefined;
-  try {
-    http = options.http ?? (await loadHttpOptions(process.cwd()));
-  } catch (error) {
-    if (error instanceof ParseError) {
-      process.stderr.write(`klaus: parse error: ${error.message}\n`);
-      return 2;
-    }
-    throw error;
-  }
     // environments/*.yaml のパース・検証失敗など、loadFlow 以外から来る ParseError もここで exit 2 に丸める
     if (error instanceof ParseError) {
-    http,
       process.stderr.write(`klaus: parse error: ${error.message}\n`);
       return 2;
     }

@@ -39,6 +39,8 @@ export interface HistoryEntry {
   attempts?: number;
   /** リダイレクトを追った場合のみ設定する、経由 URL の一覧(追加のみの後方互換な変更のため v は 1 のまま) */
   redirects?: string[];
+  /** 別オリジンへのリダイレクトで落としたヘッダー名(ホップ番号つき。値は含まない)。落としたときのみ設定する */
+  droppedHeaders?: { hop: number; headers: string[] }[];
   /**
    * status が "error" のエントリのみ設定する、ステップを error にした理由(安全柵による送信拒否)。
    * 接続不能・タイムアウトなど他の実行時エラーは履歴に書かれないため、現状は安全柵の拒否でのみ記録される。

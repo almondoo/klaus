@@ -47,8 +47,10 @@ steps: [ ... ]
 
 - One HTTP client is created per run of the flow and shared by all steps (HTTP, SSE, and WebSocket). It is closed when the run ends; cookies are never persisted.
 - Each key overrides the same key in the `http` section of `klaus.config.yaml` ([HTTP client](config.md#http-client-http)). With nothing set, redirects are not followed and no cookies are kept.
-- Every redirect hop is checked against `guard.allowedHosts` and `$protected` like a normal request; a refused hop makes the step `error` (exit code 3) and is recorded in history. Moving to another origin drops `Authorization`, `Cookie`, and `Proxy-Authorization`. The visited URLs appear as `redirects` in the step result and history.
-- Cookie values are secrets: they are masked in history and output. Cookies are re-derived from the jar for every hop and for WebSocket handshakes.
+- Every redirect hop is checked against `guard.allowedHosts` and `$protected` like a normal request; a refused hop makes the step `error` (exit code 3) and is recorded in history. The visited URLs appear as `redirects` in the step result and history.
+- Moving to another origin (scheme, host, or port differs, including an https to http downgrade on the same host) drops `Authorization`, `Cookie`, and `Proxy-Authorization`, plus every header whose value contains a registered secret (an <code v-pre>{{env.X}}</code> value, a cookie value, and their encoded forms), since API keys often travel in custom headers such as `X-Api-Key`. Headers without a secret (`Accept`, `User-Agent`, `Content-Type` when the body is kept, other custom headers) are still forwarded. The dropped header names (names only, per hop) are recorded as `droppedHeaders` in the step result and history. A secret shorter than 4 characters is not recognized.
+- Cookie values are secrets: they are masked in history and output. Cookies are re-derived from the jar for every hop and for WebSocket handshakes. A `Secure` cookie is never sent over `http://`.
+- Cookies are never shared across subdomains: every cookie is stored for the exact host that set it, even when `Domain` names a parent (there is no public suffix list, so this is the safe fallback). A flow that logs in on one subdomain and then calls another must pass the session explicitly, for example by capturing it from the login response and sending it in a header.
 - `proxy` and `tls` are **not accepted in a flow** (validation error, exit code 2). They decide where traffic goes and whom it trusts, so they can only be set in `klaus.config.yaml`.
 
 ## request (HTTP step)

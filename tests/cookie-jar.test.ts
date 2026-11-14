@@ -12,22 +12,39 @@ describe("CookieJar", () => {
     expect(jar.headerFor(u("https://x.api.example.com/"))).toBeUndefined();
   });
 
-  it("Domain 属性はリクエストホストの親(ドットを含む)だけ受け付け、サブドメインにも送る", () => {
+  it("Domain 属性が親ドメインでも、cookie はリクエストホスト限定で保存し、兄弟サブドメインや親には送らない", () => {
     const jar = new CookieJar();
-    jar.store(u("https://api.example.com/"), ["a=1; Domain=example.com"]);
-    expect(jar.headerFor(u("https://www.example.com/"))).toBe("a=1");
-    expect(jar.headerFor(u("https://example.com/"))).toBe("a=1");
-    expect(jar.headerFor(u("https://evil.com/"))).toBeUndefined();
+    jar.store(u("https://a.example.com/"), ["p=1; Domain=example.com", "q=1; Domain=.EXAMPLE.com"]);
+    expect(jar.headerFor(u("https://a.example.com/"))).toBe("p=1; q=1");
+    expect(jar.headerFor(u("https://b.example.com/"))).toBeUndefined();
+    expect(jar.headerFor(u("https://example.com/"))).toBeUndefined();
+    expect(jar.headerFor(u("https://x.a.example.com/"))).toBeUndefined();
   });
 
-  it("単一ラベル・無関係・子孫・IP に対する Domain 属性の cookie は拒否する", () => {
+  it("公開サフィックスを Domain に指定しても、同じサフィックス上の別サイトには送らない", () => {
     const jar = new CookieJar();
-    jar.store(u("https://api.example.com/"), ["a=1; Domain=com"]);
+    jar.store(u("https://a.example.co.uk/"), ["s=1; Domain=co.uk"]);
+    jar.store(u("https://evil.github.io/"), ["t=1; Domain=github.io"]);
+    expect(jar.headerFor(u("https://a.example.co.uk/"))).toBe("s=1");
+    expect(jar.headerFor(u("https://victim.co.uk/"))).toBeUndefined();
+    expect(jar.headerFor(u("https://other.example.co.uk/"))).toBeUndefined();
+    expect(jar.headerFor(u("https://victim.github.io/"))).toBeUndefined();
+  });
+
+  it("Domain がリクエストホストと完全一致なら受け付けるが host-only のまま", () => {
+    const jar = new CookieJar();
+    jar.store(u("https://a.example.com/"), ["a=1; Domain=a.example.com"]);
+    expect(jar.headerFor(u("https://a.example.com/"))).toBe("a=1");
+    expect(jar.headerFor(u("https://x.a.example.com/"))).toBeUndefined();
+  });
+
+  it("無関係な・子孫の Domain、IP ホストへの別 Domain の cookie は拒否する", () => {
+    const jar = new CookieJar();
     jar.store(u("https://api.example.com/"), ["b=1; Domain=other.com"]);
     jar.store(u("https://example.com/"), ["c=1; Domain=api.example.com"]);
     jar.store(u("http://127.0.0.1/"), ["d=1; Domain=0.0.1"]);
     expect(jar.headerFor(u("https://api.example.com/"))).toBeUndefined();
-    expect(jar.headerFor(u("https://other.com/"))).toBeUndefined();
+    expect(jar.headerFor(u("https://example.com/"))).toBeUndefined();
     expect(jar.headerFor(u("http://127.0.0.1/"))).toBeUndefined();
   });
 
@@ -94,7 +111,7 @@ describe("CookieJar", () => {
   it("同名・同ドメイン・同パスは上書きし、store は値を返す(拒否分も含む)", () => {
     const jar = new CookieJar();
     jar.store(u("https://example.com/"), ["a=1"]);
-    const values = jar.store(u("https://example.com/"), ["a=2", "z=rejected; Domain=com"]);
+    const values = jar.store(u("https://example.com/"), ["a=2", "z=rejected; Domain=other.com"]);
     expect(values).toEqual(["2", "rejected"]);
     expect(jar.headerFor(u("https://example.com/"))).toBe("a=2");
     expect(jar.valueFor("a", u("https://example.com/"))).toBe("2");

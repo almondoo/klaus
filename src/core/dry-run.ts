@@ -2,6 +2,7 @@ import type { DataRow } from "./data.js";
 import { loadEnvironment, toTemplateVariables } from "./env.js";
 import { GuardRefusalError, KlausError } from "./errors.js";
 import type { GuardOptions } from "./guard.js";
+import { parseAllowedHostEntry } from "./guard.js";
 import {
   assertSendAllowed,
   buildRunUnits,
@@ -86,41 +87,107 @@ function stepKind(step: Step): "http" | "sse" | "ws" {
   return isSseStep(step) ? "sse" : "http";
 }
 
+/** 展開後の URL のオーソリティ部を分解した結果(未解決のプレースホルダーを含んでいても分解できる) */
+interface AuthorityParts {
+  scheme: string;
+  /** ユーザー情報・ポートを除いたホスト部(IPv6 は角括弧つき)。`{{name}}` を含む場合は未解決 */
+  host: string;
+  port: string | undefined;
+  /** オーソリティより後ろ(パス・クエリ・フラグメント) */
+  rest: string;
+}
+
 /**
- * 展開後の URL の「スキーム + オーソリティ」部にプレースホルダーが残っている(または URL として
- * 先頭を読み取れない)ため、送信先ホストを決められないかどうかを返す。
- * パスやクエリに未解決の変数が残っていても、ホストが確定していれば判定できる。
+ * 展開後の URL を「スキーム + オーソリティ + 残り」に分解する。URL として先頭を読み取れない場合
+ * (スキームの前にプレースホルダーがある等)は undefined。
+ * パスやクエリ・ユーザー情報・ポートに未解決の変数が残っていても、ホスト名が確定していれば判定できる。
  */
-function isHostUndetermined(url: string): boolean {
-  const match = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#]*)/.exec(url);
-  return match === null || (match[1] as string).includes("{{");
+function splitAuthority(url: string): AuthorityParts | undefined {
+  const match = /^([A-Za-z][A-Za-z0-9+.-]*):\/\/([^/?#]*)([\s\S]*)$/.exec(url);
+  if (match === null) return undefined;
+  let authority = match[2] as string;
+  const at = authority.lastIndexOf("@");
+  if (at !== -1) authority = authority.slice(at + 1);
+  let host: string;
+  let port: string | undefined;
+  if (authority.startsWith("[")) {
+    const end = authority.indexOf("]");
+    host = end === -1 ? authority : authority.slice(0, end + 1);
+    const after = end === -1 ? "" : authority.slice(end + 1);
+    port = after.startsWith(":") ? after.slice(1) : undefined;
+  } else {
+    const colon = authority.indexOf(":");
+    host = colon === -1 ? authority : authority.slice(0, colon);
+    port = colon === -1 ? undefined : authority.slice(colon + 1);
+  }
+  return { scheme: match[1] as string, host, port, rest: match[3] as string };
 }
 
 /**
  * 実行時と同じ安全柵(assertSendAllowed)を展開後の送信内容に適用し、結果を返す。
  * 拒否は例外(GuardRefusalError)なので、ここで捕まえて reason にする。
- * ホストが未解決の変数に依存する場合は、ホストに依存しない判定(保護環境・メソッド・上書きヘッダー)だけを行い、
- * それで拒否されなければ、許可リストが設定されているときに限り undetermined にする。
+ * undetermined にするのは、判定に必要なホスト名そのものが未解決の変数に依存する場合(許可リストの設定時のみ)と、
+ * ホストは確定しているがポートが未解決で、そのホストに一致する許可エントリがすべてポート指定つきの場合だけ。
+ * ユーザー情報・パス・クエリだけが未解決なら、実行時と同じ判定をする(許可リスト外なら refused)。
+ * ホスト名が未解決のときは、ホストに依存しない判定(保護環境・メソッド・上書きヘッダー)だけを行う。
  */
 function evaluateGuard(
   stepGuard: StepGuard | undefined,
   snapshot: RequestSnapshot,
   hasUnresolved: boolean,
 ): DryRunStepResult["guard"] {
-  const hostUndetermined = hasUnresolved && isHostUndetermined(snapshot.url);
+  const parts = hasUnresolved ? splitAuthority(snapshot.url) : undefined;
+  const hostUndetermined = hasUnresolved && (parts === undefined || parts.host.includes("{{"));
+  const portUnresolved = parts?.port?.includes("{{") === true;
+  // ユーザー情報・未解決のポートを除いた URL で判定する(プレースホルダーのせいで URL として読めなくなるのを避ける)
+  const guardUrl =
+    parts === undefined || hostUndetermined
+      ? snapshot.url
+      : `${parts.scheme}://${parts.host}${parts.port !== undefined && !portUnresolved ? `:${parts.port}` : ""}${parts.rest}`;
+
+  const allowedHosts = stepGuard?.options?.allowedHosts;
+  let portUndetermined = false;
+  if (parts !== undefined && !hostUndetermined && portUnresolved && allowedHosts !== undefined) {
+    try {
+      const hostname = new URL(guardUrl).hostname;
+      const matching = allowedHosts
+        .map(parseAllowedHostEntry)
+        .filter((entry) => entry !== undefined)
+        .filter((entry) =>
+          entry.wildcard ? hostname.endsWith(`.${entry.host}`) : hostname === entry.host,
+        );
+      portUndetermined = matching.length > 0 && matching.every((entry) => entry.port !== undefined);
+    } catch {
+      // URL として読めない場合は assertSendAllowed が fail closed で拒否する
+    }
+  }
+
   try {
-    assertSendAllowed(stepGuard, snapshot.method, snapshot.url, snapshot.headers, hostUndetermined);
+    assertSendAllowed(
+      stepGuard,
+      snapshot.method,
+      guardUrl,
+      snapshot.headers,
+      hostUndetermined || portUndetermined,
+    );
   } catch (error) {
     if (error instanceof GuardRefusalError) {
       return { status: "refused", reason: error.message };
     }
     throw error;
   }
-  if (hostUndetermined && stepGuard?.options?.allowedHosts !== undefined) {
+  if (hostUndetermined && allowedHosts !== undefined) {
     return {
       status: "undetermined",
       reason:
         "the target host depends on a variable captured by an earlier step, so guard.allowedHosts cannot be checked yet",
+    };
+  }
+  if (portUndetermined) {
+    return {
+      status: "undetermined",
+      reason:
+        "the target port depends on a variable captured by an earlier step, and the matching guard.allowedHosts entries all specify a port, so it cannot be checked yet",
     };
   }
   return { status: "allowed" };

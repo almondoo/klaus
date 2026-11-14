@@ -95,8 +95,8 @@ async function resolveBody(value: string, cwd: string): Promise<ResolveBodyResul
 
 /**
  * req コマンド本体。コアの executeSingleRequest(UI の POST /api/request と同じ経路)を呼ぶ。
- * 0. --json と --text、-e/--env と --env-file の同時指定、--body の解決失敗、リクエスト定義の検証失敗は
- *    stderr + exit 2(何も送信しない)
+ * 0. --json と --text、-e/--env と --env-file の同時指定(引数の組み合わせエラー)は run と同じ
+ *    stderr + exit 1(何も送信しない)。--body の解決失敗、リクエスト定義の検証失敗は stderr + exit 2(何も送信しない)
  * 1. executeSingleRequest で送信(安全柵の判定・履歴書き込み・テンプレート展開はコア側で run と共通)。
  *    環境ファイルの ParseError も exit 2 に丸める
  * 2. シークレットをマスクして出力(JSON / text)
@@ -113,11 +113,11 @@ export async function reqCommand(
 ): Promise<number> {
   if (options.json === true && options.text === true) {
     process.stderr.write("klaus: --json and --text cannot be used together\n");
-    return 2;
+    return 1;
   }
   if (options.env !== undefined && options.envFile !== undefined) {
     process.stderr.write("klaus: --env and --env-file cannot be used together\n");
-    return 2;
+    return 1;
   }
 
   // 出力モード決定は run と同じ(--json は非 TTY でも JSON、--text は TTY でなくても text、既定は TTY 判定)

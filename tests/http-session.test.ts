@@ -236,7 +236,11 @@ describe("リダイレクト", () => {
         (method, url) => {
           seen.push(`${method} ${url}`);
         },
-        (options, onResponse) => sendOne(options).then((r) => (onResponse(r), r)),
+        (options, onResponse) =>
+          sendOne(options).then((r) => {
+            onResponse(r);
+            return r;
+          }),
         () => {},
         false,
       );
@@ -261,7 +265,11 @@ describe("リダイレクト", () => {
               false,
             );
           },
-          (options, onResponse) => sendOne(options).then((r) => (onResponse(r), r)),
+          (options, onResponse) =>
+            sendOne(options).then((r) => {
+              onResponse(r);
+              return r;
+            }),
           () => {},
           false,
         ),
@@ -336,6 +344,109 @@ describe("リダイレクト", () => {
     });
     expect(out.result.response?.body).toBe("single-final");
     expect(out.result.redirects).toEqual([`${target.baseUrl}/t`]);
+  });
+});
+
+describe("リダイレクトでのヘッダーの扱い(別オリジン)", () => {
+  const KEY = "KLAUS_TEST_REDIRECT_SECRET";
+  afterEach(() => {
+    delete process.env[KEY];
+  });
+
+  it("秘密値を含む独自ヘッダーは別オリジンへ送らず、同一オリジンでは保ち、秘密でないヘッダーは転送する(落とした名前は記録)", async () => {
+    process.env[KEY] = "api-key-value-98765";
+    const other = await startHttp((_req, res) => res.end("other"));
+    const origin = await startHttp((req, res) => {
+      if (req.url === "/landing") {
+        res.end("landed");
+        return;
+      }
+      res.writeHead(307, {
+        Location: req.url === "/same" ? "/landing" : `${other.baseUrl}/landing`,
+      });
+      res.end();
+    });
+    const headers = {
+      "X-Api-Key": `{{env.${KEY}}}`,
+      "X-Token-Wrapped": `prefix-{{env.${KEY}}}-suffix`,
+      "X-Trace": "trace-123",
+      "Content-Type": "text/plain",
+    };
+    const request = (path: string, name: string) => ({
+      name,
+      request: { method: "POST", url: `${origin.baseUrl}${path}`, headers, body: "payload" },
+    });
+    const { result, entries } = await run(
+      flowOf([request("/same", "same"), request("/cross", "cross")], { followRedirects: true }),
+    );
+
+    const sameLanding = origin.requests.find((r) => r.url === "/landing");
+    expect(sameLanding?.headers["x-api-key"]).toBe("api-key-value-98765");
+    expect(sameLanding?.headers["x-token-wrapped"]).toBe("prefix-api-key-value-98765-suffix");
+
+    const crossLanding = other.requests[0];
+    expect(crossLanding?.headers["x-api-key"]).toBeUndefined();
+    expect(crossLanding?.headers["x-token-wrapped"]).toBeUndefined();
+    expect(crossLanding?.headers["x-trace"]).toBe("trace-123");
+    expect(crossLanding?.headers["content-type"]).toBe("text/plain");
+    expect(crossLanding?.body).toBe("payload");
+
+    expect(result.steps[0]?.droppedHeaders).toBeUndefined();
+    expect(result.steps[1]?.droppedHeaders).toEqual([
+      { hop: 1, headers: ["X-Api-Key", "X-Token-Wrapped"] },
+    ]);
+    expect(entries[1]?.droppedHeaders).toEqual(result.steps[1]?.droppedHeaders);
+    // 記録するのは名前だけで、秘密値は履歴に出ない
+    expect(JSON.stringify(entries)).not.toContain("api-key-value-98765");
+  });
+
+  it("https から同じホスト・ポートの http への格下げは別オリジンとして扱い、資格情報・秘密値のヘッダーと Secure cookie を送らない", async () => {
+    const session = new HttpSession({ followRedirects: true, cookies: true });
+    const secrets = new Set(["downgrade-secret-123"]);
+    const sent: { url: string; headers: Record<string, string> }[] = [];
+    const sender = async (
+      options: { url: string; headers?: Record<string, string> },
+      onResponse: (r: {
+        status: number;
+        headers: Record<string, string>;
+        setCookies?: string[];
+      }) => void,
+    ) => {
+      sent.push({ url: options.url, headers: options.headers ?? {} });
+      const response =
+        sent.length === 1
+          ? {
+              status: 302,
+              headers: { location: "http://example.test/b" },
+              setCookies: ["sid=secure-cookie-value; Secure; Path=/"],
+            }
+          : { status: 200, headers: {} };
+      onResponse(response);
+      return response;
+    };
+    try {
+      const followed = await session.send(
+        {
+          method: "GET",
+          url: "https://example.test/a",
+          headers: { "X-Key": "downgrade-secret-123", Accept: "application/json" },
+        },
+        { captures: {}, env: {}, secrets },
+        () => {},
+        sender,
+        () => {},
+        true,
+      );
+      // 同じホスト名・既定ポートでもスキームが違えば別オリジン
+      expect(sent[0]?.headers.Cookie).toBeUndefined();
+      expect(sent[1]?.url).toBe("http://example.test/b");
+      expect(sent[1]?.headers["X-Key"]).toBeUndefined();
+      expect(sent[1]?.headers.Cookie).toBeUndefined();
+      expect(sent[1]?.headers.Accept).toBe("application/json");
+      expect(followed.droppedHeaders).toEqual([{ hop: 1, headers: ["X-Key"] }]);
+    } finally {
+      await session.close();
+    }
   });
 });
 

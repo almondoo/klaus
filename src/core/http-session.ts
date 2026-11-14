@@ -3,6 +3,7 @@ import { isAbsolute, resolve } from "node:path";
 import { Agent, type Dispatcher, ProxyAgent } from "undici";
 import { CookieJar, splitSetCookieHeader } from "./cookie-jar.js";
 import { GuardRefusalError, RuntimeError } from "./errors.js";
+import { expandSecretVariants, maskString } from "./history.js";
 import type { HttpRequestOptions } from "./http.js";
 import { DEFAULT_TIMEOUT_MS } from "./http.js";
 import type { FlowHttpConfig, HttpConfig } from "./schema.js";
@@ -33,6 +34,15 @@ export interface FollowResult<R> {
   redirects: string[];
   /** 全ホップの合計所要時間(ms) */
   elapsedMs: number;
+  /** 別オリジンへのホップで落としたヘッダー名(ホップ番号つき。値は含まない)。落としていなければ空 */
+  droppedHeaders: DroppedHeaders[];
+}
+
+/** 別オリジンへのリダイレクトで落としたヘッダー(名前のみ) */
+export interface DroppedHeaders {
+  /** 1 始まりのホップ番号(1 = 最初のリダイレクト先への送信) */
+  hop: number;
+  headers: string[];
 }
 
 /**
@@ -340,6 +350,7 @@ export class HttpSession {
     let baseHeaders = this.sanitize({ ...options.headers });
     let body = options.body;
     const redirects: string[] = [];
+    const droppedHeaders: DroppedHeaders[] = [];
     let previousStatus = 0;
 
     for (let hop = 0; ; hop++) {
@@ -377,7 +388,7 @@ export class HttpSession {
 
       const location = response.headers.location;
       if (!this.followRedirects || !isRedirectStatus(response.status) || location === undefined) {
-        return { response, redirects, elapsedMs: performance.now() - startedAt };
+        return { response, redirects, elapsedMs: performance.now() - startedAt, droppedHeaders };
       }
       if (redirects.length >= this.maxRedirects) {
         discard(response);
@@ -410,9 +421,22 @@ export class HttpSession {
         body = undefined;
         baseHeaders = omitHeaders(baseHeaders, BODY_HEADERS);
       }
-      // 別オリジンへ移るときは資格情報を落とす(以降の経路でも戻さない)
+      // 別オリジン(スキーム・ホスト・ポートのいずれかが違う。https から http への格下げも含む)へ移るときは、
+      // 資格情報のヘッダーに加えて、登録済みの秘密値(とそのエンコード形)を値に含むヘッダーも落とす
+      // (API キーは X-Api-Key など任意の名前で渡されるため、固定の名前一覧では足りない)。
+      // 秘密値を含まないヘッダー(Accept・User-Agent・秘密でない独自ヘッダー等)は転送する。
+      // 一度落としたものは以降のホップでも戻さない。落とした名前は結果と履歴に残す
       if (originOf(url) !== next.origin) {
-        baseHeaders = omitHeaders(baseHeaders, CREDENTIAL_HEADERS);
+        const variants = expandSecretVariants([...(context.secrets ?? [])]);
+        const kept: Record<string, string> = {};
+        const dropped: string[] = [];
+        for (const [name, value] of Object.entries(baseHeaders)) {
+          const carriesSecret = variants.length > 0 && maskString(value, variants) !== value;
+          if (CREDENTIAL_HEADERS.has(name.toLowerCase()) || carriesSecret) dropped.push(name);
+          else kept[name] = value;
+        }
+        baseHeaders = kept;
+        if (dropped.length > 0) droppedHeaders.push({ hop: hop + 1, headers: dropped });
       }
       previousStatus = response.status;
       url = next.href;
