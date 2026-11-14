@@ -91,9 +91,79 @@ klaus を「エージェントに API を叩かせても安全で、証跡が残
 - 終了コードは `run` と同じ規約(送信エラーは 3)。アサーションは持たない。
 - Agent Skill と `AGENTS.md` テンプレートに「curl の代わりに `klaus req` を使う」と追記する。
 
+### 段階 1 の実装中に加えた変更
+
+- 許可リストの拒否メッセージは、URL に書かれたとおりのホスト表記で組み立てる。正規化後のホスト名を使うと、小文字化された秘密値がマスクをすり抜けるためである。
+- 読み取り専用モードでは、メソッド上書きヘッダー(`X-HTTP-Method-Override` など)つきのリクエストも拒否する。
+- `allowedHosts` の検証を厳しくし、`*.com` のような広すぎる指定や数値だけのホスト表記を拒否する。
+- 安全柵による拒否は `status: "error"` の履歴エントリとして記録する。監査で最も確認したい記録のためである。通信エラーなど他のエラーは従来どおり記録しない。
+
 ### 段階 1 のテスト
 
 - core: 許可リストの一致規則、読み取り専用モードのメソッド判定、dry-run の展開結果、履歴の新項目(`tests/` の該当モジュール)。
 - server: 保護環境への PUT / capture の 403、UI 起点の実行にも許可リストが効くこと(`tests/server/server.test.ts`)。
 - cli: `req` と `--dry-run` のユニットテスト、および exit code と JSON 形状の統合テスト(`tests/cli/integration.test.ts`)。
 - 実動スモーク: ローカル fixture に対して `req` → `history` → 許可リストによる拒否 → `--dry-run` を確認する。
+
+## 段階 2 の設計
+
+### 共通の決定
+
+- 実行単位(フロー 1 回の実行、または単発リクエスト 1 回)ごとに HTTP クライアントを 1 つ作り、ステップ間で共有する。
+  接続設定、cookie jar、取得済みトークンをここに持たせ、実行終了時に閉じる。
+- 設定はフローのトップレベル `http:` と `klaus.config.yaml` の `http:` に置く。フロー側が設定ファイル側を上書きする。
+  ただし `proxy` と `tls`(`ca` / `cert` / `key` / `insecure`)は `klaus.config.yaml` でのみ指定でき、フローでは検証エラーにする。
+  通信の経路と信頼先を決める設定をフローから変えられると、エージェントが書いたフローで許可リストを迂回できるためである
+  (実装中のセキュリティレビューで判明し、設計を変更した)。
+  すべて未指定なら現状と同じ挙動(リダイレクトを追わない、cookie を保持しない、proxy なし)。
+- リダイレクトは undici に任せず core で 1 ホップずつ処理する。各ホップで許可リストと保護環境の判定をやり直すためである。
+- 新しい依存は追加しない。undici が持つ機能(ProxyAgent、FormData、接続オプション)と自前実装で賄う。
+
+### 2-1 実行単位の HTTP クライアント
+
+- `http.followRedirects: boolean`(既定 false)、`http.maxRedirects: number`(既定 10)。
+  - 301 / 302 / 303 は GET に変えてボディを落とす(303 は常に、301 / 302 は POST のとき)。307 / 308 はメソッドとボディを保つ。
+  - 別オリジンへ移るときは `Authorization` と `Cookie` 由来のヘッダーを落とす。
+  - 各ホップで許可リストと読み取り専用モードを再判定し、拒否されたらステップをエラーにする。
+  - 最終応答に加え、経由した URL の一覧を結果と履歴に残す。
+- `http.proxy: string`(URL)。テンプレートを使える。環境変数 `HTTP_PROXY` などは自動では読まない。
+  許可リストは proxy ではなく最終的な送信先ホストに対して判定する。
+- `http.tls: { ca, cert, key, insecure }`。`ca` / `cert` / `key` はファイルパスで、定義元ファイルからの相対パスを解決する。
+  `insecure: true` は証明書検証を無効にする。使用時は結果に警告を出す。
+- SSE と WebSocket も同じクライアント設定(proxy、TLS)を使う。
+
+### 2-2 cookie jar
+
+- `http.cookies: boolean`(既定 false)。有効にすると、実行中に受け取った `Set-Cookie` を保持し、以降のリクエストに付ける。
+- メモリ上のみで、実行をまたいで保存しない。ドメイン、パス、Secure、有効期限を判定する。
+  公開サフィックス一覧は持たないため、`Domain` 属性はリクエストホストと同じか、その親でドットを含むものだけ受け付ける。
+- cookie の値は秘密値として扱い、履歴と出力でマスクする。
+
+### 2-3 認証ヘルパー
+
+- ステップの `request.auth` と、フロー共通の `http.auth` を追加する。ステップ側が優先し、`auth: none` で無効化できる。
+- `basic: { username, password }`、`bearer: { token }`、
+  `oauth2: { grant: client_credentials, tokenUrl, clientId, clientSecret, scope?, audience? }`。
+- OAuth2 のトークンは実行単位でキャッシュし、期限が切れたら取り直す。トークン取得リクエストにも安全柵を適用する。
+- パスワード、トークン、クライアントシークレットは秘密値としてマスクする。AWS SigV4 は今回は扱わない。
+
+### 2-4 form・multipart・ファイルのボディ
+
+- `request.form: { key: value }` は `application/x-www-form-urlencoded` で送る。
+- `request.multipart: { key: value | { file, filename?, contentType? } }` は `multipart/form-data` で送る。
+- `request.bodyFile: path` はファイルの内容をそのまま送る。
+- `body` / `graphql` / `form` / `multipart` / `bodyFile` は同時に指定できない。
+- ファイルは cwd 配下に限る(既存の path-guard を使う)。エージェントが書いたフローで任意のファイルを送信させないためである。
+- 履歴にはファイルの内容を残さず、ファイル名とサイズだけを残す。
+
+### 2-5 capture とアサーションの拡張
+
+- capture は既存の文字列(JSONPath)に加え、オブジェクト形式を受け付ける:
+  `{ header: name }`、`{ cookie: name }`、`{ regex: pattern, group? }`(ボディ文字列に対して)、`{ status: true }`。
+- ボディとヘッダーのマッチャーに `gt` / `gte` / `lt` / `lte`、`length`(数値または `{ min, max }`)、`type`、`oneOf` を追加する。
+- `assert.status` は数値に加え、数値の配列と `"2xx"` 形式を受け付ける。
+- 式言語は導入しない(今回の範囲外)。
+
+### 段階 2 のコミット単位
+
+2-1 と 2-2、2-3、2-4、2-5 の 4 単位で、それぞれ `feat:` コミットと minor バンプを行う。
