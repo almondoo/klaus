@@ -1,12 +1,16 @@
 import { defineConfig } from "tsup";
 
-// サプライチェーン対策として実行時依存(9 パッケージ)を dist にバンドルする。
+// サプライチェーン対策として実行時依存(10 パッケージ)を dist にバンドルする。
 // これにより公開物(npm tarball)が依存パッケージのその後の改変や取り下げの影響を受けなくなる。
-// hono はサブパスインポート(hono/streaming)、ajv はサブパスインポート(ajv/dist/2020)が
-// あるため正規表現で配下を含めてマッチさせる。
+// hono はサブパスインポート(hono/streaming)、ajv はサブパスインポート(ajv/dist/2020)、
+// zod はサブパスインポート(zod/v4。MCP の SDK が使う)があるため正規表現で配下を含めてマッチさせる。
+// MCP の SDK(@modelcontextprotocol/server とその依存の @modelcontextprotocol/core)も、
+// `klaus mcp` のために利用者へ実行時のインストールを要求しないよう devDependency のままバンドルする
+// (サブパス @modelcontextprotocol/server/stdio も含める)。
 // Node 組み込みモジュールは対象外(esbuild が自動的に external 扱いする)。
 const noExternal: (string | RegExp)[] = [
   /^@apidevtools\/swagger-parser$/,
+  /^@modelcontextprotocol\/(server|core)(\/.*)?$/,
   /^ajv(\/.*)?$/,
   "commander",
   "eventsource-parser",
@@ -14,7 +18,7 @@ const noExternal: (string | RegExp)[] = [
   "jsonpath-plus",
   "undici",
   "yaml",
-  "zod",
+  /^zod(\/.*)?$/,
 ];
 
 // yaml の CJS 実体(dist/index.js が package.json の "node" exports 条件で選ばれる)は
@@ -62,6 +66,11 @@ export default defineConfig([
     format: ["esm"],
     dts: false,
     sourcemap: true,
+    // `klaus mcp` は MCP の SDK を dynamic import で遅延読み込みする(他のコマンドの起動時間に載せないため)。
+    // 既定のコード分割だと dynamic import が別チャンクのファイルになり、`files` が dist/cli.js だけを同梱する
+    // 公開物から欠けてしまうため、分割を無効にして 1 ファイルに収める(esbuild は dynamic import 先を遅延初期化の
+    // ラッパーにするので、`klaus mcp` 以外では SDK のモジュールは実行されない)。
+    splitting: false,
     clean: false,
     target: "node22",
     outDir: "dist",
