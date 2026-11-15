@@ -1,10 +1,10 @@
 # MCP server for AI agents (klaus mcp)
 
-`klaus mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server on stdin/stdout, so an AI agent can explore and test an API through klaus's own guardrails instead of `curl`. The agent calls tools such as `klaus_request` and `klaus_run_flow`; every send goes through the same host allowlist, environment protection, secret masking, and history as the CLI, and the server offers no way to relax any of them.
+`klaus mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io) server on stdin/stdout, so an AI agent can explore and test an API through klaus's own guardrails instead of `curl`. The agent calls tools such as `klaus_request` and `klaus_run_flow`; every send goes through the same host allowlist, environment protection, secret masking, and history as the CLI, and the server has no option to turn any of them off. What each guard does and does not cover is spelled out in [What the guards cover](#what-the-guards-cover); read it before pointing an agent at a real API.
 
 ## What it is
 
-- **stdio only.** The client starts `klaus mcp` as a child process and speaks MCP over its stdin/stdout. There is no network listener. It exits with code 0 when stdin closes or on SIGINT / SIGTERM.
+- **stdio only.** The client starts `klaus mcp` as a child process and speaks MCP over its stdin/stdout. There is no network listener. It exits with code 0 when stdin closes or on SIGINT / SIGTERM. At that point calls that are still waiting in the queue are not started; a request that is already in flight is not aborted, and the process exits after at most 3 seconds. A request that was in flight when the client disconnected may therefore have reached the server without leaving a history entry.
 - **The working directory is the project.** Flows, environments, history, and `klaus.config.yaml` are all resolved from the directory the server was started in. Run it from the project directory.
 - **Configuration is read on every call.** `guard`, `http`, and `run.openapi` in `klaus.config.yaml` take effect on the next tool call without a restart. An invalid file makes the sending tools fail instead of sending without the guard. Other `run` defaults (`env`, `history`, `mask`, ...) are not applied: history and masking are always on, and `env` is passed per call.
 - **Diagnostics go to stderr.** stdout carries protocol messages only.
@@ -61,18 +61,22 @@ All tool names start with `klaus_`. Inputs are JSON objects described by each to
 |---|---|---|
 | `klaus_list_flows` | Lists flow files with name and step count (invalid ones with their error) | Read-only |
 | `klaus_validate_flow` | Schema-validates one flow file; returns `valid` and the errors | Read-only |
-| `klaus_list_environments` | Lists environments and their protection (`none`, `protected`, `readonly`; `unknown` if unreadable). Never returns values | Read-only |
-| `klaus_dry_run` | Shows each step's expanded request (masked) and the guard decision, including `errorCode` | Read-only; sends nothing, writes no history |
+| `klaus_list_environments` | Lists environments and their protection (`none`, `protected`, `readonly`; `unknown` if unreadable). Returns names and protection only | Read-only |
+| `klaus_dry_run` | Shows each step's expanded request and the guard decision, including `errorCode`. Optional `env` and `variables`. Values from environment files are shown expanded (see [What the guards cover](#what-the-guards-cover)) | Read-only; sends nothing, writes no history |
 | `klaus_run_flow` | Runs a flow; returns a summary per step (HTTP status, error, `errorCode`, failed assertions, snapshot and OpenAPI results). Optional `env` and `variables` | Sends requests; writes history and missing snapshot baselines |
 | `klaus_request` | Sends one ad-hoc request (`method`, `url`, `headers`, `query`, `body`, `env`); returns the status, headers, and body (masked) | Sends a request; writes history |
 | `klaus_history_list` | Recent steps as summary rows (`flow`, `limit` up to 100, `statuses` filters); no bodies | Read-only |
-| `klaus_history_show` | The recorded entries of one run; `step` narrows to one step | Read-only |
+| `klaus_history_show` | The recorded entries of one run; `step` narrows to one step; with `step`, `path` returns only the matched values and `offset` / `length` read a long string in windows (see [Reading large values](#reading-large-values)) | Read-only |
 | `klaus_diff_runs` | Compares two runs (`a` / `b` are run IDs, `latest`, or `previous`); `ignorePaths`, `ignoreHeaders` | Read-only |
 | `klaus_snapshot_list` | The snapshot assertions of a run that wait for approval | Read-only |
 | `klaus_promote` | Writes a **new** flow file from recorded runs (`runIds`, `out`, optional `name`); returns the path, the `TODO_*` placeholders to fill in, and the validation result | Writes one new file; never overwrites. Not available with `--read-only` |
 | `klaus_snapshot_accept` | Accepts one pending snapshot (`runId`, `snapshotFile`, `key`) as the new baseline | Replaces a baseline. Not available with `--read-only` |
 
-`klaus_run_flow` returns summaries, not response bodies. To see a body, call `klaus_history_show` with the `runId` and the `step`. Snapshot candidates (full response copies) are included by `klaus_history_show` only when `step` is given, as in `klaus history show`.
+`klaus_run_flow` returns summaries, not response bodies. To see a body, call `klaus_history_show` with the `runId` and the `step` (each recorded step carries a `historyRef` of `{ runId, step }` for this). Snapshot candidates (full response copies) are included by `klaus_history_show` only when `step` is given, as in `klaus history show`.
+
+What a run records in history: steps that end `passed`, `failed` (assertions, snapshot, or OpenAPI validation), or `skipped`, and steps refused by a guard, are recorded. A step that ends with any other error is not recorded: a failed capture, a timeout, a connection error or a network error in the middle of the body, a response that is too large. Only recorded steps carry a `historyRef`; looking up a step without one finds nothing. The same applies to `klaus run --json`, which emits `historyRef` only for steps that were actually recorded.
+
+A JSON response body nested deeper than 200 levels is kept as text instead of being parsed (`klaus req --body` and cassette replay follow the same rule, and a `path` assertion on an SSE event or WebSocket message whose JSON is that deep does not match). As a consequence, JSONPath captures and assertions on such a body do not match. `klaus_request` refuses an object or array `body` that is nested deeper than 200 levels; send it as a string and set `Content-Type` in `headers`.
 
 The tools carry the standard MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`). The request-sending tools are marked destructive and open-world, because a flow or request can change data on the target API; `klaus_promote` is not destructive (it never overwrites), and `klaus_snapshot_accept` is. Clients may use them to ask for confirmation.
 
@@ -80,14 +84,27 @@ Tools that send requests or write files run one at a time, in the order they wer
 
 ## Guardrails
 
-### Guards cannot be overridden
+### What the guards cover
 
-Every send uses the guards from `klaus.config.yaml` only (`guard.allowedHosts`) plus the protection of the environment (`$protected`). `klaus mcp` has no `--allow-protected`, no `--no-mask`, and no option or tool argument that passes guard settings. A refusal comes back with an `errorCode` (`guard.allowed-hosts`, `guard.protected`, `guard.readonly`, `guard.method-override`, ...), and the message for a protected environment says that `klaus mcp` cannot override it and that the user must run `klaus run --allow-protected` from a terminal. The refusal is recorded in history like any other.
+Every send uses the guards from `klaus.config.yaml` only (`guard.allowedHosts`) plus the protection of the environment (`$protected`). `klaus mcp` has no `--allow-protected`, no `--no-mask`, and no option or tool argument that passes guard settings, so a refusal cannot be overridden through MCP. A refusal comes back with an `errorCode` (`guard.allowed-hosts`, `guard.protected`, `guard.readonly`, `guard.method-override`, ...), and the message for a protected environment says that `klaus mcp` cannot override it and that the user must run `klaus run --allow-protected` from a terminal. The refusal is recorded in history like any other.
+
+What the guards do not do matters as much:
+
+- **`$protected` gates runs that select that environment.** It is tied to the environment name, not to hosts. `klaus_run_flow`, `klaus_dry_run`, and `klaus_request` apply it only when the run (or the `env` argument) selects the protected environment. `klaus_request` without `env` loads no environment and is not covered by any protection.
+- **`guard.allowedHosts` is the control that limits where an agent can send.** `klaus_request` without `env` can reach every host that `guard.allowedHosts` permits, and every host when it is not set.
+- **`klaus_dry_run` shows expanded requests.** Values that come from an environment file are shown as they are, including those of a protected environment and also when the step is refused. Only values registered as secrets (see [Output is always masked](#output-is-always-masked)) are masked.
+- **Any OS environment variable of the `klaus mcp` process can be referenced** with <code v-pre>{{env.NAME}}</code> in a request or flow and sent to a host that is allowed. The value is masked in results and history, not withheld from the destination.
 
 How a refusal is reported depends on the tool:
 
 - `klaus_run_flow` and `klaus_dry_run` return a normal result in which the step has `status: "error"` and its `errorCode` (or `guard.status: "refused"` for a dry run). A run whose steps failed assertions or were refused is not a tool error; the agent needs the details.
 - `klaus_request` sends a single request, so a refusal or a send failure is a tool error (`isError: true`) with `error`, `errorCode`, and a `hint`. HTTP error statuses such as 404 are normal results.
+
+### Recommended setup
+
+- Set `guard.allowedHosts` in `klaus.config.yaml` whenever you use `klaus mcp`. It is the only control that limits where an agent can send requests.
+- Keep production credentials out of environment files that are reachable from the agent's project directory, and do not rely on `$protected` to keep an agent away from an API it can reach with `klaus_request`.
+- Use `--read-only` when you do not want the agent to write files.
 
 ### Output is always masked
 
@@ -113,9 +130,16 @@ Every history entry written through `klaus mcp` has `actor.kind: "agent"`. The n
 
 ## Result format and size limit
 
-Every tool returns one text block that contains pretty-printed JSON. Expected failures (invalid arguments, a refused path, an unknown run ID, a definition error, a guard refusal from `klaus_request`) return `isError: true` with a body of the form `{ "error": "...", "errorCode": "...", "hint": "..." }`; `errorCode`, `hint`, and `runId` appear only when they apply. Unexpected exceptions also return `isError: true` with the message, the details go to stderr, and the server keeps running.
+Every tool returns one text block that contains pretty-printed JSON. Expected failures (a refused path, an unknown run ID, a definition error, a guard refusal from `klaus_request`) return `isError: true` with a body of the form `{ "error": "...", "errorCode": "...", "hint": "..." }`; `errorCode`, `hint`, and `runId` appear only when they apply. Unexpected exceptions also return `isError: true` with the message, the details go to stderr, and the server keeps running. Arguments that fail the input schema (a missing or wrongly typed argument) are rejected by the MCP SDK before the tool runs: they also return `isError: true`, but the text is a plain message (`Input validation error: Invalid arguments for tool ...`), not this JSON.
 
-A result is capped at 256 KiB. Larger strings and `body` values are replaced by a marker such as `[truncated: 1048576 bytes; the full value is available via klaus_history_show with step, or in .klaus/history]`, and the object gets `"resultTruncated": true`, so the JSON always stays valid. Ask for less (a smaller `limit`, one `step`) or read the history file.
+A result is capped at 256 KiB. Larger strings and `body` values are replaced by a marker such as `[truncated: 1048576 bytes; read it with klaus_history_show: pass step and path (a JSONPath into the history entry, for example $.response.body) and, for a string value, offset and length to read it in windows; the stored record is also in .klaus/history]`, and the object gets `"resultTruncated": true`, so the JSON always stays valid.
+
+### Reading large values
+
+`klaus_history_show` can return less than a whole run, so a value that was cut off can still be read completely. Masking is as stored: history is already masked.
+
+- `path` (requires `step`) is a JSONPath evaluated against each selected history entry, for example `$.response.body`, `$.response.body.items[0]`, `$.response.headers`, or `$.request.url`. The result lists, per entry, `matchCount` and the matched `matches`; a path that matches nothing gives an empty list.
+- `offset` and `length` (require `path`) read a window of the single string value that `path` selects, for example a text body at `$.response.body`. They count characters (UTF-16 code units), `length` defaults to 32768 and is at most 40000, so a window always fits under the 256 KiB cap. The window result has `text`, `offset`, `length`, `totalLength`, and `nextOffset` (absent at the end); pass `nextOffset` as the next `offset` until it is absent. If `path` does not select exactly one string, the call fails and says so.
 
 ## Troubleshooting
 

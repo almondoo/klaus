@@ -1,10 +1,10 @@
 # AI エージェント向けの MCP サーバー(klaus mcp)
 
-`klaus mcp` は [Model Context Protocol](https://modelcontextprotocol.io) のサーバーを stdin/stdout で動かし、AI エージェントが `curl` の代わりに、klaus 自身の安全柵のもとで API を調べ、検証できるようにする。エージェントは `klaus_request` や `klaus_run_flow` といったツールを呼ぶ。送信はすべて CLI と同じ送信先の許可リスト・環境の保護・シークレットのマスク・履歴を通り、サーバーにはそのどれも緩める手段がない。
+`klaus mcp` は [Model Context Protocol](https://modelcontextprotocol.io) のサーバーを stdin/stdout で動かし、AI エージェントが `curl` の代わりに、klaus 自身の安全柵のもとで API を調べ、検証できるようにする。エージェントは `klaus_request` や `klaus_run_flow` といったツールを呼ぶ。送信はすべて CLI と同じ送信先の許可リスト・環境の保護・シークレットのマスク・履歴を通り、サーバーにはそのどれも無効にするオプションがない。各安全柵が何を守り、何を守らないかは[安全柵が守る範囲](#安全柵が守る範囲)に書いた。実際の API にエージェントを向ける前に読むこと。
 
 ## これは何か
 
-- **stdio のみ。** クライアントが `klaus mcp` を子プロセスとして起動し、その stdin/stdout で MCP を話す。ネットワークのリスナーは持たない。stdin が閉じたとき、または SIGINT / SIGTERM で exit code 0 で終了する。
+- **stdio のみ。** クライアントが `klaus mcp` を子プロセスとして起動し、その stdin/stdout で MCP を話す。ネットワークのリスナーは持たない。stdin が閉じたとき、または SIGINT / SIGTERM で exit code 0 で終了する。その時点でキューに待機している呼び出しは開始されない。すでに送信中のリクエストは中断せず、プロセスは最長 3 秒で終了する。そのため、クライアントが切断した時点で送信中だったリクエストは、履歴のエントリを残さないまま相手のサーバーに届いている可能性がある。
 - **作業ディレクトリがプロジェクト。** フロー・環境・履歴・`klaus.config.yaml` は、サーバーを起動したディレクトリから解決する。プロジェクトのディレクトリで起動すること。
 - **設定は呼び出しごとに読み直す。** `klaus.config.yaml` の `guard`・`http`・`run.openapi` は、再起動なしで次のツール呼び出しから効く。ファイルが不正なときは、guard なしで送ってしまわないよう、送信するツールがエラーになる。それ以外の `run` の既定値(`env`・`history`・`mask` など)は適用しない。履歴とマスクは常にオンで、`env` は呼び出しごとに渡す。
 - **診断は stderr へ。** stdout にはプロトコルのメッセージだけを出す。
@@ -61,18 +61,22 @@ claude mcp add klaus -- npx -y @almondoo/klaus mcp
 |---|---|---|
 | `klaus_list_flows` | フローファイルを名前とステップ数つきで一覧する(不正なものはエラーつき) | 読み取り専用 |
 | `klaus_validate_flow` | フローファイル 1 つをスキーマ検証し、`valid` とエラーを返す | 読み取り専用 |
-| `klaus_list_environments` | 環境と保護モード(`none`・`protected`・`readonly`。読めないものは `unknown`)を一覧する。値は返さない | 読み取り専用 |
-| `klaus_dry_run` | 各ステップの展開後リクエスト(マスク済み)と、`errorCode` を含む安全柵の判定を示す | 読み取り専用。何も送らず、履歴も書かない |
+| `klaus_list_environments` | 環境と保護モード(`none`・`protected`・`readonly`。読めないものは `unknown`)を一覧する。返すのは名前と保護モードだけ | 読み取り専用 |
+| `klaus_dry_run` | 各ステップの展開後リクエストと、`errorCode` を含む安全柵の判定を示す。`env` と `variables` は任意。環境ファイル由来の値は展開されて表示される([安全柵が守る範囲](#安全柵が守る範囲)を参照) | 読み取り専用。何も送らず、履歴も書かない |
 | `klaus_run_flow` | フローを実行し、ステップごとの要約(HTTP ステータス・エラー・`errorCode`・失敗したアサーション・snapshot と OpenAPI の結果)を返す。`env` と `variables` は任意 | リクエストを送る。履歴と、無かったスナップショットの基準を書く |
 | `klaus_request` | 単発のリクエスト(`method`・`url`・`headers`・`query`・`body`・`env`)を送り、ステータス・ヘッダー・本文(マスク済み)を返す | リクエストを送る。履歴を書く |
 | `klaus_history_list` | 最近のステップを要約行で返す(`flow`、100 件までの `limit`、`statuses` で絞り込み)。本文は含まない | 読み取り専用 |
-| `klaus_history_show` | 1 つの run の記録を返す。`step` で 1 ステップに絞る | 読み取り専用 |
+| `klaus_history_show` | 1 つの run の記録を返す。`step` で 1 ステップに絞る。`step` と併せて、`path` は一致した値だけを返し、`offset` / `length` は長い文字列を窓に区切って読む([大きな値を読む](#大きな値を読む)を参照) | 読み取り専用 |
 | `klaus_diff_runs` | 2 つの run を比較する(`a` / `b` は run ID・`latest`・`previous`)。`ignorePaths`・`ignoreHeaders` | 読み取り専用 |
 | `klaus_snapshot_list` | run のうち、承認待ちのスナップショットのアサーションを返す | 読み取り専用 |
 | `klaus_promote` | 記録済みの run から**新しい**フローファイルを書く(`runIds`・`out`・任意の `name`)。パス、利用者が埋める `TODO_*` のプレースホルダー、検証結果を返す | 新しいファイルを 1 つ書く。上書きしない。`--read-only` では使えない |
 | `klaus_snapshot_accept` | 承認待ちのスナップショット 1 件(`runId`・`snapshotFile`・`key`)を新しい基準として受け入れる | 基準を置き換える。`--read-only` では使えない |
 
-`klaus_run_flow` が返すのは要約で、レスポンスの本文ではない。本文を見るには、`runId` と `step` を指定して `klaus_history_show` を呼ぶ。スナップショットの候補(レスポンス全体のコピー)は、`klaus history show` と同じく、`step` を指定したときだけ `klaus_history_show` に含まれる。
+`klaus_run_flow` が返すのは要約で、レスポンスの本文ではない。本文を見るには、`runId` と `step` を指定して `klaus_history_show` を呼ぶ(記録されたステップには、そのための `{ runId, step }` を持つ `historyRef` が付く)。スナップショットの候補(レスポンス全体のコピー)は、`klaus history show` と同じく、`step` を指定したときだけ `klaus_history_show` に含まれる。
+
+run が履歴に記録するもの: `passed`・`failed`(アサーション・snapshot・OpenAPI 検証)・`skipped` で終わったステップと、安全柵に拒否されたステップは記録される。それ以外のエラーで終わったステップは記録されない。キャプチャの失敗、タイムアウト、接続エラーや本文の途中でのネットワークエラー、大きすぎるレスポンスがこれに当たる。`historyRef` が付くのは記録されたステップだけで、付いていないステップを履歴から引いても見つからない。`klaus run --json` も同じで、実際に記録されたステップにだけ `historyRef` を出す。
+
+入れ子が 200 段を超える JSON のレスポンス本文は、パースせずテキストのまま保持する(`klaus req --body` とカセットの再生も同じ規則で、SSE イベントや WebSocket メッセージの JSON がそれほど深い場合は `path` のアサーションに一致しない)。そのため、そうした本文に対する JSONPath のキャプチャとアサーションは一致しない。`klaus_request` は、200 段を超える object / array の `body` を拒否する。文字列として渡し、`headers` で `Content-Type` を指定すること。
 
 ツールには標準の MCP 注釈(`readOnlyHint`・`destructiveHint`・`idempotentHint`・`openWorldHint`)が付く。リクエストを送るツールは、フローやリクエストが対象 API のデータを変え得るため、破壊的かつオープンワールドとして示される。`klaus_promote` は上書きしないので破壊的ではなく、`klaus_snapshot_accept` は破壊的。クライアントはこれを確認ダイアログの判断に使える。
 
@@ -80,14 +84,27 @@ claude mcp add klaus -- npx -y @almondoo/klaus mcp
 
 ## 安全柵
 
-### 安全柵は上書きできない
+### 安全柵が守る範囲
 
-送信はすべて、`klaus.config.yaml` の guard(`guard.allowedHosts`)と環境の保護(`$protected`)だけを使う。`klaus mcp` には `--allow-protected` も `--no-mask` も、guard の設定を渡せるオプションやツール引数もない。拒否は `errorCode`(`guard.allowed-hosts`・`guard.protected`・`guard.readonly`・`guard.method-override` など)つきで返り、保護環境のメッセージは、`klaus mcp` は上書きできず、利用者が端末から自分で `klaus run --allow-protected` を実行する必要があることを伝える。拒否も他と同じく履歴に記録される。
+送信はすべて、`klaus.config.yaml` の guard(`guard.allowedHosts`)と環境の保護(`$protected`)だけを使う。`klaus mcp` には `--allow-protected` も `--no-mask` も、guard の設定を渡せるオプションやツール引数もないので、MCP 経由で拒否を上書きすることはできない。拒否は `errorCode`(`guard.allowed-hosts`・`guard.protected`・`guard.readonly`・`guard.method-override` など)つきで返り、保護環境のメッセージは、`klaus mcp` は上書きできず、利用者が端末から自分で `klaus run --allow-protected` を実行する必要があることを伝える。拒否も他と同じく履歴に記録される。
+
+安全柵が守らないものも、守るものと同じくらい重要になる:
+
+- **`$protected` が止めるのは、その環境を選ぶ run。** 保護は環境の名前に結び付いていて、ホストには結び付いていない。`klaus_run_flow`・`klaus_dry_run`・`klaus_request` が保護を適用するのは、run(または `env` 引数)が保護された環境を選んだときだけ。`env` なしの `klaus_request` は環境を読み込まず、どの保護の対象にもならない。
+- **エージェントの送信先を限るのは `guard.allowedHosts`。** `env` なしの `klaus_request` は、`guard.allowedHosts` が許すすべてのホストへ届き、未設定ならすべてのホストへ届く。
+- **`klaus_dry_run` は展開後のリクエストを示す。** 環境ファイル由来の値はそのまま表示される。保護された環境の値も、ステップが拒否された場合も同じ。マスクされるのは、シークレットとして登録された値([出力は常にマスクされる](#出力は常にマスクされる)を参照)だけ。
+- **`klaus mcp` プロセスのどの OS 環境変数も参照できる。** リクエストやフローから <code v-pre>{{env.NAME}}</code> で参照し、許可されたホストへ送れる。値は結果と履歴ではマスクされるが、送信先には渡る。
 
 拒否の返し方はツールによって違う:
 
 - `klaus_run_flow` と `klaus_dry_run` は、そのステップが `status: "error"` と `errorCode`(dry-run では `guard.status: "refused"`)を持つ通常の結果を返す。アサーションに失敗した、または拒否されたステップを含む run はツールのエラーではない(エージェントに詳細が必要なため)。
 - `klaus_request` は 1 件のリクエストだけを送るので、拒否や送信の失敗はツールのエラー(`isError: true`)になり、`error`・`errorCode`・`hint` を返す。404 のような HTTP のエラーステータスは通常の結果。
+
+### 推奨する設定
+
+- `klaus mcp` を使うときは、`klaus.config.yaml` に `guard.allowedHosts` を必ず設定する。エージェントの送信先を限る手段はこれだけ。
+- 本番の認証情報は、エージェントのプロジェクトのディレクトリから届く環境ファイルに置かない。`klaus_request` で届く API からエージェントを遠ざけるために `$protected` を当てにしないこと。
+- エージェントにファイルを書かせたくないときは `--read-only` を使う。
 
 ### 出力は常にマスクされる
 
@@ -113,9 +130,16 @@ run の間、スナップショットは対話的な `klaus run` と同じ振る
 
 ## 結果の形式とサイズの上限
 
-どのツールも、整形した JSON を入れたテキストブロックを 1 つ返す。想定される失敗(不正な引数・拒否されたパス・不明な run ID・定義エラー・`klaus_request` の安全柵による拒否)は `isError: true` で返り、本文は `{ "error": "...", "errorCode": "...", "hint": "..." }` の形になる。`errorCode`・`hint`・`runId` は当てはまるときだけ付く。予期しない例外も `isError: true` でメッセージを返し、詳細は stderr に出て、サーバーは動き続ける。
+どのツールも、整形した JSON を入れたテキストブロックを 1 つ返す。想定される失敗(拒否されたパス・不明な run ID・定義エラー・`klaus_request` の安全柵による拒否)は `isError: true` で返り、本文は `{ "error": "...", "errorCode": "...", "hint": "..." }` の形になる。`errorCode`・`hint`・`runId` は当てはまるときだけ付く。予期しない例外も `isError: true` でメッセージを返し、詳細は stderr に出て、サーバーは動き続ける。入力スキーマに合わない引数(足りない・型が違う引数)は、ツールが動く前に MCP の SDK が拒否する。この場合も `isError: true` で返るが、本文はこの JSON ではなく、`Input validation error: Invalid arguments for tool ...` という平文のメッセージになる。
 
-結果は 256 KiB までに制限される。それを超える文字列と `body` の値は `[truncated: 1048576 bytes; the full value is available via klaus_history_show with step, or in .klaus/history]` のような印に置き換えられ、オブジェクトには `"resultTruncated": true` が付くので、JSON は常に有効なまま。要求を絞る(小さな `limit`、1 つの `step`)か、履歴ファイルを読むこと。
+結果は 256 KiB までに制限される。それを超える文字列と `body` の値は `[truncated: 1048576 bytes; read it with klaus_history_show: pass step and path (a JSONPath into the history entry, for example $.response.body) and, for a string value, offset and length to read it in windows; the stored record is also in .klaus/history]` のような印に置き換えられ、オブジェクトには `"resultTruncated": true` が付くので、JSON は常に有効なまま。
+
+### 大きな値を読む
+
+`klaus_history_show` は run 全体より少ない範囲を返せるので、切り詰められた値も完全に読める。マスクは保存されたとおり(履歴はすでにマスク済み)。
+
+- `path`(`step` が必要)は、選んだ各履歴エントリに当てる JSONPath。例: `$.response.body`・`$.response.body.items[0]`・`$.response.headers`・`$.request.url`。結果にはエントリごとに `matchCount` と、一致した `matches` が並ぶ。何にも一致しない path は空のリストになる。
+- `offset` と `length`(`path` が必要)は、`path` が選んだ単一の文字列の値(例: `$.response.body` のテキスト本文)の窓を読む。単位は文字(UTF-16 コード単位)で、`length` の既定は 32768、最大は 40000。そのため窓は常に 256 KiB の上限に収まる。窓の結果には `text`・`offset`・`length`・`totalLength`・`nextOffset`(末尾では無い)が入る。`nextOffset` が無くなるまで、それを次の `offset` として渡す。`path` がちょうど 1 つの文字列を選ばないときは、呼び出しが失敗し、その旨を伝える。
 
 ## トラブルシューティング
 

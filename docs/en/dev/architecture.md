@@ -77,8 +77,8 @@ interface RunFlowOptions {
 | File | Responsibility |
 |---|---|
 | `tools.ts` | The 12 tool definitions (name, description, zod input schema, annotations, handler). It does not depend on the MCP SDK and can be unit-tested as pure async functions `(args, ctx) => ToolOutcome`, where ctx is `{ cwd, readOnly, clientName? }` |
-| `result.ts` | `ToolOutcome` / `ToolError` and the serialization of a result to JSON. Beyond 256 KiB, huge strings and `body` values are replaced with a marker so the JSON stays valid |
-| `queue.ts` | An in-process serial queue that runs the tools that send or write (`klaus_run_flow` / `klaus_request` / `klaus_promote` / `klaus_snapshot_accept`) one at a time |
+| `result.ts` | `ToolOutcome` / `ToolError` and the serialization of a result to JSON. Beyond 256 KiB, huge strings and `body` values are replaced with a marker that points at `klaus_history_show` with `step` / `path` / `offset` / `length`, so the JSON stays valid |
+| `queue.ts` | An in-process serial queue that runs the tools that send or write (`klaus_run_flow` / `klaus_request` / `klaus_promote` / `klaus_snapshot_accept`) one at a time. On shutdown `close()` makes it reject calls that have not started yet (an in-flight call is neither aborted nor awaited) |
 | `server.ts` | Registration with the SDK (`McpServer` + `StdioServerTransport`), mapping to `isError`, reporting unexpected exceptions to stderr, and waiting until the connection closes |
 
 `registerMcpCommand` in `src/cli/mcp.ts` registers `klaus mcp [--read-only]`. `--read-only` does not register the write tools (`klaus_promote` / `klaus_snapshot_accept`). The history actor always has kind `agent`, and its name is decided in the order "client name from `initialize` > environment marker (`CLAUDECODE` / `AI_AGENT`) > `mcp`".

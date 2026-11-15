@@ -77,8 +77,8 @@ interface RunFlowOptions {
 | ファイル | 責務 |
 |---|---|
 | `tools.ts` | 12 個のツールの定義(名前・説明・zod の入力スキーマ・注釈・ハンドラ)。MCP の SDK に依存せず、`(args, ctx) => ToolOutcome` の純粋な非同期関数として単体でテストできる。ctx は `{ cwd, readOnly, clientName? }` |
-| `result.ts` | `ToolOutcome` / `ToolError` と、結果の JSON への直列化。256 KiB を超える場合は巨大な文字列・`body` を印に置き換えて、有効な JSON のまま収める |
-| `queue.ts` | 送信・書き込みを伴うツール(`klaus_run_flow` / `klaus_request` / `klaus_promote` / `klaus_snapshot_accept`)を 1 つずつ実行する、プロセス内の直列キュー |
+| `result.ts` | `ToolOutcome` / `ToolError` と、結果の JSON への直列化。256 KiB を超える場合は巨大な文字列・`body` を、`klaus_history_show` の `step` / `path` / `offset` / `length` での読み方を示す印に置き換えて、有効な JSON のまま収める |
+| `queue.ts` | 送信・書き込みを伴うツール(`klaus_run_flow` / `klaus_request` / `klaus_promote` / `klaus_snapshot_accept`)を 1 つずつ実行する、プロセス内の直列キュー。終了時は `close()` で、まだ開始していない呼び出しを拒否する(実行中の呼び出しは中断も待機もしない) |
 | `server.ts` | SDK(`McpServer` + `StdioServerTransport`)への登録、`isError` への写し替え、予期しない例外の標準エラーへの出力、接続が閉じるまでの待機 |
 
 `src/cli/mcp.ts` の `registerMcpCommand` が `klaus mcp [--read-only]` を登録する。`--read-only` では書き込みツール(`klaus_promote` / `klaus_snapshot_accept`)を登録しない。履歴の actor は、kind を常に `agent` とし、name を「`initialize` のクライアント名 > 環境変数のマーカー(`CLAUDECODE` / `AI_AGENT`)> `mcp`」の順で決める。

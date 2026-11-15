@@ -265,7 +265,7 @@ request/response スナップショットや assertions などの詳細を持つ
       "durationMs": 120,
       "steps": [
         {
-          // passed ステップは1行要約のみ(historyRef は履歴記録が有効なときだけ付与)
+          // passed ステップは1行要約のみ(historyRef は履歴に記録されたステップにだけ付与)
           "name": "login",
           "status": "passed",
           "durationMs": 6,
@@ -292,7 +292,7 @@ request/response スナップショットや assertions などの詳細を持つ
 - <code v-pre>{{env.X}}</code> 由来のシークレットは既定でマスクされる(履歴 JSONL・`--report junit` と同じ規則。URL エンコード形(encodeURIComponent 形・form-urlencoded 形・WHATWG URL 正規化に近い encodeURI 形)・JSON エスケープ形も対象。詳細は [実行履歴](history.md) を参照)。`--no-mask` を付けるとこの JSON 出力のマスクだけを無効化できる(履歴 JSONL・JUnit ファイル出力は常にマスクされる)
 - 制御文字の可視エスケープ(text 出力や JUnit レポートで行われるもの)はここには適用されず、生の値のまま出力される
 - **errorCode**: `error` ステップは、原因が安定したコードを持つとき `error` メッセージと並んで `errorCode`(例: `guard.allowed-hosts`・`response-too-large`)を持つ。ほかのエラーや passed / failed / skipped のステップでは省略する。コードの一覧は[エラーコード](history.md#エラーコード)
-- **historyRef**: 履歴記録が有効な実行(`--no-history` を付けていない)では、各ステップ(passed 含む)に `historyRef: { date, runId, step }` が付く。全文が必要な場合は `klaus history show <runId> --step <step>` で取得する(詳細は [klaus history](#klaus-history) / [実行履歴](history.md) を参照)。`historyRef.date` はそのステップが書き込まれた履歴ファイルの UTC 日付(ステップの `startedAt` から導出)。`--no-history` 実行時は `historyRef` を省略する
+- **historyRef**: 履歴記録が有効な実行(`--no-history` を付けていない)では、実際に記録された各ステップ(passed 含む)に `historyRef: { date, runId, step }` が付く。履歴に残らない実行時エラー(キャプチャの失敗・タイムアウト・接続エラー・大きすぎるレスポンス)で終わったステップは履歴のエントリが無いので、`historyRef` も付かない。全文が必要な場合は `klaus history show <runId> --step <step>` で取得する(詳細は [klaus history](#klaus-history) / [実行履歴](history.md) を参照)。`historyRef.date` はそのステップが書き込まれた履歴ファイルの UTC 日付(ステップの `startedAt` から導出)。`--no-history` 実行時は `historyRef` を省略する
 - SSE / WebSocket ステップでは `response.body` は無く、受信データは `events`(SSE)/ `wsMessages`(WS)フィールドに入る
 - **snapshots**: トップレベルの集計 `snapshots: { matched, written, updated, mismatched, missing, obsolete, files, obsoleteEntries }`。snapshot アサーションを持つステップがある、スナップショットファイルに古いエントリがある、またはスナップショットファイルを書き込んだ場合にだけ付く(`files` は書き込んだファイルで、カレントディレクトリからの相対パス)。`assertions` の snapshot アサーションは `kind: "snapshot"`、`state`(`matched` / `written` / `updated` / `mismatch` / `missing`)、`snapshotKey`、`snapshotFile` を持ち、不一致なら `differences`(`[{ "path": "$.body.name", "kind": "changed", "before": "a", "after": "b" }]`、最大 20 件)と、総数の `differenceCount` も持つ。成功したステップは 1 行の要約なので、書き込んだ基準は `snapshots.written` / `snapshots.files` と、text 出力ではその `PASS` 行の `[snapshot written]` で分かる。`klaus snapshot accept` が書き込む候補は履歴に残り、この出力には含まれない
 - **openapi**: `--openapi` のときだけ付くトップレベルの `openapi` オブジェクト(`--dry-run --json` にも付き、`planned: true`): `documents`(`file`・`title`・`version`・`operations`)、`operations`(`total`・`covered`・`percent`)、`covered`(`operation`・`document`・`statuses`・`documented`)、`uncovered`、`unmatched`(`method`・`url`・`count`)、`excluded`(`flow`・`step`・`reason`: `sse` / `websocket` / `redirected`)、`violations`、`partial`、`planned`、任意で `coverageMin`(`percent`・`met`)と `truncated`(一覧を 1000 件で切り詰めた)。`assertions` の OpenAPI アサーションは `kind: "openapi"` と `openapi` オブジェクトを持つ。`state`(`valid` / `invalid` / `undocumented` / `unmatched` / `skipped`)、`operation`(`GET /users/{id}`)、`document`、`status`、`invalid` なら `violations`(`[{ "location": "body", "path": "/id", "message": "must be integer" }]`、最大 20 件)と、総数の `violationCount`。成功したステップは 1 行の要約なので、成功した実行が何をカバーしたかは `openapi` の集計でだけ分かる
@@ -381,6 +381,7 @@ klaus req <method> <url> [options]
 - `--body @<file>` はファイルから値を読む。パスは cwd 相対(または絶対)で、シンボリックリンクを解決した後も cwd の中に収まる必要がある。それ以外は exit code 2 で拒否する。エージェントが任意のファイルを送信先へ流せないよう、読み取りを cwd 内に限っている。
 - JSON として不正な入力(直接指定もファイル内容も)は、フローの文字列 `body` と同じく生の文字列として送る。この場合 `Content-Type` は補われないため、API が必要とするなら `-H` で指定する。`'"text"'` のような JSON 文字列も、同様に生の文字列 `text` として送られる。
 - ボディ内の文字列値はテンプレート展開される。
+- 入れ子が 200 段を超える JSON も生の文字列として送る(`Content-Type` は補われない)。深いレスポンスボディをテキストのまま保持するのと同じ理由で、構造化した値はマスクや履歴が再帰的に走査するため。レスポンスボディにも同じ上限があり、テキストのまま保持されるので、JSONPath のキャプチャとアサーションは一致しない。
 
 ### 出力
 
@@ -730,4 +731,4 @@ klaus mcp [options]
 |---|---|
 | `--read-only` | ファイルを書き込むツール(`klaus_promote`・`klaus_snapshot_accept`)を登録しない |
 
-`--allow-protected` も `--no-mask` も、guard のオプションを渡す手段もない。guard は `klaus.config.yaml` からだけ取り、`$protected` の環境は上書きできない。サーバーはカレントディレクトリをプロジェクトとして使い、MCP を stdin/stdout だけで話し(ネットワークのリスナーは持たない)、診断はすべて stderr に出す。stdin が閉じたとき、または SIGINT / SIGTERM で exit 0 で終了する。起動前の予期しない失敗は exit 1。
+`--allow-protected` も `--no-mask` も、guard のオプションを渡す手段もない。guard は `klaus.config.yaml` からだけ取る。使うときは `guard.allowedHosts` を設定すること。エージェントの送信先を限るのはこれで、`$protected` が止めるのはその環境を選ぶ run だけ([AI エージェント向けの MCP サーバー](mcp.md#安全柵が守る範囲)を参照)。サーバーはカレントディレクトリをプロジェクトとして使い、MCP を stdin/stdout だけで話し(ネットワークのリスナーは持たない)、診断はすべて stderr に出す。stdin が閉じたとき、または SIGINT / SIGTERM で exit 0 で終了する。起動前の予期しない失敗は exit 1。
