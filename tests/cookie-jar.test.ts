@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { CookieJar, splitSetCookieHeader } from "../src/core/cookie-jar.js";
+import {
+  CookieJar,
+  maskCookieHeaders,
+  maskSetCookieHeader,
+  splitSetCookieHeader,
+} from "../src/core/cookie-jar.js";
+import { maskDeep, maskHistoryEntry } from "../src/core/history.js";
 
 const u = (url: string) => new URL(url);
 
@@ -129,5 +135,90 @@ describe("splitSetCookieHeader", () => {
     expect(
       splitSetCookieHeader("a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/, b=2; HttpOnly"),
     ).toEqual(["a=1; Expires=Wed, 21 Oct 2026 07:28:00 GMT; Path=/", "b=2; HttpOnly"]);
+  });
+});
+
+describe("ポートによる限定", () => {
+  it("同じホストでもポートが違えば cookie を送らない(同じポートなら送る)", () => {
+    const jar = new CookieJar();
+    jar.store(u("http://127.0.0.1:4001/"), ["a=1"]);
+    expect(jar.headerFor(u("http://127.0.0.1:4001/x"))).toBe("a=1");
+    expect(jar.headerFor(u("http://127.0.0.1:4002/x"))).toBeUndefined();
+    expect(jar.headerFor(u("http://127.0.0.1/x"))).toBeUndefined();
+  });
+
+  it("ポートが違う同名 cookie は別々に保持し、互いを上書きしない", () => {
+    const jar = new CookieJar();
+    jar.store(u("http://localhost:4001/"), ["sid=one"]);
+    jar.store(u("http://localhost:4002/"), ["sid=two"]);
+    expect(jar.valueFor("sid", u("http://localhost:4001/"))).toBe("one");
+    expect(jar.valueFor("sid", u("http://localhost:4002/"))).toBe("two");
+  });
+
+  it("スキームは区別せず実効ポートで比べる(80 の http と明示的な :80、wss は 443)", () => {
+    const jar = new CookieJar();
+    jar.store(u("http://example.test/"), ["a=1"]);
+    expect(jar.headerFor(u("http://example.test:80/"))).toBe("a=1");
+    expect(jar.headerFor(u("ws://example.test/"))).toBe("a=1");
+    expect(jar.headerFor(u("https://example.test/"))).toBeUndefined();
+    jar.store(u("https://example.test/"), ["b=2"]);
+    expect(jar.headerFor(u("wss://example.test/"))).toBe("b=2");
+  });
+});
+
+describe("Cookie / Set-Cookie ヘッダーの位置によるマスク", () => {
+  it("Set-Cookie は先頭の name=value の値だけを *** にし、属性と複数行を保つ", () => {
+    expect(maskSetCookieHeader("sid=abc; Path=/; HttpOnly")).toBe("sid=***; Path=/; HttpOnly");
+    expect(
+      maskSetCookieHeader("a=json; Expires=Wed, 21 Oct 2026 07:28:00 GMT, b=true; Secure"),
+    ).toBe("a=***; Expires=Wed, 21 Oct 2026 07:28:00 GMT, b=***; Secure");
+  });
+
+  it("maskCookieHeaders は Cookie の各ペアの値と Set-Cookie をマスクし、他のヘッダーには触れない", () => {
+    const headers = { Cookie: "a=1; b=2", "set-cookie": "c=3; Path=/", Accept: "application/json" };
+    expect(maskCookieHeaders(headers)).toEqual({
+      Cookie: "a=***; b=***",
+      "set-cookie": "c=***; Path=/",
+      Accept: "application/json",
+    });
+    const plain = { Accept: "application/json" };
+    expect(maskCookieHeaders(plain)).toBe(plain);
+  });
+
+  it("履歴は秘密値が無くても Cookie / Set-Cookie の値をマスクし、`json` のような短い値で他を壊さない", () => {
+    const entry = {
+      v: 1 as const,
+      runId: "r",
+      flow: "f",
+      step: "s",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      durationMs: 1,
+      status: "passed" as const,
+      request: {
+        method: "GET",
+        url: "http://x/",
+        headers: { Cookie: "fmt=json", Accept: "application/json" },
+      },
+      response: {
+        status: 200,
+        headers: { "set-cookie": "fmt=json; Path=/", "content-type": "application/json" },
+        body: "ok",
+      },
+      assertions: [],
+    };
+    const masked = maskHistoryEntry(entry, []);
+    expect(masked.request?.headers).toEqual({ Cookie: "fmt=***", Accept: "application/json" });
+    expect(masked.response?.headers).toEqual({
+      "set-cookie": "fmt=***; Path=/",
+      "content-type": "application/json",
+    });
+  });
+
+  it("maskDeep は headers オブジェクトの Cookie / Set-Cookie も位置でマスクする", () => {
+    const result = { request: { headers: { Cookie: "sid=raw-1234" } }, body: { cookie: "keep" } };
+    expect(maskDeep(result, ["unrelated-secret"])).toEqual({
+      request: { headers: { Cookie: "sid=***" } },
+      body: { cookie: "keep" },
+    });
   });
 });

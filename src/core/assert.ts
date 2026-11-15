@@ -122,7 +122,13 @@ function matchesJsonType(value: unknown, type: JsonTypeName): boolean {
 /** 数値比較の対象値。header は常に文字列なので numericStrings 指定時だけ数値文字列を数値として扱う */
 function numericValue(value: unknown, numericStrings: boolean): number | undefined {
   if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (numericStrings && typeof value === "string" && value.trim() !== "") {
+  // 10 進数の表記(符号・小数点つき)だけを数値とみなす。Number() が受け付ける 0x10(16 進)・0b1・
+  // 1e3(指数)・Infinity などは、ヘッダー値としては数値のつもりで書かれないため数値に含めない
+  if (
+    numericStrings &&
+    typeof value === "string" &&
+    /^[+-]?(\d+\.?\d*|\.\d+)$/.test(value.trim())
+  ) {
     const n = Number(value);
     if (Number.isFinite(n)) return n;
   }

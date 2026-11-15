@@ -586,6 +586,14 @@ const httpFlowFields = {
     .describe(
       "Keep Set-Cookie values received during the run in memory and send them on later matching requests. Never persisted across runs. Defaults to false.",
     ),
+  maxResponseBytes: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Maximum size in bytes of a response body (or SSE stream) read into memory; larger responses make the step an error. Defaults to 104857600 (100 MiB).",
+    ),
   auth: authSchema
     .optional()
     .describe(

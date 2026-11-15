@@ -1,4 +1,5 @@
 import { type Dispatcher, FormData, request } from "undici";
+import { maskSetCookieHeader } from "./cookie-jar.js";
 import { RuntimeError } from "./errors.js";
 
 /** リクエスト共通オプション */
@@ -10,6 +11,8 @@ export interface HttpRequestOptions {
   timeoutMs?: number;
   /** 実行単位の HTTP クライアント(proxy / TLS 設定つき)。未指定なら undici の既定 dispatcher を使う */
   dispatcher?: Dispatcher;
+  /** レスポンスボディをメモリに読み込む上限(バイト)。超えたら RuntimeError。未指定なら DEFAULT_MAX_RESPONSE_BYTES */
+  maxResponseBytes?: number;
 }
 
 /** 完全にボディを読み切ったレスポンス(通常の JSON / テキストリクエスト用) */
@@ -36,6 +39,47 @@ export interface RawHttpResponse {
 }
 
 export const DEFAULT_TIMEOUT_MS = 30000;
+
+/** レスポンスボディをメモリに読み込む既定の上限(100 MiB)。http.maxResponseBytes で変更できる */
+export const DEFAULT_MAX_RESPONSE_BYTES = 100 * 1024 * 1024;
+
+/** 上限超過のエラー。toRuntimeError で包み直さずそのまま伝える */
+function responseTooLarge(limit: number): RuntimeError {
+  return new RuntimeError(
+    `response body exceeds the limit of ${limit} bytes (raise http.maxResponseBytes if this is expected)`,
+  );
+}
+
+/** 読み捨てるボディを破棄する(破棄で出る AbortError を未処理にしない) */
+function abandon(body: Dispatcher.ResponseData["body"]): void {
+  body.on("error", () => {});
+  body.destroy();
+}
+
+/** ボディを上限つきで読み切って UTF-8 文字列にする(上限を超えたら接続を破棄して RuntimeError) */
+async function readBodyText(
+  body: Dispatcher.ResponseData["body"],
+  declaredLength: string | string[] | undefined,
+  limit: number,
+): Promise<string> {
+  const declared = typeof declaredLength === "string" ? Number(declaredLength) : Number.NaN;
+  if (Number.isFinite(declared) && declared > limit) {
+    abandon(body);
+    throw responseTooLarge(limit);
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of body) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+    total += buffer.length;
+    if (total > limit) {
+      abandon(body);
+      throw responseTooLarge(limit);
+    }
+    chunks.push(buffer);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
 
 /** body を送信可能な文字列に変換し、必要なら Content-Type を補う */
 function prepareBody(
@@ -68,7 +112,9 @@ function normalizeHeaders(headers: Dispatcher.ResponseData["headers"]): Record<s
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
     if (value === undefined) continue;
-    result[key] = Array.isArray(value) ? value.join(", ") : value;
+    const joined = Array.isArray(value) ? value.join(", ") : value;
+    // Set-Cookie の値は、結果・履歴・カセットなどへ渡る前に位置でマスクする(生の値は setCookies に別途保持する)
+    result[key] = key.toLowerCase() === "set-cookie" ? maskSetCookieHeader(joined) : joined;
   }
   return result;
 }
@@ -152,7 +198,11 @@ export async function sendRequest(options: HttpRequestOptions): Promise<HttpResp
   const { response, startedAt, controller, timer, timeoutMs } = await performRequest(options);
 
   try {
-    const bodyText = await response.body.text();
+    const bodyText = await readBodyText(
+      response.body,
+      response.headers["content-length"],
+      options.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES,
+    );
     const durationMs = performance.now() - startedAt;
     const headers = normalizeHeaders(response.headers);
     // JSON 判定は正規化前の生ヘッダー値で行う(重複 Content-Type ヘッダーは配列になり JSON とみなさない)
@@ -168,6 +218,7 @@ export async function sendRequest(options: HttpRequestOptions): Promise<HttpResp
       ...(setCookies ? { setCookies } : {}),
     };
   } catch (error) {
+    if (error instanceof RuntimeError) throw error;
     throw toRuntimeError(error, controller.signal.aborted, timeoutMs, options.method, options.url);
   } finally {
     clearTimeout(timer);

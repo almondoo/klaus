@@ -1,4 +1,5 @@
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { maskCookieHeaders } from "./cookie-jar.js";
 import { mapDeepStrings } from "./deep-map.js";
 import { appendPrivateLine } from "./private-file.js";
 import type { AssertionResult, RequestSnapshot, ResponseSnapshot, SseEvent } from "./types.js";
@@ -151,7 +152,29 @@ export function expandSecretVariants(secrets: readonly string[]): string[] {
  * formatJson でシリアライズする前に RunResult 全体をマスクする用途でも使うため公開する。
  */
 export function maskDeep<T>(value: T, secrets: readonly string[]): T {
-  return mapDeepStrings(value, (s) => maskString(s, secrets));
+  return mapDeepStrings(maskCookieHeadersDeep(value), (s) => maskString(s, secrets));
+}
+
+/**
+ * `headers` オブジェクトの Cookie / Set-Cookie の値を位置で *** にする(秘密値の登録に依存しない構造的なマスク)。
+ * 値の中身を探さないので、短い cookie 値でも他の出力を壊さない。元の value は変異させない。
+ */
+function maskCookieHeadersDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => maskCookieHeadersDeep(item)) as unknown as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value)) {
+      const isHeaders =
+        key === "headers" && v !== null && typeof v === "object" && !Array.isArray(v);
+      result[key] = isHeaders
+        ? maskCookieHeaders(maskCookieHeadersDeep(v) as Record<string, string>)
+        : maskCookieHeadersDeep(v);
+    }
+    return result as unknown as T;
+  }
+  return value;
 }
 
 function maskHeaders(
@@ -188,7 +211,9 @@ function maskAssertions(
     actual: maskDeep(assertion.actual, secrets),
     message: maskString(assertion.message, secrets),
     // スナップショットの差分・候補は応答由来の値を含むため、他のフィールドと同じ規則でマスクする
-    ...(assertion.snapshot !== undefined ? { snapshot: maskDeep(assertion.snapshot, secrets) } : {}),
+    ...(assertion.snapshot !== undefined
+      ? { snapshot: maskDeep(assertion.snapshot, secrets) }
+      : {}),
   }));
 }
 
@@ -198,7 +223,24 @@ function maskAssertions(
  * expected・actual・message を対象に "***" へ置換する。
  * secrets が空の場合は何もせず entry をそのまま返す(不要なコピーを避ける)。
  */
-export function maskHistoryEntry(entry: HistoryEntry, secrets: readonly string[]): HistoryEntry {
+export function maskHistoryEntry(rawEntry: HistoryEntry, secrets: readonly string[]): HistoryEntry {
+  // Cookie / Set-Cookie ヘッダーの値は、秘密値の登録に関わらず常に位置でマスクする(変化が無ければ entry をそのまま使う)
+  const requestHeaders = rawEntry.request ? maskCookieHeaders(rawEntry.request.headers) : undefined;
+  const responseHeaders = rawEntry.response
+    ? maskCookieHeaders(rawEntry.response.headers)
+    : undefined;
+  const entry: HistoryEntry =
+    requestHeaders === rawEntry.request?.headers && responseHeaders === rawEntry.response?.headers
+      ? rawEntry
+      : {
+          ...rawEntry,
+          ...(rawEntry.request && requestHeaders
+            ? { request: { ...rawEntry.request, headers: requestHeaders } }
+            : {}),
+          ...(rawEntry.response && responseHeaders
+            ? { response: { ...rawEntry.response, headers: responseHeaders } }
+            : {}),
+        };
   if (secrets.length === 0) return entry;
 
   // url・headers・body・events・assertions のすべてに同じ展開済みリストを使う

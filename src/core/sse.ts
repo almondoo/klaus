@@ -1,6 +1,11 @@
 import { createParser } from "eventsource-parser";
 import { RuntimeError } from "./errors.js";
-import { type HttpRequestOptions, type RawHttpResponse, sendRawRequest } from "./http.js";
+import {
+  DEFAULT_MAX_RESPONSE_BYTES,
+  type HttpRequestOptions,
+  type RawHttpResponse,
+  sendRawRequest,
+} from "./http.js";
 import type { SseOptions } from "./schema.js";
 import type { SseEvent } from "./types.js";
 
@@ -31,6 +36,9 @@ export async function receiveSse(
 ): Promise<SseResult> {
   const maxEvents = sseOptions.maxEvents ?? DEFAULT_MAX_EVENTS;
   const maxDurationMs = sseOptions.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
+  // 受信バイト数の上限(maxDurationMs の間に大量のデータを流し込まれてもメモリを使い切らない)
+  const maxBytes = requestOptions.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  let receivedBytes = 0;
 
   const overallStartedAt = performance.now();
 
@@ -59,6 +67,14 @@ export async function receiveSse(
 
   try {
     for await (const chunk of raw.bodyStream) {
+      receivedBytes += (chunk as Buffer).length;
+      if (receivedBytes > maxBytes) {
+        raw.bodyStream.on("error", () => {});
+        raw.bodyStream.destroy();
+        throw new RuntimeError(
+          `SSE stream exceeds the limit of ${maxBytes} bytes (raise http.maxResponseBytes if this is expected)`,
+        );
+      }
       parser.feed(decoder.decode(chunk as Buffer, { stream: true }));
       if (events.length >= maxEvents) {
         cutOff = true;
@@ -67,6 +83,7 @@ export async function receiveSse(
       }
     }
   } catch (error) {
+    if (error instanceof RuntimeError) throw error;
     // maxDurationMs による打ち切り(destroy)由来のエラーは正常終了として扱う
     if (!cutOff) {
       throw new RuntimeError(

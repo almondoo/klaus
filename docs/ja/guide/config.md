@@ -59,7 +59,7 @@ http:
 | `ui.host` | `klaus ui --host <host>` | string |
 | `ui.open` | `klaus ui --no-open`(`false` で無効化に相当) | boolean |
 | `guard.allowedHosts` | なし(config 専用。[送信先ホストの許可リスト](#送信先ホストの許可リスト-guard-allowedhosts)を参照) | 文字列の配列 |
-| `http.followRedirects` / `http.maxRedirects` / `http.cookies` / `http.auth` | なし(フローのトップレベル `http:` が上書きする。[HTTP クライアント](#http-クライアント-http)を参照) | boolean / 数値(0-100) / boolean / 認証ヘルパー |
+| `http.followRedirects` / `http.maxRedirects` / `http.cookies` / `http.auth` / `http.maxResponseBytes` | なし(フローのトップレベル `http:` が上書きする。[HTTP クライアント](#http-クライアント-http)を参照) | boolean / 数値(0-100) / boolean / 認証ヘルパー / 正の整数 |
 | `http.proxy` | なし(config 専用) | 文字列(proxy の URL) |
 | `http.tls.ca` / `http.tls.cert` / `http.tls.key` / `http.tls.insecure` | なし(config 専用) | ファイルパス / boolean |
 
@@ -101,15 +101,16 @@ guard:
 
 | キー | 意味 |
 |---|---|
-| `followRedirects` | `301` / `302` / `303` / `307` / `308` を 1 ホップずつ追う(既定 `false`)。各ホップは通常のリクエストと同じ `guard.allowedHosts` と `$protected` の判定を通り、拒否されたホップはステップを `error` にする。`POST` への `301` / `302` と `303` はボディなしの `GET` に変わり、`307` / `308` はメソッドとボディを保つ。別オリジン(スキーム・ホスト・ポートのいずれかが違う。https から http への格下げも含む)へ移るときは、`Authorization`・`Cookie`・`Proxy-Authorization` と、登録済みの秘密値を値に含むヘッダーをすべて落とし、それ以外のヘッダーは転送する。経由した URL と落としたヘッダー名(名前のみ)は結果と履歴に `redirects` / `droppedHeaders` として残る |
+| `followRedirects` | `301` / `302` / `303` / `307` / `308` を 1 ホップずつ追う(既定 `false`)。各ホップは通常のリクエストと同じ `guard.allowedHosts` と `$protected` の判定を通り、拒否されたホップはステップを `error` にする。`POST` への `301` / `302` と `303` はボディなしの `GET` に変わり、`307` / `308` はメソッドとボディを保つ。別オリジン(スキーム・ホスト・ポートのいずれかが違う。https から http への格下げも含む)へ移るときは、`Accept`・`Accept-Language`・`Accept-Encoding`・`User-Agent`(ボディを保つ場合は `Content-Type`・`Content-Language` も)だけを転送し、それ以外のユーザー指定ヘッダー(`Authorization`・`Cookie`・`Proxy-Authorization`、capture したトークンを載せた独自ヘッダーを含む)はすべて落とす。認証情報を含む `Location` は拒否する。経由した URL と落としたヘッダー名(名前のみ)は結果と履歴に `redirects` / `droppedHeaders` として残る |
 | `maxRedirects` | 最大ホップ数(既定 `10`)。超えると `error` |
-| `cookies` | `Set-Cookie` を実行中メモリ上に保持し、以降の条件に合うリクエストに付ける(既定 `false`)。保存はしない。cookie の値は秘密値として履歴・出力でマスクされる。`Secure` cookie は `http://` に送らない。cookie は常にホスト限定で保存し、リクエストホストまたはその親を指す `Domain` 属性は受け付けるが範囲は広がらず、他のサブドメインとは共有しない(公開サフィックス一覧は持たない) |
+| `cookies` | `Set-Cookie` を実行中メモリ上に保持し、以降の条件に合うリクエストに付ける(既定 `false`)。保存はしない。`Cookie` / `Set-Cookie` ヘッダーの値部分は、値によらず位置で `***` にして履歴・出力に出す。`Secure` cookie は `http://` に送らない。cookie は常に、設定したホストとポートそのものに対してだけ保存する: リクエストホストまたはその親を指す `Domain` 属性は受け付けるが範囲は広がらず、他のサブドメインとも同じホストの別ポートとも共有しない(公開サフィックス一覧は持たない) |
+| `maxResponseBytes` | レスポンスボディ(または SSE ストリーム)をメモリに読み込む最大バイト数(既定 `104857600` = 100 MiB)。超えるとステップは `error`。フローの `http.maxResponseBytes` が上書きする |
 | `auth` | 全 HTTP / SSE ステップの既定の[認証ヘルパー](flow-definition.md#auth認証ヘルパー)。フローの `http.auth` やステップの `request.auth` が上書きする。秘密値には <code v-pre>{{env.X}}</code> を使う |
-| `proxy` | HTTP(S) proxy の URL。userinfo は秘密値としてマスクされる。`HTTP_PROXY` などの環境変数は読まない |
+| `proxy` | HTTP(S) proxy の URL。パスワードは秘密値としてマスクされ、ユーザー名は表示される。proxy 設定中は、リクエスト URL と違う `Host` ヘッダーと、ホップ間ヘッダー `Connection`・`Keep-Alive`・`TE`・`Trailer`・`Upgrade`・`Transfer-Encoding` を安全柵の拒否として拒否する。`HTTP_PROXY` などの環境変数は読まない |
 | `tls.ca` / `tls.cert` / `tls.key` | PEM ファイルのパス。この設定ファイルからの相対パスで解決する。`cert` と `key` は同時に指定する。内容は出力に出ない |
 | `tls.insecure` | `true` で証明書検証を無効にし、実行のたびに警告を出す(stderr と、JSON・text・HTML・GitHub レポートの `warnings`) |
 
-`proxy` と `tls` は通信の行き先と信頼先を決めるため、ここにだけ書ける。フローファイルに `http.proxy` や `http.tls` を書くと検証エラー(終了コード 2)になる。CLI フラグ、`klaus req` のオプション、UI のパラメーターからも設定できない。フローのトップレベル `http:` で指定できるのは `followRedirects`・`maxRedirects`・`cookies`・`auth` だけで、このセクションをキー単位で上書きする([フロー定義リファレンス](flow-definition.md#http-http-クライアント設定)を参照)。
+`proxy` と `tls` は通信の行き先と信頼先を決めるため、ここにだけ書ける。フローファイルに `http.proxy` や `http.tls` を書くと検証エラー(終了コード 2)になる。CLI フラグ、`klaus req` のオプション、UI のパラメーターからも設定できない。フローのトップレベル `http:` で指定できるのは `followRedirects`・`maxRedirects`・`cookies`・`maxResponseBytes`・`auth` だけで、このセクションをキー単位で上書きする([フロー定義リファレンス](flow-definition.md#http-http-クライアント設定)を参照)。
 
 - proxy の URL には <code v-pre>{{env.X}}</code>(OS 環境変数)をテンプレートとして使える。フローの変数や capture は参照できない。
 - proxy ホスト自体は信頼する設定として扱い、`guard.allowedHosts` では判定しない。リクエストの最終的な宛先(リダイレクトの各ホップを含む)は、proxy 経由の平文 HTTP でも `CONNECT` トンネルでも判定され、拒否されたリクエストは proxy に届かない。

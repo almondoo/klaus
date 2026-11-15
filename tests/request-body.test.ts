@@ -1,9 +1,15 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { dryRunFlow } from "../src/core/dry-run.js";
+import { GuardRefusalError } from "../src/core/errors.js";
 import type { HistoryEntry } from "../src/core/history.js";
+import {
+  expandBodyForm,
+  MAX_INPUT_FILE_BYTES,
+  materializePayload,
+} from "../src/core/request-body.js";
 import { executeFlow } from "../src/core/runner.js";
 import { flowSchema, requestSchema } from "../src/core/schema.js";
 import { closeServer, listenEphemeral } from "./support/net.js";
@@ -353,5 +359,63 @@ describe("スキーマ", () => {
   it("multipart のファイルパートは file が必須で、未知のキーは拒否する", () => {
     expect(parse({ multipart: { f: { filename: "x" } } }).success).toBe(false);
     expect(parse({ multipart: { f: { file: "x", extra: 1 } } }).success).toBe(false);
+  });
+});
+
+describe("送信直前のファイル読み取りの検証", () => {
+  const request = (bodyFile: string) =>
+    requestSchema.parse({ method: "POST", url: "http://x", bodyFile });
+  const ctx = { captures: {}, env: {} };
+
+  it("検証後にファイルがシンボリックリンクへ差し替えられても追従せず、安全柵の拒否にする", async () => {
+    const dir = await makeTmp();
+    await writeFile(join(dir, "data.txt"), "inside");
+    const outside = join(dir, "..", "outside-secret.txt");
+    await writeFile(outside, "outside-secret-content");
+    try {
+      const expanded = expandBodyForm(request("data.txt"), ctx, dir);
+      if (!expanded?.payload) throw new Error("payload expected");
+      // 展開(検証)の後、送信直前までの間にリンクへ差し替える
+      await rm(join(dir, "data.txt"));
+      await symlink(outside, join(dir, "data.txt"));
+      await expect(materializePayload(expanded.payload, dir)).rejects.toThrow(GuardRefusalError);
+      await expect(materializePayload(expanded.payload, dir)).rejects.toThrow(/changed|outside/);
+    } finally {
+      await rm(outside, { force: true });
+    }
+  });
+
+  it("検証後に途中のディレクトリがリンクへ差し替えられても cwd の外は読まない", async () => {
+    const dir = await makeTmp();
+    await mkdir(join(dir, "sub"));
+    await writeFile(join(dir, "sub", "data.txt"), "inside");
+    const outsideDir = await makeTmp();
+    await writeFile(join(outsideDir, "data.txt"), "outside-content");
+    const expanded = expandBodyForm(request("sub/data.txt"), ctx, dir);
+    if (!expanded?.payload) throw new Error("payload expected");
+    await rm(join(dir, "sub"), { recursive: true });
+    await symlink(outsideDir, join(dir, "sub"));
+    await expect(materializePayload(expanded.payload, dir)).rejects.toThrow(GuardRefusalError);
+  });
+
+  it("cwd 配下の通常ファイルはそのまま読める", async () => {
+    const dir = await makeTmp();
+    await writeFile(join(dir, "data.txt"), "inside");
+    const expanded = expandBodyForm(request("data.txt"), ctx, dir);
+    if (!expanded?.payload) throw new Error("payload expected");
+    const { body } = await materializePayload(expanded.payload, dir);
+    expect(Buffer.from(body as Buffer).toString()).toBe("inside");
+  });
+
+  it("上限(100 MiB)を超えるファイルは、内容を読まずに明確なメッセージで拒否する", async () => {
+    const dir = await makeTmp();
+    // スパースファイル(実際のディスクは使わない)
+    await truncate(join(dir, "huge.bin"), MAX_INPUT_FILE_BYTES + 1).catch(async () => {
+      await writeFile(join(dir, "huge.bin"), "");
+      await truncate(join(dir, "huge.bin"), MAX_INPUT_FILE_BYTES + 1);
+    });
+    expect(() => expandBodyForm(request("huge.bin"), ctx, dir)).toThrow(
+      /exceeds the limit of 104857600 bytes/,
+    );
   });
 });

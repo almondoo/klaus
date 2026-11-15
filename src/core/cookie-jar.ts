@@ -5,6 +5,9 @@
  * `Domain` 属性は、リクエストホストと同じか親ドメインを指す場合に限り(host-only として)受け付ける。
  * これにより `Domain=co.uk` や `Domain=github.io` のような公開サフィックスを使って、同じサフィックス上の
  * 無関係なサイトに cookie を送らせることはできない。
+ * さらにポートも限定する(RFC 6265 はポートを区別しないが、ローカル開発では同じホストの別ポートで無関係な
+ * サービスが動くのが普通で、このツールの規則は「設定された場所より広く送らない」ため)。スキームは区別しない
+ * (ポートが同じ http / https は同じ範囲。Secure は別途判定する)。
  */
 
 interface StoredCookie {
@@ -12,6 +15,8 @@ interface StoredCookie {
   value: string;
   /** cookie を設定したレスポンスのホスト(小文字化済み)。送信先ホストが完全一致する場合にだけ送る */
   domain: string;
+  /** cookie を設定したレスポンスの実効ポート。送信先ポートが一致する場合にだけ送る */
+  port: number;
   path: string;
   secure: boolean;
   /** 有効期限(エポック ms)。undefined ならセッション cookie(jar の寿命 = 実行の寿命) */
@@ -35,6 +40,12 @@ function toCookieUrl(url: URL): URL {
   if (url.protocol === "ws:") return new URL(url.href.replace(/^ws:/, "http:"));
   if (url.protocol === "wss:") return new URL(url.href.replace(/^wss:/, "https:"));
   return url;
+}
+
+/** URL の実効ポート(省略時はスキームの既定。ws / wss は toCookieUrl で http / https に読み替え済み) */
+function effectivePort(url: URL): number {
+  if (url.port !== "") return Number(url.port);
+  return url.protocol === "https:" ? 443 : 80;
 }
 
 function isSecureProtocol(protocol: string): boolean {
@@ -100,12 +111,13 @@ export class CookieJar {
 
   /**
    * レスポンスの Set-Cookie 群を url のレスポンスとして取り込む。
-   * 保存(または更新)した cookie の値を返す(呼び出し元が秘密値としてマスク対象に登録する)。
-   * 拒否した cookie の値も返す: 拒否理由に関わらず、値がログ等に出る前にマスク対象にするため。
+   * 保存(または更新)した cookie の値を返す。拒否した cookie の値も含む(呼び出し側が必要なら使う。
+   * HttpSession は cookie 値を部分一致の秘密値にはせず、ヘッダーの構造(位置)でマスクする)。
    */
   store(responseUrl: URL, setCookieLines: readonly string[], now: number = Date.now()): string[] {
     const url = toCookieUrl(responseUrl);
     const host = url.hostname.toLowerCase();
+    const port = effectivePort(url);
     const secureOrigin = isSecureProtocol(url.protocol);
     const values: string[] = [];
 
@@ -153,7 +165,10 @@ export class CookieJar {
       }
 
       const sameKey = (cookie: StoredCookie) =>
-        cookie.name === parsed.name && cookie.domain === domain && cookie.path === path;
+        cookie.name === parsed.name &&
+        cookie.domain === domain &&
+        cookie.port === port &&
+        cookie.path === path;
       const existing = this.cookies.find(sameKey);
 
       if (expiresAt !== undefined && expiresAt <= now) {
@@ -171,6 +186,7 @@ export class CookieJar {
         name: parsed.name,
         value: parsed.value,
         domain,
+        port,
         path,
         secure,
         expiresAt,
@@ -188,6 +204,7 @@ export class CookieJar {
   private select(requestUrl: URL, now: number): StoredCookie[] {
     const url = toCookieUrl(requestUrl);
     const host = url.hostname.toLowerCase();
+    const port = effectivePort(url);
     const secureOrigin = isSecureProtocol(url.protocol);
     this.cookies = this.cookies.filter(
       (cookie) => cookie.expiresAt === undefined || cookie.expiresAt > now,
@@ -196,6 +213,7 @@ export class CookieJar {
       .filter(
         (cookie) =>
           cookie.domain === host &&
+          cookie.port === port &&
           pathMatches(url.pathname || "/", cookie.path) &&
           (!cookie.secure || secureOrigin),
       )
@@ -213,4 +231,54 @@ export class CookieJar {
   valueFor(name: string, requestUrl: URL, now: number = Date.now()): string | undefined {
     return this.select(requestUrl, now).find((cookie) => cookie.name === name)?.value;
   }
+}
+
+/** Cookie リクエストヘッダー("a=1; b=2")の各ペアの値を *** にする(名前は残す) */
+export function maskCookieRequestHeader(value: string): string {
+  return value
+    .split(";")
+    .map((pair) => {
+      const eq = pair.indexOf("=");
+      return eq === -1 ? pair : `${pair.slice(0, eq)}=***`;
+    })
+    .join(";");
+}
+
+/**
+ * Set-Cookie レスポンスヘッダー(複数は ", " 連結)の各行について、先頭の name=value の値を *** にする
+ * (Path などの属性は残す)。
+ */
+export function maskSetCookieHeader(value: string): string {
+  return splitSetCookieHeader(value)
+    .map((line) => {
+      const semi = line.indexOf(";");
+      const pair = semi === -1 ? line : line.slice(0, semi);
+      const rest = semi === -1 ? "" : line.slice(semi);
+      const eq = pair.indexOf("=");
+      return eq === -1 ? line : `${pair.slice(0, eq)}=***${rest}`;
+    })
+    .join(", ");
+}
+
+/**
+ * ヘッダー一覧の Cookie / Set-Cookie の値を位置で *** にする(値の中身を探さないため、`json` や `true` のような
+ * 短い値でも他のヘッダーを壊さない)。履歴・カセット・出力など、ヘッダーを表示するあらゆる場所の共通の入口。
+ */
+export function maskCookieHeaders(headers: Record<string, string>): Record<string, string> {
+  let result: Record<string, string> | undefined;
+  for (const [key, value] of Object.entries(headers)) {
+    const lower = key.toLowerCase();
+    if (typeof value !== "string") continue;
+    const masked =
+      lower === "cookie"
+        ? maskCookieRequestHeader(value)
+        : lower === "set-cookie"
+          ? maskSetCookieHeader(value)
+          : undefined;
+    if (masked !== undefined && masked !== value) {
+      result ??= { ...headers };
+      result[key] = masked;
+    }
+  }
+  return result ?? headers;
 }

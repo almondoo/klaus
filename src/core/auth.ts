@@ -135,7 +135,15 @@ export function parseTokenResponse(response: HttpResponse, now: number = Date.no
   if (typeof accessToken !== "string" || accessToken === "") {
     throw new RuntimeError("oauth2 token response has no access_token");
   }
+  // Authorization ヘッダーにそのまま入れるため、改行・空白・制御文字を含む値は拒否する(ヘッダーインジェクション対策)。
+  // 値そのものはメッセージに含めない
+  if (!/^[\x21-\x7e]+$/.test(accessToken)) {
+    throw new RuntimeError("oauth2 token response has an access_token with invalid characters");
+  }
   const rawType = typeof record?.token_type === "string" ? record.token_type : "Bearer";
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(rawType)) {
+    throw new RuntimeError("oauth2 token response has a token_type with invalid characters");
+  }
   const type = rawType.toLowerCase() === "bearer" ? "Bearer" : rawType;
   const expiresIn = Number(record?.expires_in);
   return {

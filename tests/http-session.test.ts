@@ -175,7 +175,7 @@ describe("リダイレクト", () => {
       Authorization: "Bearer tok-abcdef",
       Cookie: "user=cookie-abcdef",
       "Proxy-Authorization": "Basic Zm9vOmJhcg==",
-      "X-Keep": "yes",
+      Accept: "application/json",
     };
     await run(
       flowOf(
@@ -193,7 +193,7 @@ describe("リダイレクト", () => {
     expect(crossLanding?.headers.authorization).toBeUndefined();
     expect(crossLanding?.headers.cookie).toBeUndefined();
     expect(crossLanding?.headers["proxy-authorization"]).toBeUndefined();
-    expect(crossLanding?.headers["x-keep"]).toBe("yes");
+    expect(crossLanding?.headers.accept).toBe("application/json");
   });
 
   it("許可リストにないホストへのリダイレクトは拒否してステップを error にし、履歴に残す(送信しない)", async () => {
@@ -353,7 +353,7 @@ describe("リダイレクトでのヘッダーの扱い(別オリジン)", () =>
     delete process.env[KEY];
   });
 
-  it("秘密値を含む独自ヘッダーは別オリジンへ送らず、同一オリジンでは保ち、秘密でないヘッダーは転送する(落とした名前は記録)", async () => {
+  it("別オリジンへは内容交渉のヘッダーだけを転送し、それ以外の独自ヘッダーは値に関わらず落とす。同一オリジンでは全ヘッダーを保つ(落とした名前は記録)", async () => {
     process.env[KEY] = "api-key-value-98765";
     const other = await startHttp((_req, res) => res.end("other"));
     const origin = await startHttp((req, res) => {
@@ -370,6 +370,8 @@ describe("リダイレクトでのヘッダーの扱い(別オリジン)", () =>
       "X-Api-Key": `{{env.${KEY}}}`,
       "X-Token-Wrapped": `prefix-{{env.${KEY}}}-suffix`,
       "X-Trace": "trace-123",
+      "Accept-Language": "ja",
+      "User-Agent": "klaus-test",
       "Content-Type": "text/plain",
     };
     const request = (path: string, name: string) => ({
@@ -387,13 +389,16 @@ describe("リダイレクトでのヘッダーの扱い(別オリジン)", () =>
     const crossLanding = other.requests[0];
     expect(crossLanding?.headers["x-api-key"]).toBeUndefined();
     expect(crossLanding?.headers["x-token-wrapped"]).toBeUndefined();
-    expect(crossLanding?.headers["x-trace"]).toBe("trace-123");
+    // 秘密として登録されていない独自ヘッダーも落ちる(許可リスト方式)
+    expect(crossLanding?.headers["x-trace"]).toBeUndefined();
+    expect(crossLanding?.headers["accept-language"]).toBe("ja");
+    expect(crossLanding?.headers["user-agent"]).toBe("klaus-test");
     expect(crossLanding?.headers["content-type"]).toBe("text/plain");
     expect(crossLanding?.body).toBe("payload");
 
     expect(result.steps[0]?.droppedHeaders).toBeUndefined();
     expect(result.steps[1]?.droppedHeaders).toEqual([
-      { hop: 1, headers: ["X-Api-Key", "X-Token-Wrapped"] },
+      { hop: 1, headers: ["X-Api-Key", "X-Token-Wrapped", "X-Trace"] },
     ]);
     expect(entries[1]?.droppedHeaders).toEqual(result.steps[1]?.droppedHeaders);
     // 記録するのは名前だけで、秘密値は履歴に出ない
@@ -474,16 +479,99 @@ describe("cookie jar", () => {
     expect(off.result.steps[1]?.response?.body).toEqual({ cookie: null });
   });
 
-  it("cookie の値は秘密値として履歴(レスポンスの Set-Cookie を含む)でマスクされる", async () => {
-    const server = await loginServer(["sid=session-value-1234; Path=/"]);
-    const { entries } = await run(
-      flowOf([get(`${server.baseUrl}/login`, {}, "login"), get(`${server.baseUrl}/me`, {}, "me")], {
-        cookies: true,
-      }),
+  it("Set-Cookie の値はレスポンスのヘッダーを表示するどの場所でも位置でマスクされる(属性は残る)", async () => {
+    const server = await loginServer(["sid=session-value-1234; Path=/", "t=second-value-5678"]);
+    const { result, entries } = await run(
+      flowOf([get(`${server.baseUrl}/login`, {}, "login")], { cookies: true }),
     );
-    const text = JSON.stringify(entries);
+    expect(entries[0]?.response?.headers["set-cookie"]).toBe("sid=***; Path=/, t=***");
+    expect(result.steps[0]?.response?.headers["set-cookie"]).toBe("sid=***; Path=/, t=***");
+    const text = JSON.stringify({ result, entries });
     expect(text).not.toContain("session-value-1234");
-    expect(text).toContain("***");
+    expect(text).not.toContain("second-value-5678");
+  });
+
+  it("短い cookie 値(json / true)を秘密値にせず、無関係な出力・アサーション・ヘッダーを壊さない", async () => {
+    const server = await startHttp((req, res) => {
+      if (req.url === "/login") {
+        res.writeHead(200, { "Set-Cookie": ["fmt=json; Path=/", "consent=true; Path=/"] });
+        res.end("in");
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ accept: req.headers.accept ?? null, ok: true }));
+    });
+    const secrets: string[] = [];
+    const { result, entries } = await run(
+      flowOf(
+        [
+          get(`${server.baseUrl}/login`, {}, "login"),
+          {
+            name: "api",
+            request: {
+              method: "GET",
+              url: `${server.baseUrl}/api`,
+              headers: { Accept: "application/json" },
+            },
+            assert: {
+              status: 200,
+              body: [{ path: "$.accept", equals: "application/json" }],
+              headers: [{ name: "content-type", contains: "json" }],
+            },
+          },
+        ],
+        { cookies: true },
+      ),
+      { onSecrets: (values) => secrets.push(...values) },
+    );
+    expect(result.steps[1]?.status).toBe("passed");
+    expect(secrets).not.toContain("json");
+    expect(secrets).not.toContain("true");
+    expect(entries[1]?.request?.headers.Accept).toBe("application/json");
+    expect(entries[1]?.response?.body).toEqual({ accept: "application/json", ok: true });
+  });
+
+  it("cookie capture で取り出した値は run 中は使え、ヘッダーに入っても履歴ではマスクされる", async () => {
+    const server = await startHttp((req, res) => {
+      if (req.url === "/login") {
+        res.writeHead(200, { "Set-Cookie": "sid=captured-cookie-9876; Path=/" });
+        res.end("in");
+        return;
+      }
+      res.writeHead(200, { "X-Seen": req.headers["x-sid"] ?? "none" });
+      res.end("ok");
+    });
+    const { result, entries } = await run(
+      flowOf(
+        [
+          { ...get(`${server.baseUrl}/login`, {}, "login"), capture: { sid: { cookie: "sid" } } },
+          get(`${server.baseUrl}/use`, { headers: { "X-Sid": "{{sid}}" } }, "use"),
+        ],
+        { cookies: true },
+      ),
+    );
+    expect(result.steps[1]?.status).toBe("passed");
+    expect(result.steps[1]?.response?.headers["x-seen"]).toBe("captured-cookie-9876");
+    const text = JSON.stringify(entries);
+    expect(text).not.toContain("captured-cookie-9876");
+    expect(entries[1]?.request?.headers["X-Sid"]).toBe("***");
+  });
+
+  it("cookie はホストに加えてポートでも限定する(同じホストの別ポートへは送らない)", async () => {
+    const a = await loginServer(["sid=port-a-value-1; Path=/"]);
+    const b = await loginServer([]);
+    const { result } = await run(
+      flowOf(
+        [
+          get(`${a.baseUrl}/login`, {}, "login"),
+          get(`${b.baseUrl}/me`, {}, "other-port"),
+          get(`${a.baseUrl}/me`, {}, "same-port"),
+        ],
+        { cookies: true },
+      ),
+    );
+    expect(result.steps[1]?.response?.body).toEqual({ cookie: null });
+    expect(result.steps[2]?.response?.body).toEqual({ cookie: "sid=port-a-value-1" });
   });
 
   it("ホスト限定 cookie は別ホスト名(同じサーバーの localhost)には送らない", async () => {
@@ -532,15 +620,14 @@ describe("cookie jar", () => {
   it("WebSocket のハンドシェイクにも jar の cookie を付ける", async () => {
     const http = await loginServer(["sid=ws-cookie-value-1; Path=/"]);
     const cookies: (string | undefined)[] = [];
-    const wss = new WebSocketServer({ port: 0, host: "127.0.0.1" });
+    // cookie はホスト・ポート限定のため、WebSocket も同じサーバー(同じホスト名とポート)で受ける
+    const wss = new WebSocketServer({ server: http.server });
     servers.push(wss);
     wss.on("connection", (socket, req) => {
       cookies.push(req.headers.cookie);
       socket.send("hi");
     });
-    await new Promise<void>((resolve) => wss.once("listening", () => resolve()));
-    const wsPort = (wss.address() as { port: number }).port;
-    // cookie はホスト限定のため、WebSocket も同じホスト名(127.0.0.1)・http 系スキームとして照合される
+    const wsPort = http.port;
     const { result } = await run(
       flowOf(
         [
@@ -696,7 +783,9 @@ describe("プロキシ(設定ファイル由来の http.proxy のみ)", () => {
       http: { proxy: proxyUrl },
       onSecrets: (values) => secrets.push(...values),
     });
-    expect(secrets).toEqual(expect.arrayContaining(["proxy-user", "p@ss-word-9", "p%40ss-word-9"]));
+    // パスワードとその派生値は秘密値として登録する。ユーザー名は秘密値にしない(表示してよい)
+    expect(secrets).toEqual(expect.arrayContaining(["p@ss-word-9", "p%40ss-word-9"]));
+    expect(secrets).not.toContain("proxy-user");
     const text = JSON.stringify({ result, entries });
     expect(text).not.toContain("p@ss-word-9");
     expect(text).not.toContain("p%40ss-word-9");

@@ -113,6 +113,29 @@ describe("比較系マッチャー(header)", () => {
     expect(r.map((x) => x.ok)).toEqual([true, true, false]);
   });
 
+  it("数値として扱うのは 10 進表記だけ(0x10 の 16 進・1e3 の指数・Infinity は数値ではない)", () => {
+    const h = {
+      A: "0x10",
+      B: "1e3",
+      C: "Infinity",
+      D: "-5",
+      E: "3.5",
+      F: " 7 ",
+      G: ".5",
+      H: "0b11",
+    };
+    const ok = (name: string, def: Record<string, number>) =>
+      assertHeaders([{ name, ...def }] as never, h)[0]?.ok;
+    expect(ok("A", { gte: 0 })).toBe(false);
+    expect(ok("B", { gte: 0 })).toBe(false);
+    expect(ok("C", { gte: 0 })).toBe(false);
+    expect(ok("H", { gte: 0 })).toBe(false);
+    expect(ok("D", { lt: 0 })).toBe(true);
+    expect(ok("E", { gt: 3, lt: 4 })).toBe(true);
+    expect(ok("F", { gte: 7, lte: 7 })).toBe(true);
+    expect(ok("G", { gt: 0.4 })).toBe(true);
+  });
+
   it("length / type / oneOf が使える", () => {
     const r = assertHeaders(
       [{ name: "X-Mode", length: 4, type: "string", oneOf: ["fast", "slow"] }],

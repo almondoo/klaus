@@ -25,7 +25,12 @@ import type { HistoryActor, HistoryEntry, HistoryGit } from "./history.js";
 import { appendHistory, maskHistoryEntry, toHistoryFilePath } from "./history.js";
 import type { HttpRequestOptions, HttpResponse, RawHttpResponse } from "./http.js";
 import { sendRawRequest, sendRequest } from "./http.js";
-import { type FollowResult, HttpSession, mergeHttpConfig } from "./http-session.js";
+import {
+  type FollowResult,
+  findHostHeaderMismatch,
+  HttpSession,
+  mergeHttpConfig,
+} from "./http-session.js";
 import { loadFlow } from "./loader.js";
 import type { OpenApiValidator } from "./openapi.js";
 import { type BodyPayload, expandBodyForm, materializePayload } from "./request-body.js";
@@ -684,6 +689,15 @@ export function assertSendAllowed(
       `environment "${stepGuard.readonlyEnvName}" is protected ($protected: readonly) and refuses requests carrying the ${overrideHeader} header, which can turn a read into a write. ` +
         protectionHint(stepGuard.singleRequest),
     );
+  }
+  // 許可リストの指定時は、URL と違う Host ヘッダーを拒否する(Host ルーティングで許可リスト外の仮想ホストへ到達できるため)
+  if (!skipHostCheck && stepGuard.options?.allowedHosts !== undefined) {
+    const mismatch = findHostHeaderMismatch(url, headers);
+    if (mismatch !== undefined) {
+      throw new GuardRefusalError(
+        `refusing a Host header that differs from the request URL while guard.allowedHosts is set (Host: "${mismatch}")`,
+      );
+    }
   }
   if (!skipHostCheck) {
     const hostError = checkHostAllowed(url, stepGuard.options);

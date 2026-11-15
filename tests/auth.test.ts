@@ -336,6 +336,99 @@ describe("oauth2 client credentials", () => {
     expect(api.requests).toHaveLength(0);
   });
 
+  it("トークン応答が JSON でない・access_token が無い場合は、値を含まない明確なメッセージで error になる", async () => {
+    process.env.KLAUS_AUTH_TEST_SECRET = "client-secret-xyz987";
+    const api = await start(authEcho);
+    const cases: [string, (res: ServerResponse) => void, string][] = [
+      [
+        "non-json",
+        (res) => {
+          res.writeHead(200, { "Content-Type": "text/html" });
+          res.end("<html>client-secret-xyz987</html>");
+        },
+        "oauth2 token response has no access_token",
+      ],
+      [
+        "no-token",
+        (res) => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ token_type: "bearer" }));
+        },
+        "oauth2 token response has no access_token",
+      ],
+      [
+        "empty-token",
+        (res) => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ access_token: "" }));
+        },
+        "oauth2 token response has no access_token",
+      ],
+    ];
+    for (const [, respond, message] of cases) {
+      const token = await start((_req, res) => respond(res));
+      const { result } = await run(
+        flowOf([get(`${api.baseUrl}/x`, { auth: oauth(`${token.baseUrl}/token`) })]),
+      );
+      expect(result.steps[0]?.status).toBe("error");
+      expect(result.steps[0]?.error).toBe(message);
+    }
+    expect(api.requests).toHaveLength(0);
+  });
+
+  it("token_type / access_token に改行などの制御文字があれば拒否する(ヘッダーインジェクション対策)", async () => {
+    process.env.KLAUS_AUTH_TEST_SECRET = "client-secret-xyz987";
+    const api = await start(authEcho);
+    const bodies = [
+      { access_token: "tok-1234", token_type: "Bearer\r\nX-Injected: 1" },
+      { access_token: "tok-1234\r\nX-Injected: 1", token_type: "Bearer" },
+      { access_token: "tok 1234", token_type: "Bearer" },
+    ];
+    for (const body of bodies) {
+      const token = await start((_req, res) => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(body));
+      });
+      const { result, text } = await run(
+        flowOf([get(`${api.baseUrl}/x`, { auth: oauth(`${token.baseUrl}/token`) })]),
+      );
+      expect(result.steps[0]?.status).toBe("error");
+      expect(result.steps[0]?.error).toContain("invalid characters");
+      expect(text()).not.toContain("X-Injected");
+    }
+    expect(api.requests).toHaveLength(0);
+  });
+
+  it("スコープが違えば別のトークンとして取得・キャッシュする(同じスコープは再利用する)", async () => {
+    process.env.KLAUS_AUTH_TEST_SECRET = "client-secret-xyz987";
+    let issued = 0;
+    const token = await start((_req, res) => {
+      issued++;
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ access_token: `token-${issued}-abc`, expires_in: 3600 }));
+    });
+    const api = await start(authEcho);
+    const url = `${token.baseUrl}/token`;
+    const { result } = await run(
+      flowOf([
+        get(`${api.baseUrl}/a`, { auth: oauth(url, { scope: "read" }) }, "a"),
+        get(`${api.baseUrl}/b`, { auth: oauth(url, { scope: "write" }) }, "b"),
+        get(`${api.baseUrl}/c`, { auth: oauth(url, { scope: "read" }) }, "c"),
+      ]),
+    );
+    expect(result.steps.map((s) => s.status)).toEqual(["passed", "passed", "passed"]);
+    expect(issued).toBe(2);
+    expect(api.requests.map((r) => r.headers.authorization)).toEqual([
+      "Bearer token-1-abc",
+      "Bearer token-2-abc",
+      "Bearer token-1-abc",
+    ]);
+    expect(token.requests.map((r) => new URLSearchParams(r.body).get("scope"))).toEqual([
+      "read",
+      "write",
+    ]);
+  });
+
   it("トークンエンドポイントのリダイレクトは追わない(ボディのシークレットを別の宛先へ転送しない)", async () => {
     process.env.KLAUS_AUTH_TEST_SECRET = "client-secret-xyz987";
     const sink = await start((_req, res) => res.end("sink"));

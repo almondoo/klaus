@@ -12,9 +12,8 @@ import {
 } from "./auth.js";
 import { CookieJar, splitSetCookieHeader } from "./cookie-jar.js";
 import { GuardRefusalError, RuntimeError } from "./errors.js";
-import { expandSecretVariants, maskString } from "./history.js";
 import type { HttpRequestOptions, HttpResponse } from "./http.js";
-import { DEFAULT_TIMEOUT_MS } from "./http.js";
+import { DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_TIMEOUT_MS } from "./http.js";
 import type { AuthDef, FlowHttpConfig, HttpConfig } from "./schema.js";
 import { renderString, type TemplateContext } from "./template.js";
 
@@ -55,7 +54,7 @@ export interface DroppedHeaders {
 }
 
 /**
- * フロー側の http 設定(followRedirects / maxRedirects / cookies / auth)を、設定ファイル側の既定値にキー単位で上書きする。
+ * フロー側の http 設定(followRedirects / maxRedirects / cookies / auth / maxResponseBytes)を、設定ファイル側の既定値にキー単位で上書きする。
  * proxy と tls はフローには書けない(スキーマが拒否する)ため、常に設定ファイル側(base)の値をそのまま使う。
  */
 export function mergeHttpConfig(
@@ -64,7 +63,13 @@ export function mergeHttpConfig(
 ): HttpConfig | undefined {
   if (!override) return base;
   const merged: HttpConfig = { ...base };
-  for (const key of ["followRedirects", "maxRedirects", "cookies", "auth"] as const) {
+  for (const key of [
+    "followRedirects",
+    "maxRedirects",
+    "cookies",
+    "auth",
+    "maxResponseBytes",
+  ] as const) {
     const value = override[key];
     if (value !== undefined) (merged as Record<string, unknown>)[key] = value;
   }
@@ -101,7 +106,32 @@ function readTlsFile(label: string, path: string): Buffer {
 }
 
 const PROXY_AUTH_HEADERS = new Set(["proxy-authorization"]);
-const CREDENTIAL_HEADERS = new Set(["authorization", "cookie", "proxy-authorization"]);
+/**
+ * 別オリジンへのリダイレクトでも転送してよい、ユーザー指定のヘッダー(内容交渉だけ)。
+ * これ以外は値に関わらず落とす(capture したセッショントークンのように、秘密値として登録されていない
+ * 機微な値が任意の名前のヘッダーで渡されるため。名前一覧や登録済み秘密値による判定では取りこぼす)。
+ */
+const CROSS_ORIGIN_SAFE_HEADERS = new Set([
+  "accept",
+  "accept-language",
+  "accept-encoding",
+  "user-agent",
+]);
+/** ボディを保つ(307 / 308)ときだけ、別オリジンへも転送するボディ記述ヘッダー */
+const CROSS_ORIGIN_BODY_SAFE_HEADERS = new Set(["content-type", "content-language"]);
+/**
+ * proxy 経由のときにフローが設定してはいけないヘッダー(拒否する)。ホップ間ヘッダーを使った
+ * リクエスト密輸・proxy の挙動の書き換えを防ぐ。proxy-authorization だけは従来どおり黙って取り除く
+ * (proxy の認証は設定ファイルの URL だけ)。undici が自前で扱う connection / transfer-encoding 等も含める。
+ */
+const PROXY_FORBIDDEN_HEADERS = new Set([
+  "connection",
+  "keep-alive",
+  "te",
+  "trailer",
+  "upgrade",
+  "transfer-encoding",
+]);
 const BODY_HEADERS = new Set([
   "content-type",
   "content-length",
@@ -120,6 +150,48 @@ function omitHeaders(
   return result;
 }
 
+/** URL の実効ポート(省略時はスキームの既定) */
+function portOf(url: URL): string {
+  if (url.port !== "") return url.port;
+  return url.protocol === "https:" || url.protocol === "wss:" ? "443" : "80";
+}
+
+/**
+ * フローが指定した Host ヘッダーが URL の権威(ホスト:ポート)と一致するか。
+ * 一致しない Host は、proxy や Host ルーティングのフロントエンドを通じて、許可リスト外の仮想ホストへ
+ * 到達するために使える。
+ */
+export function findHostHeaderMismatch(
+  url: string,
+  headers: Record<string, string> | undefined,
+): string | undefined {
+  if (!headers) return undefined;
+  const key = Object.keys(headers).find((name) => name.toLowerCase() === "host");
+  if (key === undefined) return undefined;
+  const value = (headers[key] ?? "").trim().toLowerCase();
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return undefined;
+  }
+  let expected: URL;
+  try {
+    // Host の値を同じスキームの URL の権威として解釈する(IPv6・ポートの表記ゆれを URL 側に任せる)
+    expected = new URL(`${parsed.protocol}//${value}`);
+  } catch {
+    return value;
+  }
+  const same =
+    expected.username === "" &&
+    expected.password === "" &&
+    expected.pathname === "/" &&
+    expected.search === "" &&
+    expected.hostname === parsed.hostname &&
+    portOf(expected) === portOf(parsed);
+  return same ? undefined : (headers[key] ?? "");
+}
+
 function originOf(url: string): string | undefined {
   try {
     return new URL(url).origin;
@@ -132,7 +204,7 @@ function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
 
-/** proxy の認証情報から、出力に出てはいけない文字列(生の値・デコード後・Basic トークン)を列挙する */
+/** proxy の認証情報から、出力に出てはいけない文字列(パスワードの生の値・デコード後・Basic トークン等)を列挙する */
 function proxyCredentialSecrets(username: string, password: string): string[] {
   const decode = (value: string) => {
     try {
@@ -143,7 +215,8 @@ function proxyCredentialSecrets(username: string, password: string): string[] {
   };
   const user = decode(username);
   const pass = decode(password);
-  const secrets = [username, password, user, pass];
+  // ユーザー名は表示してよい(秘密は password)。user:pass 形と Basic トークンはパスワードを含むため登録する
+  const secrets = [password, pass];
   if (user !== "" || pass !== "") {
     const base64 = Buffer.from(`${user}:${pass}`).toString("base64");
     secrets.push(base64, `Basic ${base64}`, `${user}:${pass}`);
@@ -185,6 +258,14 @@ export class HttpSession {
   get maxRedirects(): number {
     return this.config?.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   }
+
+  /** レスポンスボディをメモリに読み込む上限(バイト)。http.maxResponseBytes、未指定なら http.ts の既定 */
+  get maxResponseBytes(): number {
+    return this.config?.maxResponseBytes ?? DEFAULT_MAX_RESPONSE_BYTES;
+  }
+
+  /** run の秘密値の集合。cookie capture で取り出した値を登録するために、最初の送信時に控える */
+  private secretSink: Set<string> | undefined;
 
   private warnOnce(message: string): void {
     if (this.warned.has(message)) return;
@@ -273,6 +354,27 @@ export class HttpSession {
     return this.config?.proxy === undefined ? headers : omitHeaders(headers, PROXY_AUTH_HEADERS);
   }
 
+  /**
+   * proxy 経由のとき、フローが Host を URL と違う値にしたり、ホップ間ヘッダーを設定したりするのを拒否する
+   * (安全柵の拒否として履歴に残る)。proxy が無いときは何もしない(従来どおり)。
+   */
+  private checkProxyHeaders(url: string, headers: Record<string, string>): void {
+    if (this.config?.proxy === undefined) return;
+    const mismatch = findHostHeaderMismatch(url, headers);
+    if (mismatch !== undefined) {
+      throw new GuardRefusalError(
+        `refusing a Host header that differs from the request URL while http.proxy is set (Host: "${mismatch}"); it could reach a virtual host outside guard.allowedHosts`,
+      );
+    }
+    for (const name of Object.keys(headers)) {
+      if (PROXY_FORBIDDEN_HEADERS.has(name.toLowerCase())) {
+        throw new GuardRefusalError(
+          `refusing the "${name}" header while http.proxy is set (hop-by-hop headers can alter how the proxy forwards the request)`,
+        );
+      }
+    }
+  }
+
   /** HTTP / SSE 用の dispatcher。実送信の直前に呼ぶ(replay では呼ばない)。 */
   prepare(context: TemplateContext): Dispatcher {
     if (!this.built) {
@@ -317,8 +419,12 @@ export class HttpSession {
     return { ...headers, [userKey]: `${headers[userKey]}; ${jarValue}` };
   }
 
-  /** レスポンスの Set-Cookie を jar に取り込み、値を秘密値として登録する(cookies: false なら何もしない) */
-  private absorb(url: string, response: HopResponse, context: TemplateContext): void {
+  /**
+   * レスポンスの Set-Cookie を jar に取り込む(cookies: false なら何もしない)。cookie の値は部分一致の秘密値には
+   * しない(`json` や `true` のような短い値が無関係な出力を壊すため)。表示側は Cookie / Set-Cookie ヘッダーを
+   * 位置でマスクする(cookie-jar.ts の maskCookieHeaders)。
+   */
+  private absorb(url: string, response: HopResponse): void {
     if (!this.jar) return;
     const lines =
       response.setCookies ??
@@ -332,14 +438,19 @@ export class HttpSession {
     } catch {
       return;
     }
-    for (const value of this.jar.store(parsed, lines)) context.secrets?.add(value);
+    this.jar.store(parsed, lines);
   }
 
-  /** url に対して jar が送る cookie の値(capture の cookie 用)。cookies: false なら undefined */
+  /**
+   * url に対して jar が送る cookie の値(capture の cookie 用)。cookies: false なら undefined。
+   * 明示的に取り出した値は、後続のヘッダー等に入っても表示でマスクされるよう、秘密値として登録する。
+   */
   cookieValue(name: string, url: string): string | undefined {
     if (!this.jar) return undefined;
     try {
-      return this.jar.valueFor(name, new URL(url));
+      const value = this.jar.valueFor(name, new URL(url));
+      if (value !== undefined) this.secretSink?.add(value);
+      return value;
     } catch {
       return undefined;
     }
@@ -361,6 +472,7 @@ export class HttpSession {
     /** true ならリダイレクトを追わない(トークン取得など、ボディに秘密値を載せるリクエスト用) */
     noRedirects = false,
   ): Promise<FollowResult<R>> {
+    this.secretSink = context.secrets;
     const startedAt = performance.now();
     const totalMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     let method = options.method;
@@ -373,6 +485,7 @@ export class HttpSession {
 
     for (let hop = 0; ; hop++) {
       try {
+        this.checkProxyHeaders(url, baseHeaders);
         check(method, url, baseHeaders);
       } catch (error) {
         if (hop > 0 && error instanceof GuardRefusalError) {
@@ -399,9 +512,10 @@ export class HttpSession {
           headers: this.withCookies(baseHeaders, url),
           body,
           timeoutMs: hop === 0 ? totalMs : remaining,
+          maxResponseBytes: this.maxResponseBytes,
           ...(dispatcher ? { dispatcher } : {}),
         },
-        (received) => this.absorb(hopUrl, received, context),
+        (received) => this.absorb(hopUrl, received),
       );
 
       const location = response.headers.location;
@@ -434,6 +548,14 @@ export class HttpSession {
           `redirect to unsupported scheme "${next.protocol}" refused (status ${response.status})`,
         );
       }
+      // userinfo つきの Location は辿らない(認証情報が URL として履歴・redirects に残る)
+      if (next.username !== "" || next.password !== "") {
+        throw new RuntimeError(
+          `redirect to a URL containing credentials refused (status ${response.status})`,
+        );
+      }
+      // フラグメントは送信されないので落とす(記録する URL にも残さない)
+      next.hash = "";
 
       // 301 / 302 は POST のとき、303 は HEAD 以外のとき GET に変えてボディを落とす。307 / 308 は保つ
       const toGet =
@@ -445,18 +567,23 @@ export class HttpSession {
         baseHeaders = omitHeaders(baseHeaders, BODY_HEADERS);
       }
       // 別オリジン(スキーム・ホスト・ポートのいずれかが違う。https から http への格下げも含む)へ移るときは、
-      // 資格情報のヘッダーに加えて、登録済みの秘密値(とそのエンコード形)を値に含むヘッダーも落とす
-      // (API キーは X-Api-Key など任意の名前で渡されるため、固定の名前一覧では足りない)。
-      // 秘密値を含まないヘッダー(Accept・User-Agent・秘密でない独自ヘッダー等)は転送する。
-      // 一度落としたものは以降のホップでも戻さない。落とした名前は結果と履歴に残す
+      // ユーザーが指定したヘッダーのうち内容交渉のもの(accept 系・user-agent、ボディを保つなら content-type 系)
+      // だけを転送し、それ以外は値に関わらず落とす(許可リスト方式。フロー側の例外指定はない)。
+      // 一度落としたものは以降のホップでも戻さない。落とした名前は結果と履歴に残す。同一オリジンは全ヘッダーを保つ
       if (originOf(url) !== next.origin) {
-        const variants = expandSecretVariants([...(context.secrets ?? [])]);
+        const keepBody = body !== undefined;
         const kept: Record<string, string> = {};
         const dropped: string[] = [];
         for (const [name, value] of Object.entries(baseHeaders)) {
-          const carriesSecret = variants.length > 0 && maskString(value, variants) !== value;
-          if (CREDENTIAL_HEADERS.has(name.toLowerCase()) || carriesSecret) dropped.push(name);
-          else kept[name] = value;
+          const lower = name.toLowerCase();
+          if (
+            CROSS_ORIGIN_SAFE_HEADERS.has(lower) ||
+            (keepBody && CROSS_ORIGIN_BODY_SAFE_HEADERS.has(lower))
+          ) {
+            kept[name] = value;
+          } else {
+            dropped.push(name);
+          }
         }
         baseHeaders = kept;
         if (dropped.length > 0) droppedHeaders.push({ hop: hop + 1, headers: dropped });
