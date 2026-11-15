@@ -6,6 +6,7 @@ import {
   getProtectedMode,
   isProtectedEnvironment,
   loadEnvironment,
+  protectedEnvironmentSecretValues,
   resolveEnvironmentPath,
   saveEnvironment,
   toTemplateVariables,
@@ -421,5 +422,48 @@ describe("saveEnvironment", () => {
     expect(content).toContain("$protected: true");
     expect(content).toContain("baseUrl: http://localhost:4000");
     expect(content).not.toContain("apiKey");
+  });
+});
+
+describe("protectedEnvironmentSecretValues", () => {
+  const environment = (value: Record<string, unknown>) => value as never;
+
+  it("保護されていない環境では空を返す", () => {
+    expect(protectedEnvironmentSecretValues(environment({ a: "secret-value" }))).toEqual([]);
+    expect(protectedEnvironmentSecretValues(environment({ $protected: false, a: "x" }))).toEqual(
+      [],
+    );
+  });
+
+  it("保護された環境(true / readonly)の値すべてを返し、$protected 自身・キー・真偽値・null は含めない", () => {
+    for (const mode of [true, "readonly"]) {
+      const values = protectedEnvironmentSecretValues(
+        environment({
+          $protected: mode,
+          host: "db.internal",
+          port: 5432,
+          debug: true,
+          none: null,
+        }),
+      );
+      expect([...values].sort()).toEqual(["5432", "db.internal"]);
+    }
+  });
+
+  it("入れ子のオブジェクト・配列に含まれる文字列と数値も、深さに関わらず(スタックを使わずに)すべて拾う", () => {
+    let deep: unknown = "deepest-value";
+    for (let i = 0; i < 5000; i++) deep = { child: [deep] };
+
+    const values = protectedEnvironmentSecretValues(
+      environment({
+        $protected: true,
+        nested: { inner: ["first-value", { more: "second-value", n: 7 }] },
+        deep,
+      }),
+    );
+
+    expect([...values].sort()).toEqual(
+      ["7", "deepest-value", "first-value", "second-value"].sort(),
+    );
   });
 });

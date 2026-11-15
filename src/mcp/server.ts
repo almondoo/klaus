@@ -28,7 +28,7 @@ export interface KlausMcpServerOptions {
 const INSTRUCTIONS = [
   "klaus runs YAML-defined HTTP request flows with guardrails. Start with klaus_list_flows and klaus_list_environments.",
   "Guards always apply and this server has no option to turn them off: guard.allowedHosts from klaus.config.yaml limits where requests can be sent, and $protected environments are refused when a run selects them. When a request is refused (errorCode guard.*), tell the user; do not try to work around it.",
-  "Output is masked. Prefer klaus_dry_run before klaus_run_flow, and ask the user before accepting snapshot baselines.",
+  "Output is masked, including every value of a protected environment. Prefer klaus_dry_run before klaus_run_flow, and ask the user before accepting snapshot baselines.",
 ].join(" ");
 
 /** 予期しない例外を、詳細は標準エラーへ、メッセージだけをツールの結果に出す */

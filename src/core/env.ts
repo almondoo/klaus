@@ -29,6 +29,33 @@ export function isProtectedEnvironment(environment: Environment): boolean {
 }
 
 /**
+ * 保護された環境($protected が true / "readonly")のファイル由来の値(変数の値すべて)を、
+ * 秘密値として登録するための文字列の一覧にする。保護されていない環境では空。
+ * - 入れ子のオブジェクト・配列は、含まれるスカラーをすべて辿る(キーは対象外)
+ * - 文字列と数値を文字列にして返す。真偽値と null は秘密になり得ず、"true" のような語を出力のあちこちで
+ *   塗りつぶしてしまうため含めない
+ * - 予約キー($protected)は対象外
+ * 4 文字未満の値の扱いは、マスクの機構(MIN_SECRET_LENGTH)に従う: 短すぎる値は出力を壊すため登録されても置換されない。
+ * 深い入れ子でスタックを使わないよう、反復で辿る。
+ */
+export function protectedEnvironmentSecretValues(environment: Environment): string[] {
+  if (getProtectedMode(environment) === false) return [];
+  const values: string[] = [];
+  const stack: unknown[] = [];
+  for (const [key, value] of Object.entries(environment)) {
+    if (key !== RESERVED_ENV_KEY) stack.push(value);
+  }
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (typeof current === "string") values.push(current);
+    else if (typeof current === "number") values.push(String(current));
+    else if (Array.isArray(current)) stack.push(...current);
+    else if (current !== null && typeof current === "object") stack.push(...Object.values(current));
+  }
+  return values;
+}
+
+/**
  * テンプレート変数展開用に、予約キー $protected を除いた変数マップを返す。
  * {{$protected}} のような形でテンプレートから参照できてしまわないよう、
  * runner.ts で TemplateContext を組み立てる直前に必ずこれを通す。

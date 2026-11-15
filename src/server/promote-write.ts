@@ -9,9 +9,11 @@ import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import { basename, dirname, extname, resolve } from "node:path";
 import { discoverFlowCandidates, EXCLUDED_DISCOVERY_DIRS } from "../core/discovery.js";
 import {
+  expandSecretVariants,
   findUnsafeSymlinkInWritePath,
   isPathWithinDir,
   isRealPathWithinDir,
+  maskDeep,
   type PromoteAssertMode,
   promoteRuns,
   readAllHistoryEntries,
@@ -240,6 +242,11 @@ export interface PromoteHistoryInput {
   out?: string;
   /** true なら書かずにプレビューだけ返す */
   dryRun: boolean;
+  /**
+   * 履歴のエントリ中でこれらの値を秘密として隠してから昇格する(隠した値は ***、生成物では TODO_* のプレースホルダーになる)。
+   * 履歴に生の値のまま残っている、保護された環境の値を生成物に載せないために klaus mcp が渡す。UI は渡さない
+   */
+  maskValues?: readonly string[];
 }
 
 /**
@@ -277,7 +284,13 @@ export async function promoteHistoryToFile(
         message: `no history entries found for runId "${runId}"`,
       };
     }
-    runs.push({ runId, entries });
+    runs.push({
+      runId,
+      entries:
+        input.maskValues !== undefined && input.maskValues.length > 0
+          ? maskDeep(entries, expandSecretVariants(input.maskValues))
+          : entries,
+    });
   }
 
   const outcome = promoteRuns(runs, {

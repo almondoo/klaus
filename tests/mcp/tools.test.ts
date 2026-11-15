@@ -2,7 +2,13 @@ import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from 
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { appendHistory, readAllHistoryEntries } from "../../src/core/index.js";
+import {
+  appendHistory,
+  executeSingleRequest,
+  flowSchema,
+  readAllHistoryEntries,
+  runLoadedFlows,
+} from "../../src/core/index.js";
 import {
   MAX_RESULT_BYTES,
   serializeOutcome,
@@ -245,6 +251,277 @@ describe("klaus_dry_run の variables と環境の値の表示", () => {
     expect(result.flows[0].steps[0].request.url).toBe(`${baseUrl}/items/42`);
     expect(result.summary.expansionErrors).toBe(0);
     expect(received).toHaveLength(0);
+  });
+});
+
+const PROTECTED_SECRET = "s3cr3t-db-pass-7d2f";
+const PROTECTED_USER = "db-admin-user-91";
+
+/** ro(readonly)・prod(true)・dev(保護なし)の環境ファイルを書く。値には接続先(fixture のホスト)と資格情報を含める */
+async function writeProtectedEnvironments(protectedHost = baseUrl): Promise<void> {
+  await writeProjectFile(
+    "environments/ro.yaml",
+    `$protected: readonly\nbaseUrl: ${protectedHost}\ndbPassword: ${PROTECTED_SECRET}\ndbUser: ${PROTECTED_USER}\nshort: q9\n`,
+  );
+  await writeProjectFile(
+    "environments/prod.yaml",
+    `$protected: true\nbaseUrl: ${protectedHost}\ndbPassword: ${PROTECTED_SECRET}\ndbUser: ${PROTECTED_USER}\nshort: q9\n`,
+  );
+  await writeProjectFile(
+    "environments/dev.yaml",
+    `baseUrl: ${baseUrl}\ndbPassword: dev-visible-password\ndbUser: dev-visible-user\nshort: q9\n`,
+  );
+}
+
+/** .klaus/history のファイルの内容を連結して返す */
+async function historyText(): Promise<string> {
+  const dir = join(cwd, ".klaus", "history");
+  const names = await readdir(dir);
+  return (await Promise.all(names.map((name) => readFile(join(dir, name), "utf-8")))).join("\n");
+}
+
+function expectNoProtectedValues(text: string): void {
+  for (const value of [PROTECTED_SECRET, PROTECTED_USER, baseUrl, new URL(baseUrl).host]) {
+    expect(text).not.toContain(value);
+  }
+}
+
+describe("保護された環境の値の秘匿", () => {
+  const flowWithEnv = (extraHeaders = "") =>
+    `name: attack\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "{{baseUrl}}/echo-auth"\n      headers:\n        Authorization: "Bearer {{dbPassword}}"\n        X-Db: "{{dbUser}}"\n        X-Short: "{{short}}"\n${extraHeaders}`;
+
+  it("klaus_dry_run {env: ro}: 展開後の URL(ホストも)と資格情報は *** になり、安全柵の判定と errorCode は残る。4 文字未満の値は隠れない", async () => {
+    await writeProtectedEnvironments();
+    await writeProjectFile("api/attack.yaml", flowWithEnv());
+    await writeProjectFile("klaus.config.yaml", "guard:\n  allowedHosts:\n    - example.com\n");
+
+    const outcome = await call("klaus_dry_run", { file: "api/attack.yaml", env: "ro" });
+
+    const text = serializeOutcome(outcome).text;
+    expectNoProtectedValues(text);
+    const step = data(outcome).flows[0].steps[0];
+    expect(step.request.url).toBe("***/echo-auth");
+    expect(step.request.headers["X-Db"]).toBe("***");
+    expect(step.guard).toMatchObject({ status: "refused", errorCode: "guard.allowed-hosts" });
+    // 短すぎる値(4 文字未満)は、出力を壊さないよう置換されず、そのまま見える
+    expect(step.request.headers["X-Short"]).toBe("q9");
+    expect(received).toHaveLength(0);
+  });
+
+  it("klaus_dry_run {env: prod}: 保護(true)で拒否されたステップでも値は隠れ、errorCode は残る", async () => {
+    await writeProtectedEnvironments();
+    await writeProjectFile("api/attack.yaml", flowWithEnv());
+
+    const outcome = await call("klaus_dry_run", { file: "api/attack.yaml", env: "prod" });
+
+    expectNoProtectedValues(serializeOutcome(outcome).text);
+    expect(data(outcome).flows[0].steps[0].guard.errorCode).toBe("guard.protected");
+  });
+
+  it("保護されていない環境(dev)の値は従来どおり展開されて表示される", async () => {
+    await writeProtectedEnvironments("http://protected.example.invalid:1234");
+    await writeProjectFile("api/attack.yaml", flowWithEnv());
+
+    const step = data(await call("klaus_dry_run", { file: "api/attack.yaml", env: "dev" })).flows[0]
+      .steps[0];
+
+    expect(step.request.url).toBe(`${baseUrl}/echo-auth`);
+    expect(step.request.headers.Authorization).toBe("Bearer dev-visible-password");
+  });
+
+  it("klaus_request {env: prod} の拒否は、結果にも .klaus/history にも環境の値を残さない", async () => {
+    await writeProtectedEnvironments();
+
+    const refused = await call("klaus_request", {
+      method: "GET",
+      url: "{{baseUrl}}/ok",
+      headers: { "X-Db": "{{dbPassword}}" },
+      env: "prod",
+    });
+
+    expect(failure(refused).errorCode).toBe("guard.protected");
+    expectNoProtectedValues(serializeOutcome(refused).text);
+    const history = await historyText();
+    expect(history).toContain("guard.protected");
+    expectNoProtectedValues(history);
+    expect(received).toHaveLength(0);
+  });
+
+  it("許可リストによる拒否のメッセージ(ホスト名を含む)にも、保護された環境の値を残さない", async () => {
+    await writeProtectedEnvironments();
+    await writeProjectFile("klaus.config.yaml", "guard:\n  allowedHosts:\n    - example.com\n");
+
+    const refused = await call("klaus_request", {
+      method: "GET",
+      url: "{{baseUrl}}/ok",
+      env: "ro",
+    });
+
+    expect(failure(refused).errorCode).toBe("guard.allowed-hosts");
+    expectNoProtectedValues(serializeOutcome(refused).text);
+    expectNoProtectedValues(await historyText());
+  });
+
+  it("klaus_run_flow {env: ro}(GET は通る): 応答のエコー・要約・履歴のすべてで環境の値が隠れる", async () => {
+    await writeProtectedEnvironments();
+    await writeProjectFile("api/attack.yaml", flowWithEnv());
+
+    const outcome = await call("klaus_run_flow", { file: "api/attack.yaml", env: "ro" });
+
+    expect(received).toHaveLength(1);
+    expect(data(outcome).flows[0].steps[0]).toMatchObject({ status: "passed" });
+    expectNoProtectedValues(serializeOutcome(outcome).text);
+    const history = await historyText();
+    expect(history).toContain("***");
+    expectNoProtectedValues(history);
+    // 応答(Authorization のエコー)も、履歴から読んで隠れている
+    const shown = await call("klaus_history_show", {
+      runId: data(outcome).runId,
+      step: "get",
+    });
+    expectNoProtectedValues(serializeOutcome(shown).text);
+    expect(data(shown).entries[0].response.body).toEqual({ authorization: "Bearer ***" });
+  });
+
+  it("klaus_request {env: ro}: 結果の URL・応答・履歴で環境の値が隠れる", async () => {
+    await writeProtectedEnvironments();
+
+    const outcome = await call("klaus_request", {
+      method: "GET",
+      url: "{{baseUrl}}/echo-auth",
+      headers: { Authorization: "Bearer {{dbPassword}}" },
+      env: "ro",
+    });
+
+    const result = data(outcome);
+    expect(result.request.url).toBe("***/echo-auth");
+    expect(result.response.body).toEqual({ authorization: "Bearer ***" });
+    expectNoProtectedValues(serializeOutcome(outcome).text);
+    expectNoProtectedValues(await historyText());
+  });
+
+  describe("CLI などが先に記録した履歴の読み出し", () => {
+    /** MCP の外(CLI と同じ、環境の値を秘密として登録しない経路)で、保護された環境に対する単発リクエストを記録する */
+    async function recordLikeCli(envName: string): Promise<string> {
+      const { runId } = await executeSingleRequest({
+        request: {
+          method: "GET",
+          url: "{{baseUrl}}/echo-auth",
+          headers: { Authorization: "Bearer {{dbPassword}}" },
+        },
+        cwd,
+        envName,
+        history: true,
+      });
+      return runId;
+    }
+
+    it("klaus_history_show / klaus_history_list / klaus_diff_runs の出力から、現在保護されている環境の値が隠れる(CLI が生の値で記録していても)", async () => {
+      await writeProtectedEnvironments();
+      // 保護を付ける前の環境で記録した、という状況を作る: dev で記録してから dev を保護に変える
+      await writeProjectFile(
+        "environments/dev.yaml",
+        `baseUrl: ${baseUrl}\ndbPassword: ${PROTECTED_SECRET}\ndbUser: ${PROTECTED_USER}\n`,
+      );
+      const runA = await recordLikeCli("dev");
+      const runB = await recordLikeCli("dev");
+      expect(await historyText()).toContain(PROTECTED_SECRET.slice(0, 6));
+      await writeProjectFile(
+        "environments/dev.yaml",
+        `$protected: true\nbaseUrl: ${baseUrl}\ndbPassword: ${PROTECTED_SECRET}\ndbUser: ${PROTECTED_USER}\n`,
+      );
+
+      const shown = await call("klaus_history_show", { runId: runA });
+      const step = await call("klaus_history_show", { runId: runA, step: "request" });
+      const window = await call("klaus_history_show", {
+        runId: runA,
+        step: "request",
+        path: "$.request.url",
+        offset: 0,
+        length: 20,
+      });
+      const list = await call("klaus_history_list", {});
+      const diff = await call("klaus_diff_runs", { a: runA, b: runB });
+
+      for (const outcome of [shown, step, window, list, diff]) {
+        expectNoProtectedValues(serializeOutcome(outcome).text);
+      }
+      expect(data(shown).entries[0].request.url).toBe("***/echo-auth");
+      expect(data(window).entries[0].window.text).toBe("***/echo-auth");
+    });
+
+    it("保護されていない環境で記録した履歴は、そのまま読める(他の環境が保護されていても、その値と一致しない部分は隠れない)", async () => {
+      await writeProtectedEnvironments("http://protected.example.invalid:1234");
+      const runId = await recordLikeCli("dev");
+
+      const shown = data(await call("klaus_history_show", { runId }));
+
+      expect(shown.entries[0].request.url).toBe(`${baseUrl}/echo-auth`);
+    });
+
+    it("klaus_promote: 保護された環境に対して記録された run は拒否し、フロー自身の env で記録された run は値を TODO のプレースホルダーに置き換える", async () => {
+      await writeProtectedEnvironments();
+      const recorded = await recordLikeCli("ro");
+
+      const refused = failure(
+        await call("klaus_promote", { runIds: [recorded], out: "flows/from-ro.yaml" }),
+      );
+
+      expect(refused.errorCode).toBe("guard.protected");
+      expect(refused.error).toContain('protected environment "ro"');
+      await expect(stat(join(cwd, "flows", "from-ro.yaml"))).rejects.toThrow();
+
+      // フロー自身の env: ro で実行した run も、履歴の env が ro なので拒否される
+      const flowRun = await runLoadedFlows(
+        [
+          {
+            filePath: join(cwd, "api", "own-env.yaml"),
+            flow: flowSchema.parse({
+              name: "own env",
+              env: "ro",
+              steps: [
+                {
+                  name: "get",
+                  request: { method: "GET", url: "{{baseUrl}}/echo-auth" },
+                },
+              ],
+            }),
+          },
+        ],
+        { cwd, history: true },
+      );
+      const ownEnv = failure(
+        await call("klaus_promote", { runIds: [flowRun.runId], out: "flows/from-own-env.yaml" }),
+      );
+      expect(ownEnv.errorCode).toBe("guard.protected");
+
+      // env が記録されていない run(--var 相当で同じ値を渡した)でも、保護された環境の値は昇格の前に隠れ、
+      // 生成物では TODO_* のプレースホルダーになる
+      const { runId: varRun } = await executeSingleRequest({
+        request: { method: "GET", url: "{{baseUrl}}/echo-auth" },
+        cwd,
+        variables: { baseUrl },
+        history: true,
+      });
+      const promoted = await call("klaus_promote", {
+        runIds: [varRun],
+        out: "flows/from-vars.yaml",
+      });
+
+      expectNoProtectedValues(serializeOutcome(promoted).text);
+      const yaml = await readFile(join(cwd, "flows", "from-vars.yaml"), "utf-8");
+      expectNoProtectedValues(yaml);
+      expect(yaml).toContain("TODO_");
+    });
+  });
+
+  it("klaus_validate_flow に環境ファイルのパスを渡しても、値は返さない(キー名だけ)", async () => {
+    await writeProtectedEnvironments();
+
+    const outcome = await call("klaus_validate_flow", { file: "environments/ro.yaml" });
+
+    const text = serializeOutcome(outcome).text;
+    expectNoProtectedValues(text);
   });
 });
 

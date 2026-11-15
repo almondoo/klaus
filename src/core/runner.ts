@@ -13,7 +13,12 @@ import {
 } from "./cassette.js";
 import { evaluateCondition } from "./condition.js";
 import type { DataRow } from "./data.js";
-import { getProtectedMode, loadEnvironment, toTemplateVariables } from "./env.js";
+import {
+  getProtectedMode,
+  loadEnvironment,
+  protectedEnvironmentSecretValues,
+  toTemplateVariables,
+} from "./env.js";
 import { errorCodeOf, GuardRefusalError, KlausError, ParseError, RuntimeError } from "./errors.js";
 import {
   checkHostAllowed,
@@ -133,6 +138,13 @@ export interface RunFlowOptions {
    * 単発リクエストは "mcp" 以外では別経路で固定の案内になる
    */
   entryPoint?: EntryPoint | undefined;
+  /**
+   * true なら、読み込んだ環境が保護されている($protected: true / "readonly")とき、その環境ファイルの値すべてを
+   * 秘密値として登録する(履歴・onSecrets 経由のマスクに載る)。拒否された送信の URL や、保護環境の応答に
+   * 環境の値が出ても、出力・履歴に残さないため。klaus mcp のようにエージェントへ結果を返す呼び出し元が使う
+   * (CLI・UI は従来どおり登録しない)。4 文字未満の値は他の秘密値と同じく置換されない
+   */
+  maskProtectedEnvironmentValues?: boolean | undefined;
   /**
    * 送信先ホストの許可リストなどの安全柵。呼び出し元(CLI・server)が klaus.config.yaml の `guard` を
    * 読んで渡す(core は設定ファイルを読まない)。未指定なら制限なし。--allow-protected のような
@@ -1459,6 +1471,9 @@ export async function executeFlow(
   const captures: Record<string, unknown> = {};
   // {{env.X}} で解決した値をフロー実行全体で蓄積する(履歴に書き込む前のマスクに使う)
   const secrets = new SecretSet();
+  if (options.maskProtectedEnvironmentValues === true) {
+    for (const value of protectedEnvironmentSecretValues(environment)) secrets.add(value);
+  }
   // onSecrets で既に通知済みの値(重複通知を避けるため、ステップをまたいで蓄積する)
   const notifiedSecrets = new Set<string>();
   const steps: StepResult[] = [];
@@ -1938,6 +1953,8 @@ export interface ExecuteSingleRequestOptions {
   onWarning?: (message: string) => void;
   /** 保護環境の拒否メッセージの案内文を決める呼び出し元種別(RunFlowOptions.entryPoint と同じ。未指定は従来の単発リクエスト用の案内) */
   entryPoint?: EntryPoint | undefined;
+  /** 保護された環境の値すべてを秘密値として登録する(RunFlowOptions.maskProtectedEnvironmentValues と同じ) */
+  maskProtectedEnvironmentValues?: boolean | undefined;
   /** 履歴エントリの actor に記録する実行主体(RunFlowOptions.actor と同じ) */
   actor?: HistoryActor | undefined;
   /** 履歴エントリの git に記録する実行時点の git の状態(RunFlowOptions.git と同じ) */
@@ -1989,6 +2006,9 @@ export async function executeSingleRequest(
   const flowName = "(single)";
   const captures: Record<string, unknown> = {};
   const secrets = new SecretSet();
+  if (options.maskProtectedEnvironmentValues === true) {
+    for (const value of protectedEnvironmentSecretValues(environment)) secrets.add(value);
+  }
   const templateContext: TemplateContext = {
     captures,
     // 追加変数(--var)は環境ファイルの値を上書きする(executeFlow と同じ優先順位)

@@ -1,5 +1,5 @@
 import type { DataRow } from "./data.js";
-import { loadEnvironment, toTemplateVariables } from "./env.js";
+import { loadEnvironment, protectedEnvironmentSecretValues, toTemplateVariables } from "./env.js";
 import { GuardRefusalError, KlausError } from "./errors.js";
 import type { GuardOptions } from "./guard.js";
 import { parseAllowedHostEntry } from "./guard.js";
@@ -31,6 +31,8 @@ export interface DryRunOptions {
   allowProtected?: boolean | undefined;
   /** 保護環境の拒否メッセージの案内文を決める呼び出し元種別(RunFlowOptions.entryPoint と同じ) */
   entryPoint?: EntryPoint | undefined;
+  /** 保護された環境の値すべてを秘密値として登録する(RunFlowOptions.maskProtectedEnvironmentValues と同じ。onSecrets に載る) */
+  maskProtectedEnvironmentValues?: boolean | undefined;
   /** 送信先ホストの許可リスト(実行時と同じ判定を通す) */
   guard?: GuardOptions | undefined;
   /** klaus.config.yaml の http(RunFlowOptions.http と同じ意味。dry-run では http.auth の展開にだけ使い、何も送信しない) */
@@ -282,6 +284,9 @@ export async function dryRunFlow(
     options.entryPoint,
   );
   const secrets = new Set<string>();
+  if (options.maskProtectedEnvironmentValues === true) {
+    for (const value of protectedEnvironmentSecretValues(environment)) secrets.add(value);
+  }
   // --var は環境ファイルの値を上書きする(executeFlow と同じ優先順位)
   const baseContext = {
     env: { ...toTemplateVariables(environment), ...options.variables },

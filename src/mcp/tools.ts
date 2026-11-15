@@ -13,7 +13,7 @@
 import { z } from "zod";
 import { detectActor, MAX_ACTOR_NAME_LENGTH, resolveGitState } from "../cli/audit.js";
 import { loadCliConfig, loadHttpOptions, resolveGuardOptions } from "../cli/config.js";
-import { getProtectedMode } from "../core/env.js";
+import { getProtectedMode, protectedEnvironmentSecretValues } from "../core/env.js";
 import {
   DEFAULT_IGNORED_HEADERS,
   type DryRunResult,
@@ -295,6 +295,48 @@ async function loadFlowOrFail(abs: string, cwd: string) {
 }
 
 // ---------------------------------------------------------------------------
+// 保護された環境の値の秘匿
+// ---------------------------------------------------------------------------
+
+/**
+ * 現在保護されている($protected: true / "readonly")すべての環境ファイルの、名前と値(秘密として扱う文字列)。
+ * エージェントへ返す出力に、保護された環境の値(接続先のホスト・認証情報など)を残さないために使う。
+ * 読めない環境ファイルは保護状態を判定できないので対象にできない(klaus_list_environments が unknown として示す)。
+ */
+async function loadProtectedEnvironments(
+  cwd: string,
+): Promise<{ names: Set<string>; values: string[] }> {
+  const names = new Set<string>();
+  const values: string[] = [];
+  for (const { name } of await listEnvironments(cwd)) {
+    try {
+      const environment = await loadEnvironmentFile(resolveEnvironmentPath(cwd, name));
+      const secrets = protectedEnvironmentSecretValues(environment);
+      if (getProtectedMode(environment) !== false) names.add(name);
+      values.push(...secrets);
+    } catch {
+      // 読めない環境は判定できないため飛ばす
+    }
+  }
+  return { names, values };
+}
+
+/** values を秘密として、value の文字列をすべて *** にした複製を返す(values が空なら元のまま) */
+function maskValues<T>(value: T, values: readonly string[]): T {
+  return values.length === 0 ? value : maskDeep(value, expandSecretVariants(values));
+}
+
+/**
+ * 履歴を読むツールの出力から、現在保護されている環境の値を隠す。履歴は CLI や UI が書いたもので、
+ * 環境ファイルの値(接続先のホスト・認証情報など)が保存されたまま入っていることがあるため。
+ * 記録された env(名前の変更・--env-file・--var で同じ値を渡した実行など)に頼ると取りこぼすので、
+ * エントリの env に関わらず、現在保護されているすべての環境の値を対象にする。
+ */
+async function maskForAgent<T>(cwd: string, value: T): Promise<T> {
+  return maskValues(value, (await loadProtectedEnvironments(cwd)).values);
+}
+
+// ---------------------------------------------------------------------------
 // 結果の整形
 // ---------------------------------------------------------------------------
 
@@ -479,7 +521,7 @@ const validateFlowTool: ToolDefinition<typeof validateFlowSchema> = {
 const listEnvironmentsTool: ToolDefinition = {
   name: "klaus_list_environments",
   description:
-    "List the environments (environments/<name>.yaml) with their protection mode: none, protected (every request is refused), or readonly (only GET, HEAD and OPTIONS are sent); unknown if the file cannot be read. This tool returns names and protection only. Protection applies to runs that select that environment by name (klaus_run_flow, klaus_dry_run, klaus_request with env); it does not restrict hosts, which is the job of guard.allowedHosts. Read-only.",
+    "List the environments (environments/<name>.yaml) with their protection mode: none, protected (every request is refused), or readonly (only GET, HEAD and OPTIONS are sent); unknown if the file cannot be read. This tool returns names and protection only. Protection applies to runs that select that environment by name (klaus_run_flow, klaus_dry_run, klaus_request with env); it does not restrict hosts, which is the job of guard.allowedHosts. The values of protected environments are masked in every klaus mcp result. Read-only.",
   inputSchema: z.object({}),
   annotations: READ_ONLY_LOCAL,
   write: false,
@@ -519,7 +561,7 @@ const dryRunSchema = z.object({ file: fileSchema, env: envSchema, variables: var
 const dryRunTool: ToolDefinition<typeof dryRunSchema> = {
   name: "klaus_dry_run",
   description:
-    "Show what a flow would send, without sending anything or writing history: each step's expanded request and the guard decision (allowed, refused with an errorCode, or undetermined when the host depends on an earlier response). Values that come from the selected environment file (including a protected one, and also when the step is refused) are shown expanded in the request; only values the run itself marks as secrets (for example {{env.NAME}} from OS environment variables) are masked. Use it before klaus_run_flow, especially when guard.allowedHosts is set. klaus mcp has no option to override a refused step.",
+    "Show what a flow would send, without sending anything or writing history: each step's expanded request and the guard decision (allowed, refused with an errorCode, or undetermined when the host depends on an earlier response). Values from an unprotected environment file are shown expanded in the request. Every value of a protected environment ($protected: true or readonly) is replaced by *** (the expanded URL and its host included), also when the step is refused; the guard decision and errorCode stay. Values of OS environment variables ({{env.NAME}}) are masked too. A value shorter than 4 characters is never masked. Use it before klaus_run_flow, especially when guard.allowedHosts is set. klaus mcp has no option to override a refused step.",
   inputSchema: dryRunSchema,
   annotations: READ_ONLY_LOCAL,
   write: false,
@@ -536,6 +578,8 @@ const dryRunTool: ToolDefinition<typeof dryRunSchema> = {
       variables: args.variables,
       // allowProtected は渡さない: klaus mcp は保護環境の拒否を上書きできない
       entryPoint: "mcp",
+      // 保護された環境の値(展開後の URL・ヘッダーなど)はエージェントへ見せない
+      maskProtectedEnvironmentValues: true,
       guard: settings.guard,
       http: settings.http,
       onSecrets: (secrets) => {
@@ -585,6 +629,8 @@ const runFlowTool: ToolDefinition<typeof runFlowSchema> = {
         variables: args.variables,
         // allowProtected は渡さない: klaus mcp は保護環境の拒否を上書きできない(拒否メッセージも mcp 向けの案内になる)
         entryPoint: "mcp",
+        // 保護された環境の値は結果にも、この呼び出しが書く履歴にも残さない
+        maskProtectedEnvironmentValues: true,
         guard: settings.guard,
         http: settings.http,
         actor: resolveMcpActor(ctx.clientName),
@@ -654,7 +700,7 @@ const requestToolSchema = z.object({
 });
 const requestTool: ToolDefinition<typeof requestToolSchema> = {
   name: "klaus_request",
-  description: `Send one ad-hoc HTTP request, record it in history, and return the runId, status, response status, headers and body (secrets masked). Use it to explore an API; turn a good run into a flow with klaus_promote. {{...}} placeholders in url, headers, query and body are expanded from the selected environment (env) and from the OS environment variables of the klaus mcp process ({{env.NAME}}); any such variable can therefore be sent to any host the request is allowed to reach. Without env, no environment protection applies and the request can reach every host that guard.allowedHosts permits (every host if it is not set). A refused request (guard.allowedHosts, or a protected env) or a failed one (connection error, timeout) returns an error with errorCode when there is one; klaus mcp has no option to override a refusal, so tell the user instead of working around it. A response body nested deeper than ${MAX_JSON_BODY_DEPTH} levels is returned as text. HTTP error statuses such as 404 are normal results.`,
+  description: `Send one ad-hoc HTTP request, record it in history, and return the runId, status, response status, headers and body (secrets masked). Use it to explore an API; turn a good run into a flow with klaus_promote. {{...}} placeholders in url, headers, query and body are expanded from the selected environment (env) and from the OS environment variables of the klaus mcp process ({{env.NAME}}); any such variable can therefore be sent to any host the request is allowed to reach. Without env, no environment protection applies and the request can reach every host that guard.allowedHosts permits (every host if it is not set). With a protected env, every value of that environment is replaced by *** in the result and in history. A refused request (guard.allowedHosts, or a protected env) or a failed one (connection error, timeout) returns an error with errorCode when there is one; klaus mcp has no option to override a refusal, so tell the user instead of working around it. A response body nested deeper than ${MAX_JSON_BODY_DEPTH} levels is returned as text. HTTP error statuses such as 404 are normal results.`,
   inputSchema: requestToolSchema,
   annotations: {
     readOnlyHint: false,
@@ -703,6 +749,8 @@ const requestTool: ToolDefinition<typeof requestToolSchema> = {
       http: settings.http,
       // allowProtected を受け取らない単発実行に、mcp 向けの拒否の案内を出させる
       entryPoint: "mcp",
+      // 保護された環境の値は結果にも、この呼び出しが書く履歴にも残さない
+      maskProtectedEnvironmentValues: true,
       actor: resolveMcpActor(ctx.clientName),
       git,
       onWarning: (message) => {
@@ -771,8 +819,9 @@ const historyListTool: ToolDefinition<typeof historyListSchema> = {
     const flow = validateFlowName(args.flow);
     const limit = Math.min(Math.max(args.limit ?? DEFAULT_HISTORY_LIMIT, 1), MAX_HISTORY_LIMIT);
     const page = await getHistoryPage(ctx.cwd, { flow, limit, statuses: args.statuses });
+    const entries = await maskForAgent(ctx.cwd, page.entries);
     return ok({
-      entries: page.entries.map(summarizeHistoryEntry),
+      entries: entries.map(summarizeHistoryEntry),
       hasMore: page.nextBefore !== undefined,
     });
   }),
@@ -853,7 +902,7 @@ function selectByPath(entry: HistoryEntry, segments: PathSegment[]): unknown[] {
 const historyShowTool: ToolDefinition<typeof historyShowSchema> = {
   name: "klaus_history_show",
   description:
-    "Return the recorded entries of one run in execution order: request, response (status, headers, body), assertions, error, actor. Secrets are masked as stored. Pass step to narrow to one step; only then are snapshot candidates included. When the result exceeds 256 KiB, large values are cut with a marker; to read such a value, pass step and path (a path into the entry such as $.response.body or $.response.body.items[0]; only $, .name, ['name'] and [n] are supported) to get only that value, and for a long string add offset and length to read it in windows (each window result carries totalLength and nextOffset). A body nested deeper than 200 levels is stored as text. Read-only.",
+    "Return the recorded entries of one run in execution order: request, response (status, headers, body), assertions, error, actor. Secrets are masked as stored, and the values of protected environments are masked too. Pass step to narrow to one step; only then are snapshot candidates included. When the result exceeds 256 KiB, large values are cut with a marker; to read such a value, pass step and path (a path into the entry such as $.response.body or $.response.body.items[0]; only $, .name, ['name'] and [n] are supported) to get only that value, and for a long string add offset and length to read it in windows (each window result carries totalLength and nextOffset). A body nested deeper than 200 levels is stored as text. Read-only.",
   inputSchema: historyShowSchema,
   annotations: READ_ONLY_LOCAL,
   write: false,
@@ -879,8 +928,11 @@ const historyShowTool: ToolDefinition<typeof historyShowSchema> = {
       // 構文は履歴を読む前に確かめる(不正な path で履歴の読み込みをしない)
       parsePathOrFail(args.path);
     }
-    const all = selectRunEntries(await readAllHistoryEntries(ctx.cwd), runId);
-    const entries = all.filter((entry) => args.step === undefined || entry.step === args.step);
+    // 保護された環境の値は、path の選択や窓の切り出しより前に隠す(窓の境目で値が分かれて隠し損ねないように)
+    const selectedEntries = selectRunEntries(await readAllHistoryEntries(ctx.cwd), runId).filter(
+      (entry) => args.step === undefined || entry.step === args.step,
+    );
+    const entries = await maskForAgent(ctx.cwd, selectedEntries);
     if (entries.length === 0) {
       const suffix = args.step !== undefined ? ` (step "${args.step}")` : "";
       throw new ToolError(`no history entries found for runId "${runId}"${suffix}`);
@@ -975,8 +1027,9 @@ const diffRunsTool: ToolDefinition<typeof diffRunsSchema> = {
     if (!resolvedA.ok) throw new ToolError(resolvedA.message);
     const resolvedB = resolveRunRef(entries, refB, flow);
     if (!resolvedB.ok) throw new ToolError(resolvedB.message);
-    const entriesA = selectRunEntries(entries, resolvedA.runId, flow);
-    const entriesB = selectRunEntries(entries, resolvedB.runId, flow);
+    // 保護された環境の値は、差分を取る前に隠す(差分にも値が現れないように)
+    const entriesA = await maskForAgent(ctx.cwd, selectRunEntries(entries, resolvedA.runId, flow));
+    const entriesB = await maskForAgent(ctx.cwd, selectRunEntries(entries, resolvedB.runId, flow));
     if (entriesA.length === 0 || entriesB.length === 0) {
       const missing = entriesA.length === 0 ? resolvedA.runId : resolvedB.runId;
       throw new ToolError(`run "${missing}" has no entries for flow "${flow}"`);
@@ -1014,11 +1067,13 @@ const snapshotListTool: ToolDefinition<typeof snapshotListSchema> = {
     }
     const mismatches = await listSnapshotMismatches(ctx.cwd, runId);
     const refusal = mismatches.length > 0 ? await findAcceptRefusal(ctx.cwd, entries) : undefined;
-    return ok({
-      runId,
-      mismatches,
-      ...(refusal !== undefined ? { acceptRefusal: refusal } : {}),
-    });
+    return ok(
+      await maskForAgent(ctx.cwd, {
+        runId,
+        mismatches,
+        ...(refusal !== undefined ? { acceptRefusal: refusal } : {}),
+      }),
+    );
   }),
 };
 
@@ -1063,8 +1118,30 @@ const promoteTool: ToolDefinition<typeof promoteSchema> = {
         throw new ToolError("name is invalid");
       }
     }
+    // 保護された環境に対して記録された run は、環境の値(接続先・認証情報)を含むため昇格しない。
+    // 記録された env が分からない run(--var で同じ値を渡した実行など)にも備え、保護された環境の値は
+    // 昇格の前に隠す(maskValues。生成物では TODO_* のプレースホルダーになる)
+    const history = await readAllHistoryEntries(ctx.cwd);
+    const protectedEnvironments = await loadProtectedEnvironments(ctx.cwd);
+    for (const runId of runIds) {
+      const recordedEnv = selectRunEntries(history, runId).find(
+        (entry) =>
+          entry.env !== undefined &&
+          protectedEnvironments.names.has(entry.env.replace(/\.ya?ml$/, "")),
+      )?.env;
+      if (recordedEnv !== undefined) {
+        throw new ToolError(
+          `run "${runId}" was recorded against the protected environment "${recordedEnv}" and cannot be promoted through klaus mcp`,
+          {
+            errorCode: "guard.protected",
+            hint: "Tell the user; they can run `klaus promote` in a terminal and review the result for sensitive values.",
+          },
+        );
+      }
+    }
     const outcome = await promoteHistoryToFile(ctx.cwd, {
       runIds,
+      maskValues: protectedEnvironments.values,
       assert: "schema",
       chain: true,
       ...(args.name !== undefined ? { name: args.name } : {}),
