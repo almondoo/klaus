@@ -199,7 +199,8 @@ describe("Host ヘッダー", () => {
         { guard: { allowedHosts: [`127.0.0.1:${target.port}`] } },
       );
       expect(result.steps[0]?.status).toBe("error");
-      expect(result.steps[0]?.error).toContain("Host header that differs");
+      expect(result.steps[0]?.error).toContain("contains characters that are not allowed");
+      expect(result.steps[0]?.error).not.toContain("differs");
       expect(entries[0]?.status).toBe("error");
       expect(target.requests).toHaveLength(0);
     },
@@ -221,7 +222,7 @@ describe("Host ヘッダー", () => {
       { http: { proxy: proxyUrl } },
     );
     expect(result.steps[0]?.status).toBe("error");
-    expect(result.steps[0]?.error).toContain("Host header that differs");
+    expect(result.steps[0]?.error).toContain("contains characters that are not allowed");
     expect(proxyRequests).toHaveLength(0);
   });
 
@@ -251,6 +252,12 @@ describe("Host ヘッダー", () => {
       ).toBeUndefined();
       expect(mismatch("http://münchen.example/x", "xn--mnchen-3ya.example")).toBeUndefined();
       expect(mismatch("http://münchen.example/x", "münchen.example")).toBeUndefined();
+    });
+
+    it("下線(Docker のネットワーク名など)を含むホストは、URL と同じなら通る", () => {
+      expect(mismatch("http://my_service:8080/x", "my_service:8080")).toBeUndefined();
+      expect(mismatch("http://my_service:8080/x", "My_Service:8080")).toBeUndefined();
+      expect(mismatch("http://my_service:8080/x", "my_service:9090")).toBe("my_service:9090");
     });
 
     it("別の権威、禁止文字を含む値(# / ? @ % \\ 空白・制御文字)は、URL が同じ権威でも拒否する(値を返す)", () => {

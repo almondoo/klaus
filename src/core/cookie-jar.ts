@@ -112,6 +112,19 @@ export function splitSetCookieHeader(joined: string): string[] {
     .filter((part) => part !== "");
 }
 
+/**
+ * Set-Cookie の各行から cookie の値(先頭の name=value の value 部分)を取り出す(空の値は除く)。
+ * jar の有無によらず、受け取った値を秘密値として登録するために使う。
+ */
+export function setCookieValues(lines: readonly string[]): string[] {
+  const values: string[] = [];
+  for (const line of lines) {
+    const parsed = parseSetCookie(line);
+    if (parsed && parsed.value !== "") values.push(parsed.value);
+  }
+  return values;
+}
+
 export class CookieJar {
   private cookies: StoredCookie[] = [];
   private seq = 0;

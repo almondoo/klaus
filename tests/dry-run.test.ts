@@ -396,6 +396,42 @@ steps:
       expect(dry.steps[0]?.guard).toEqual({ status: "allowed" });
     });
 
+    it("下線を含むホスト名(Docker のネットワーク名など)は、許可リストと Host ヘッダーが同じなら allowed", async () => {
+      const flow = flowOf(`
+name: underscore
+steps:
+  - name: ok
+    request:
+      method: GET
+      url: "http://my_service:8080/x"
+      headers: { Host: "my_service:8080" }
+`);
+      const dry = await dryRunFlow(flow, "u.yaml", {
+        cwd,
+        guard: { allowedHosts: ["my_service:8080"] },
+      });
+      expect(dry.steps[0]?.guard).toEqual({ status: "allowed" });
+    });
+
+    it("文法に合わない Host は refused で、理由は「URL と違う」ではなく使えない文字を含むと伝える", async () => {
+      const flow = flowOf(`
+name: bad-host
+steps:
+  - name: bad
+    request:
+      method: GET
+      url: "http://my_service:8080/x"
+      headers: { Host: "my_service:8080#evil" }
+`);
+      const dry = await dryRunFlow(flow, "u.yaml", {
+        cwd,
+        guard: { allowedHosts: ["my_service:8080"] },
+      });
+      expect(dry.steps[0]?.guard.status).toBe("refused");
+      expect(dry.steps[0]?.guard.reason).toContain("contains characters that are not allowed");
+      expect(dry.steps[0]?.guard.reason).not.toContain("differs");
+    });
+
     it("ホストが前段の capture に依存する場合は undetermined(refused ではない)", async () => {
       const flow = flowOf(`
 name: late-host

@@ -34,6 +34,19 @@ function buildCassetteKey(method: string, url: string): string {
 }
 
 /**
+ * replay・mock の動作が値そのものに依存する構造的なレスポンスヘッダー(小文字)。
+ * 秘密値の部分一致マスクの対象にせず、記録した値のままカセットへ書く(`ct=application/json` のような cookie 値が
+ * 秘密値として登録されると、content-type が *** になり、replay で本文を JSON として読めなくなるため)。
+ * location は秘密値を運び得るので含めない。
+ */
+const STRUCTURAL_HEADERS = new Set([
+  "content-type",
+  "content-encoding",
+  "content-length",
+  "transfer-encoding",
+]);
+
+/**
  * HTTP レスポンスから CassetteEntry を組み立て、secrets でマスクする。
  * 履歴 JSONL(maskHistoryEntry)と同じ方式(expandSecretVariants + maskDeep)を使い、
  * URL・ヘッダー・bodyText に含まれる {{env.X}} 解決値を "***" に置換してからカセットへ渡す。
@@ -54,7 +67,12 @@ export function buildCassetteEntry(
     headers: response.headers,
     bodyText: response.bodyText,
   };
-  return maskDeep(entry, expandSecretVariants(secrets));
+  const masked = maskDeep(entry, expandSecretVariants(secrets));
+  // 構造的ヘッダーだけは、部分一致マスクの前の値に戻す(Cookie / Set-Cookie は構造的ヘッダーではないのでマスクのまま)
+  for (const [name, value] of Object.entries(entry.headers)) {
+    if (STRUCTURAL_HEADERS.has(name.toLowerCase())) masked.headers[name] = value;
+  }
+  return masked;
 }
 
 /**

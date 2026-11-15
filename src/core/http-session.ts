@@ -10,7 +10,12 @@ import {
   parseTokenResponse,
   tokenCacheKey,
 } from "./auth.js";
-import { CookieJar, MIN_COOKIE_SECRET_LENGTH, splitSetCookieHeader } from "./cookie-jar.js";
+import {
+  CookieJar,
+  MIN_COOKIE_SECRET_LENGTH,
+  setCookieValues,
+  splitSetCookieHeader,
+} from "./cookie-jar.js";
 import { GuardRefusalError, RuntimeError } from "./errors.js";
 import type { HttpRequestOptions, HttpResponse } from "./http.js";
 import { DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_TIMEOUT_MS } from "./http.js";
@@ -156,11 +161,14 @@ function portOf(url: URL): string {
   return url.protocol === "https:" || url.protocol === "wss:" ? "443" : "80";
 }
 
-/** Host ヘッダーの値の文法: reg-name / IPv4(ポート任意)と、角括弧つきの IPv6(ポート任意) */
-const HOST_REG_NAME_PATTERN = /^[A-Za-z0-9.-]+(:\d{1,5})?$/;
+/**
+ * Host ヘッダーの値の文法: reg-name / IPv4(ポート任意)と、角括弧つきの IPv6(ポート任意)。
+ * reg-name には Docker のネットワーク名などで使われる `_` を含める(`guard.allowedHosts` も同じ名前を受け付ける)
+ */
+const HOST_REG_NAME_PATTERN = /^[A-Za-z0-9._-]+(:\d{1,5})?$/;
 const HOST_IPV6_PATTERN = /^\[[0-9A-Fa-f:.]+\](:\d{1,5})?$/;
 /** 非 ASCII(IDN をそのまま書いた)ホスト。ASCII 側で許す文字に加えて非 ASCII だけを許す(# / ? @ % \ や空白・制御文字は含まない) */
-const HOST_IDN_PATTERN = /^[A-Za-z0-9.\u0080-\uffff-]+(:\d{1,5})?$/;
+const HOST_IDN_PATTERN = /^[A-Za-z0-9._\u0080-\uffff-]+(:\d{1,5})?$/;
 /** 非 ASCII の範囲に含まれる空白・制御文字(C1 制御文字・NBSP・Unicode 空白など) */
 const HOST_IDN_FORBIDDEN_PATTERN = /[\s\u0080-\u009f]/;
 
@@ -170,21 +178,29 @@ function isValidHostHeaderValue(raw: string): boolean {
   return HOST_IDN_PATTERN.test(raw) && !HOST_IDN_FORBIDDEN_PATTERN.test(raw);
 }
 
+/** 拒否すべき Host ヘッダーの問題。invalid は文法に合わない値、mismatch は文法には合うが URL の権威と違う値 */
+export interface HostHeaderProblem {
+  reason: "invalid" | "mismatch";
+  /** フローが書いた Host の値(そのまま) */
+  value: string;
+}
+
 /**
  * フローが指定した Host ヘッダーが URL の権威(ホスト:ポート)と一致するか。
  * 一致しない Host は、proxy や Host ルーティングのフロントエンドを通じて、許可リスト外の仮想ホストへ
  * 到達するために使える。URL パーサーは `host#x` や `host/..` のような値も寛容に受け付けてしまうため、
  * 比較の前に、生の値が Host の文法(isValidHostHeaderValue)に合っていることを要求する(合わなければ拒否)。
+ * 拒否の理由(文法違反か、権威の不一致か)を区別して返し、呼び出し側が正しい文言で拒否できるようにする。
  */
-export function findHostHeaderMismatch(
+export function findHostHeaderProblem(
   url: string,
   headers: Record<string, string> | undefined,
-): string | undefined {
+): HostHeaderProblem | undefined {
   if (!headers) return undefined;
   const key = Object.keys(headers).find((name) => name.toLowerCase() === "host");
   if (key === undefined) return undefined;
   const raw = headers[key] ?? "";
-  if (!isValidHostHeaderValue(raw)) return raw;
+  if (!isValidHostHeaderValue(raw)) return { reason: "invalid", value: raw };
   const value = raw.toLowerCase();
   let parsed: URL;
   try {
@@ -197,7 +213,7 @@ export function findHostHeaderMismatch(
     // Host の値を同じスキームの URL の権威として解釈する(IPv6・ポートの表記ゆれを URL 側に任せる)
     expected = new URL(`${parsed.protocol}//${value}`);
   } catch {
-    return value;
+    return { reason: "mismatch", value };
   }
   const same =
     expected.username === "" &&
@@ -206,7 +222,26 @@ export function findHostHeaderMismatch(
     expected.search === "" &&
     expected.hostname === parsed.hostname &&
     portOf(expected) === portOf(parsed);
-  return same ? undefined : (headers[key] ?? "");
+  return same ? undefined : { reason: "mismatch", value: raw };
+}
+
+/** findHostHeaderProblem の値だけを返す版(文法違反も不一致も、拒否すべき Host の値を返す。問題が無ければ undefined) */
+export function findHostHeaderMismatch(
+  url: string,
+  headers: Record<string, string> | undefined,
+): string | undefined {
+  return findHostHeaderProblem(url, headers)?.value;
+}
+
+/**
+ * 拒否すべき Host ヘッダーの拒否メッセージ(安全柵の拒否)。condition は拒否が掛かる条件(例: "guard.allowedHosts is set")。
+ * 文法違反のときは「URL と違う」とは言わず、使えない文字を含むことを伝える(値が同じでも拒否するため)。
+ */
+export function hostHeaderRefusalMessage(problem: HostHeaderProblem, condition: string): string {
+  if (problem.reason === "invalid") {
+    return `refusing a Host header that contains characters that are not allowed while ${condition} (Host: ${JSON.stringify(problem.value)}); only a host name or IP address with an optional port is accepted`;
+  }
+  return `refusing a Host header that differs from the request URL while ${condition} (Host: "${problem.value}")`;
 }
 
 function originOf(url: string): string | undefined {
@@ -377,10 +412,10 @@ export class HttpSession {
    */
   private checkProxyHeaders(url: string, headers: Record<string, string>): void {
     if (this.config?.proxy === undefined) return;
-    const mismatch = findHostHeaderMismatch(url, headers);
-    if (mismatch !== undefined) {
+    const problem = findHostHeaderProblem(url, headers);
+    if (problem !== undefined) {
       throw new GuardRefusalError(
-        `refusing a Host header that differs from the request URL while http.proxy is set (Host: "${mismatch}"); it could reach a virtual host outside guard.allowedHosts`,
+        `${hostHeaderRefusalMessage(problem, "http.proxy is set")}; it could reach a virtual host outside guard.allowedHosts`,
       );
     }
     for (const name of Object.keys(headers)) {
@@ -437,28 +472,31 @@ export class HttpSession {
   }
 
   /**
-   * レスポンスの Set-Cookie を jar に取り込む(cookies: false なら何もしない)。cookie の値のうち
-   * MIN_COOKIE_SECRET_LENGTH 文字以上のものは秘密値として登録し、ボディや他のヘッダーにエコーされても
-   * マスクされるようにする。それより短い値(`json` や `true` のような、無関係な出力を壊すもの)は登録せず、
+   * レスポンスの Set-Cookie を処理する。cookie の値のうち MIN_COOKIE_SECRET_LENGTH 文字以上のものは、
+   * jar の有無(cookies: false でも)によらず秘密値として登録し、ボディや他のヘッダー、`capture: { x: { header: set-cookie } }`
+   * で取り出した値を別のヘッダー・クエリ・ボディに入れた場合でもマスクされるようにする(取り出した変数自体は生のまま使える)。
+   * それより短い値(`json` や `true` のような、無関係な出力を壊すもの)は登録せず、
    * 表示側が Cookie / Set-Cookie ヘッダーを位置でマスクする(cookie-jar.ts の maskCookieHeaders)だけにする。
+   * jar が有効なら、そのうえで cookie を jar に取り込む。
    */
   private absorb(url: string, response: HopResponse): void {
-    if (!this.jar) return;
     const lines =
       response.setCookies ??
       (response.headers["set-cookie"] !== undefined
         ? splitSetCookieHeader(response.headers["set-cookie"])
         : []);
     if (lines.length === 0) return;
+    for (const value of setCookieValues(lines)) {
+      if (value.length >= MIN_COOKIE_SECRET_LENGTH) this.secretSink?.add(value);
+    }
+    if (!this.jar) return;
     let parsed: URL;
     try {
       parsed = new URL(url);
     } catch {
       return;
     }
-    for (const value of this.jar.store(parsed, lines)) {
-      if (value.length >= MIN_COOKIE_SECRET_LENGTH) this.secretSink?.add(value);
-    }
+    this.jar.store(parsed, lines);
   }
 
   /**

@@ -27,8 +27,9 @@ import type { HttpRequestOptions, HttpResponse, RawHttpResponse } from "./http.j
 import { sendRawRequest, sendRequest } from "./http.js";
 import {
   type FollowResult,
-  findHostHeaderMismatch,
+  findHostHeaderProblem,
   HttpSession,
+  hostHeaderRefusalMessage,
   mergeHttpConfig,
 } from "./http-session.js";
 import { loadFlow } from "./loader.js";
@@ -711,11 +712,9 @@ export function assertSendAllowed(
   }
   // 許可リストの指定時は、URL と違う Host ヘッダーを拒否する(Host ルーティングで許可リスト外の仮想ホストへ到達できるため)
   if (!skipHostCheck && stepGuard.options?.allowedHosts !== undefined) {
-    const mismatch = findHostHeaderMismatch(url, headers);
-    if (mismatch !== undefined) {
-      throw new GuardRefusalError(
-        `refusing a Host header that differs from the request URL while guard.allowedHosts is set (Host: "${mismatch}")`,
-      );
+    const problem = findHostHeaderProblem(url, headers);
+    if (problem !== undefined) {
+      throw new GuardRefusalError(hostHeaderRefusalMessage(problem, "guard.allowedHosts is set"));
     }
   }
   if (!skipHostCheck) {

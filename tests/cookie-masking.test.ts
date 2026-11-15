@@ -2,8 +2,11 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { formatGithubAnnotations, formatGithubSummary } from "../src/cli/reporters/github.js";
+import { formatHtml } from "../src/cli/reporters/html.js";
 import { cassetteFilePath } from "../src/core/cassette.js";
 import type { HistoryEntry } from "../src/core/history.js";
+import { promoteRuns, renderPromotedYaml } from "../src/core/promote.js";
 import { executeFlow } from "../src/core/runner.js";
 import { flowSchema } from "../src/core/schema.js";
 import { closeServer, listenEphemeral } from "./support/net.js";
@@ -41,7 +44,16 @@ describe("Set-Cookie は実行時に生の値、出力ではマスク", () => {
         res.end(JSON.stringify({ ok: true }));
         return;
       }
-      if (path === "/plain") {
+      // 値が普通の内容(content-type)と同じ長い cookie 値を設定する
+      if (path === "/login-ct") {
+        res.writeHead(200, {
+          "Set-Cookie": "ct=application/json; Path=/",
+          "Content-Type": "application/json",
+        });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (path === "/plain" || path.startsWith("/plain?")) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true, accept: req.headers.accept ?? null }));
         return;
@@ -222,6 +234,100 @@ describe("Set-Cookie は実行時に生の値、出力ではマスク", () => {
     expect(replayed.result.steps[0]?.response?.headers["set-cookie"]).toBe(
       "sid=***; Path=/; HttpOnly, fmt=***; Path=/",
     );
+  });
+
+  it("値が content-type と同じ長い cookie 値でも、record したカセットの content-type は壊れず replay できる", async () => {
+    await setup();
+    const flow = flowSchema.parse({
+      name: "ct",
+      steps: [
+        {
+          name: "login",
+          request: { method: "GET", url: `${baseUrl}/login-ct` },
+          assert: { status: 200, body: [{ path: "$.ok", equals: true }] },
+        },
+      ],
+    });
+    const recorded = await run(flow, { recording: { mode: "record", dir: cassetteDir } });
+    expect(recorded.result.status).toBe("passed");
+    // cookie 値(application/json)が秘密値として登録されても、構造的ヘッダーはそのまま記録する
+    expect(recorded.secrets).toContain("application/json");
+    const entry = JSON.parse((await readFile(cassetteFilePath(cassetteDir), "utf-8")).trim());
+    expect(entry.headers["content-type"]).toBe("application/json");
+    expect(entry.headers["set-cookie"]).toBe("ct=***; Path=/");
+    // replay は本文を JSON として読めるので、body アサーションも通る
+    const replayed = await run(flow, { recording: { mode: "replay", dir: cassetteDir } });
+    expect(replayed.result.status).toBe("passed");
+    expect(replayed.result.steps[0]?.response?.body).toEqual({ ok: true });
+  });
+
+  describe("capture した Set-Cookie を別の場所に入れても、長い cookie 値は秘密値として登録されている", () => {
+    const leakFlow = (login: string) =>
+      flowSchema.parse({
+        name: "leak",
+        steps: [
+          {
+            name: "login",
+            request: { method: "GET", url: `${baseUrl}/${login}` },
+            capture: { sc: { header: "set-cookie" } },
+          },
+          {
+            name: "reuse",
+            request: {
+              method: "POST",
+              url: `${baseUrl}/plain?x={{sc}}`,
+              headers: { "X-Session": "{{sc}}" },
+              body: { s: "{{sc}}" },
+            },
+            assert: { status: 200 },
+          },
+        ],
+      });
+
+    it("jar なしでも、履歴・カセット・html / github レポート・promote の出力に 20 文字以上の値が残らない", async () => {
+      await setup();
+      const flow = leakFlow("login-long");
+      const { result, entries, secrets } = await run(flow, {
+        recording: { mode: "record", dir: cassetteDir },
+      });
+      expect(result.status).toBe("passed");
+      expect(secrets).toContain(LONG_SID);
+      // 変数そのものは生のまま使える(フィクスチャは本物の値を受け取る)
+      expect(seen.find((x) => x.path.startsWith("/plain?"))?.path).toContain(
+        "sess-0123456789abcdef",
+      );
+
+      expect(JSON.stringify(entries)).not.toContain(LONG_SID);
+      expect(JSON.stringify(entries[1]?.request)).toContain("***");
+      expect(await readFile(cassetteFilePath(cassetteDir), "utf-8")).not.toContain(LONG_SID);
+
+      const runResult = {
+        runId: "r",
+        startedAt: "2026-11-15T00:00:00.000Z",
+        durationMs: 1,
+        status: "passed" as const,
+        flows: [result],
+      };
+      expect(formatHtml(runResult, { secrets })).not.toContain(LONG_SID);
+      expect(formatGithubSummary(runResult, { secrets })).not.toContain(LONG_SID);
+      expect(formatGithubAnnotations(runResult, { secrets }).join("\n")).not.toContain(LONG_SID);
+
+      const outcome = promoteRuns([{ runId: "r", entries }], { assert: "status", chain: false });
+      expect(outcome.ok).toBe(true);
+      if (outcome.ok) {
+        expect(renderPromotedYaml(outcome.result, ["r"])).not.toContain(LONG_SID);
+      }
+    });
+
+    it("16 文字未満の値は登録せず、従来どおり Cookie / Set-Cookie ヘッダー内の位置マスクだけ", async () => {
+      await setup();
+      const { result, entries, secrets } = await run(leakFlow("login-short"));
+      expect(result.status).toBe("passed");
+      expect(secrets).not.toContain(SHORT_SID);
+      expect(entries[0]?.response?.headers["set-cookie"]).toBe(
+        "sid=***; Path=/; HttpOnly, fmt=***; Path=/",
+      );
+    });
   });
 
   describe("jar の cookie 値(16 文字以上)は秘密値として登録する", () => {
