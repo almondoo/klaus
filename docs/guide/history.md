@@ -41,7 +41,7 @@ One line = one step execution. `runId` lets you group steps from the same run.
   "assertions": [
     { "ok": true, "kind": "status", "expected": 200, "actual": 200, "message": "…" }
   ],
-  "error": "…",                 // only when status is "error" (a step refused by a guardrail): the refusal reason
+  "error": "…",                 // only when status is "error" (a guardrail refusal, or a step that failed after receiving a response): the reason
   "errorCode": "guard.allowed-hosts",  // optional, only with error: see Error Codes
   "env": "local",               // optional: see Audit Fields
   "file": "api/auth-flow.yaml", // optional
@@ -59,7 +59,9 @@ One line = one step execution. `runId` lets you group steps from the same run.
 | WebSocket | method is `"WS"`, body is the array of sent messages | status is fixed at `101`, body is the array of received messages (data strings) | — |
 | skipped | omitted | omitted | — |
 
-**Skipped steps are recorded too** (`status: "skipped"`, no request/response, empty assertions). Steps that resulted in a runtime error are not recorded in the history, with one exception: a step refused by a guardrail (`guard.allowedHosts`, or `$protected`) is recorded for auditing, with `status: "error"`, the masked request that would have been sent, the refusal reason in `error`, and the audit fields.
+**Skipped steps are recorded too** (`status: "skipped"`, no request/response, empty assertions). Steps that ended in `error` are recorded in two cases only. A step refused by a guardrail (`guard.allowedHosts`, or `$protected`) is recorded for auditing, with `status: "error"`, the masked request that would have been sent, the refusal reason in `error`, and the audit fields. A step that **received a response** and then failed (a failed `capture`, a JSONPath capture on a body that is kept as text, an error while checking the response) is recorded with `status: "error"`, the request, the response, and the `error` message. Errors before or without a usable response are not recorded: a connection error, a timeout, a network error in the middle of the body, a response that exceeds `http.maxResponseBytes`, and a template that cannot be expanded.
+
+A JSON response nested deeper than 200 levels is kept as text (a string `body`, with `bodyTooDeep: true` on the recorded `response`) instead of being parsed. JSONPath captures, `body` path assertions, and `bodySchema` on such a response fail with an explicit message; `bodyText` assertions and `regex` captures still work.
 
 **Snapshot results** are recorded as an assertion with `kind: "snapshot"` and a `snapshot` object: `key`, `file` (the snapshot file), `state` (`matched` / `written` / `updated` / `mismatch` / `missing`), and, for a mismatch, `differences` (at most 20) and `differenceCount`. A `mismatch` or `missing` result also keeps `candidate`, the masked `{ status?, headers?, body }` that would be written as the baseline. `klaus snapshot accept <runId>` writes exactly that candidate, so accepting a change never calls the API again ([klaus snapshot](cli.md#klaus-snapshot)). The candidate is built after the same secret masking as the rest of the entry. Because it is a full response copy, `klaus history` (list) never prints it, and `klaus history show <runId>` omits it unless `--step` is given.
 
@@ -83,7 +85,7 @@ A step that ends as `error` carries a free-text `error` message in English. When
 
 - **Redirects**: when a hop of a redirect chain is refused, the more specific code of that refusal is kept (a hop to a host outside the allowlist is `guard.allowed-hosts`, not `guard.redirect`). `guard.redirect` is used only when the refusal itself has no code of its own.
 - **Where it appears**: `errorCode` sits next to the error message wherever it is reported: each `error` step in `klaus run --json`, `klaus req --json`, `guard.errorCode` of a refused step in `klaus run --dry-run --json`, the history entry, and the UI server's responses. It is not added to summary-only output.
-- **In history**: only guard refusals are recorded as `error` entries, so only the `guard.*` codes can appear in a history file. `response-too-large` is reported in the run output and the UI only.
+- **In history**: `error` entries are guard refusals and steps that failed after receiving a response. The latter usually have no `errorCode` (a failed capture has none), so the `guard.*` codes are the ones that appear in a history file. `response-too-large` is reported in the run output and the UI only.
 
 ## Audit Fields
 
@@ -120,10 +122,10 @@ With `--flow`, both runs are narrowed to that flow's steps. Steps are paired by 
 | `body` | the response body differs |
 | `request` | the request itself differs: `method`, `url`, and `body` (headers are not compared) |
 | `events` | SSE events differ |
-| `error` | the recorded error message (guard refusal) differs |
+| `error` | the recorded error message (a guard refusal, or a failure after a response) differs |
 | `durationMs` | only with `--duration-threshold <ms>`, when the duration changed by more than that many milliseconds |
 
-A request change is reported in `request`, separately from `body` / `httpStatus`, so "the request itself changed" is distinguishable from "the response changed". When one side has no request or response (a skipped step, or a guard refusal), only `status` and `httpStatus` are reported for that step.
+A request change is reported in `request`, separately from `body` / `httpStatus`, so "the request itself changed" is distinguishable from "the response changed". When one side has no request or response (a skipped step, or a guard refusal), only `status` and `httpStatus` are reported for that step. An `error` step that did receive a response is compared like any other step.
 
 JSON bodies get a structural diff: a list of `{ path, kind, before, after }` where `path` is JSONPath-like (`$.items[0].name`) and `kind` is `added`, `removed`, `changed`, `type-changed`, or `too-deep`. Objects are matched by key (key order is irrelevant); arrays are compared index by index, so they are order-sensitive and a length difference shows up as `added` / `removed` entries. Bodies that are not JSON get a line-based summary (`added` / `removed` line counts and the changed lines).
 
@@ -204,7 +206,7 @@ klaus promote <runId...> [-o <path> | --stdout] [--force] [--assert status|schem
 - Hop-by-hop and computed headers are dropped: `content-length`, `host`, `connection`, `keep-alive`, `transfer-encoding`, `te`, `trailer`, `upgrade`, `proxy-connection`.
 - A masked value (`***`) cannot be reproduced. Every `***` in a URL, header, or body string becomes <code v-pre>{{env.TODO_*}}</code>, so the file never contains a literal `***`. The name is derived from the location: header `Authorization` becomes `TODO_AUTHORIZATION`, body path `$.user.password` becomes `TODO_BODY_USER_PASSWORD`, query parameter `api_key` becomes `TODO_QUERY_API_KEY`, the third URL path segment becomes `TODO_URL_PATH_3`; a second `***` in the same value gets a `_2` suffix. The same location produces the same name in every step. Set these as OS environment variables before running; the command output lists them.
 - `--base-url-var <name>` replaces the origin of every URL with <code v-pre>{{name}}</code> (further origins become `name_2`, `name_3`, ...) and prints the values to put in the environment file. By default URLs stay literal.
-- SSE steps become request-plus-`sse: {}` steps that assert only the status. WebSocket steps, skipped steps, and steps that ended in `error` (guard refusals have no response) are skipped, and the output says why.
+- SSE steps become request-plus-`sse: {}` steps that assert only the status. WebSocket steps, skipped steps, and steps that ended in `error` (a guard refusal has no response, and a step that failed after its response is not turned into a baseline) are skipped, and the output says why.
 - A recorded request value (URL, query, header value, or body string) that contains a literal <code v-pre>{{</code> is refused (exit 2, naming the step and location). klaus has no escape syntax for <code v-pre>{{</code>, so such a value would be expanded as a template when the flow runs, and a value such as <code v-pre>{{env.SECRET}}</code> echoed by a hostile server would send an OS environment variable to the next request's destination. `--allow-template-literals` emits them anyway and lists each location in a warning (output, `notes`, and a comment at the top of the file). Placeholders and captures that `klaus promote` generates itself are not affected.
 - Masked shapes that cannot be reproduced: a `***` inside a query element without `=` (`?***`) becomes `TODO_QUERY_PARAM`; a masked body key, header name, or query parameter name is refused (exit 2) with its location.
 - A request body nested deeper than 100 levels is refused.

@@ -75,6 +75,8 @@ request:
 
 レスポンスは Content-Type が JSON なら自動でパースされ、JSONPath アサーション / キャプチャの対象になる。それ以外はテキストとして保持され `bodyText` アサーションの対象になる。`http.followRedirects` を指定しない限りリダイレクトは追わない([http](#http-http-クライアント設定)を参照)。
 
+**深さの上限:** 入れ子が 200 段を超える JSON のレスポンスはパースしない。マスクや結果の整形が構造を再帰的に辿るため、テキストのまま(文字列の `body`。記録された `response` には `bodyTooDeep: true`)保持する。そうしたレスポンスに対する JSONPath のキャプチャ・`body` の path アサーション・`bodySchema` は、`response body is nested deeper than 200 levels and is kept as text; JSONPath and schema checks cannot be applied` というメッセージで失敗する(キャプチャの失敗はステップを `error` にする)。本文全体のテキストに対する検査(`bodyText` アサーション・`regex` のキャプチャ)は引き続き使える。同じ上限は、`klaus req` の `--body`、`klaus_request` の body、`path` を使う SSE イベント・WebSocket メッセージの JSON にも適用される。
+
 `url` にすでに書かれたクエリ文字列は、書かれたままの文字列で保つ(再パース・再エンコードしないため、`&`・`+`・`=`・`/` を含む値も書いたとおりにサーバーへ届く)。追加するのは `query` の項目だけで、form-urlencoded でエンコードする。キーが `url` にすでにある項目は、最初の出現を置き換え、以降の同名を取り除く。
 
 ### form・multipart・bodyFile

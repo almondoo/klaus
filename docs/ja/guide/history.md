@@ -41,7 +41,7 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
   "assertions": [
     { "ok": true, "kind": "status", "expected": 200, "actual": 200, "message": "…" }
   ],
-  "error": "…",                 // status が "error" のときだけ(安全柵に拒否されたステップ): 拒否理由
+  "error": "…",                 // status が "error" のときだけ(安全柵の拒否、またはレスポンスを受け取った後に失敗したステップ): 理由
   "errorCode": "guard.allowed-hosts",  // 省略可、error があるときだけ: エラーコードを参照
   "env": "local",               // 省略可: 監査項目を参照
   "file": "api/auth-flow.yaml", // 省略可
@@ -59,7 +59,9 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
 | WebSocket | method は `"WS"`、body は送信メッセージ配列 | status は `101` 固定、body は受信メッセージ(data 文字列)の配列 | — |
 | skipped | 省略 | 省略 | — |
 
-**skipped ステップも記録される**(`status: "skipped"`、request/response なし、assertions は空)。runtime エラーになったステップは履歴には記録されない。ただし例外として、安全柵(`guard.allowedHosts` または `$protected`)に拒否されたステップは監査のために記録され、`status: "error"`、送信しようとしたリクエスト(マスク済み)、`error` に拒否理由、監査項目を持つ。
+**skipped ステップも記録される**(`status: "skipped"`、request/response なし、assertions は空)。`error` で終わったステップが記録されるのは次の 2 つの場合だけ。安全柵(`guard.allowedHosts` または `$protected`)に拒否されたステップは監査のために記録され、`status: "error"`、送信しようとしたリクエスト(マスク済み)、`error` に拒否理由、監査項目を持つ。**レスポンスを受け取った後に**失敗したステップ(`capture` の失敗、テキストのまま保持した本文への JSONPath の capture、レスポンスの検査中のエラー)は、`status: "error"`、リクエスト、レスポンス、`error` のメッセージを持つ形で記録される。レスポンスを受け取る前、または使えるレスポンスが無いままのエラーは記録されない。接続エラー、タイムアウト、本文の途中でのネットワークエラー、`http.maxResponseBytes` を超えるレスポンス、展開できないテンプレートがこれに当たる。
+
+入れ子が 200 段を超える JSON のレスポンスは、パースせずテキストのまま(文字列の `body`。記録された `response` には `bodyTooDeep: true`)保持する。そうしたレスポンスに対する JSONPath の capture・`body` の path アサーション・`bodySchema` は明示的なメッセージで失敗する。`bodyText` のアサーションと `regex` の capture は引き続き使える。
 
 **スナップショットの結果**は、`kind: "snapshot"` のアサーションと `snapshot` オブジェクトとして記録される。`snapshot` には `key`、`file`(スナップショットファイル)、`state`(`matched` / `written` / `updated` / `mismatch` / `missing`)が入り、不一致なら `differences`(最大 20 件)と `differenceCount` も入る。`mismatch` と `missing` の結果は、基準として書き込まれるはずだったマスク済みの `{ status?, headers?, body }` を `candidate` としても保持する。`klaus snapshot accept <runId>` はこの候補をそのまま書き込むので、変更を受け入れても API をもう一度呼ぶことはない([klaus snapshot](cli.md#klaus-snapshot))。候補は、エントリの他の部分と同じ秘密値のマスクを通した後の値から作られる。レスポンス全体のコピーなので、`klaus history`(一覧)は出力せず、`klaus history show <runId>` も `--step` を付けたときだけ含める。
 
@@ -83,7 +85,7 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
 
 - **リダイレクト**: リダイレクトの途中のホップが拒否されたときは、その拒否が持つより具体的なコードを残す(許可リスト外のホストへのホップは `guard.redirect` ではなく `guard.allowed-hosts`)。`guard.redirect` になるのは、拒否そのものがコードを持たない場合だけ
 - **現れる場所**: `errorCode` は、エラーメッセージが出る場所にそのメッセージと並んで付く。`klaus run --json` の `error` ステップ、`klaus req --json`、`klaus run --dry-run --json` で拒否されたステップの `guard.errorCode`、履歴エントリ、UI サーバーの応答。サマリーだけの出力には付けない
-- **履歴では**: `error` として記録されるのは安全柵の拒否だけなので、履歴ファイルに現れるのは `guard.*` のコードだけ。`response-too-large` は実行の出力と UI にだけ出る
+- **履歴では**: `error` として記録されるのは安全柵の拒否と、レスポンスを受け取った後に失敗したステップ。後者には通常 `errorCode` が付かない(capture の失敗には無い)ので、履歴ファイルに現れるコードは `guard.*` だけ。`response-too-large` は実行の出力と UI にだけ出る
 
 ## 監査項目
 
@@ -120,10 +122,10 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
 | `body` | レスポンス body が異なる |
 | `request` | リクエスト自体が異なる: `method`・`url`・`body`(ヘッダーは比較しない) |
 | `events` | SSE イベントが異なる |
-| `error` | 記録されたエラーメッセージ(安全柵の拒否)が異なる |
+| `error` | 記録されたエラーメッセージ(安全柵の拒否、またはレスポンスを受け取った後の失敗)が異なる |
 | `durationMs` | `--duration-threshold <ms>` 指定時のみ、所要時間の差がその値を超えた |
 
-リクエストの変更は `body` / `httpStatus` とは別に `request` に出るため、「リクエスト自体が変わった」と「レスポンスが変わった」を区別できる。片側に request / response が無い(skipped ステップや安全柵の拒否)場合、そのステップでは `status` と `httpStatus` だけを報告する。
+リクエストの変更は `body` / `httpStatus` とは別に `request` に出るため、「リクエスト自体が変わった」と「レスポンスが変わった」を区別できる。片側に request / response が無い(skipped ステップや安全柵の拒否)場合、そのステップでは `status` と `httpStatus` だけを報告する。レスポンスを受け取った `error` ステップは、他のステップと同じように比較する。
 
 JSON body は構造 diff になる: `{ path, kind, before, after }` のリストで、`path` は JSONPath 風(`$.items[0].name`)、`kind` は `added` / `removed` / `changed` / `type-changed` / `too-deep`。オブジェクトはキーで突き合わせ(キー順は無関係)、配列はインデックスごとに比較するため順序依存で、長さの違いは `added` / `removed` として現れる。JSON でない body は行単位の要約(追加・削除の行数と変更行)になる。
 
@@ -204,7 +206,7 @@ klaus promote <runId...> [-o <path> | --stdout] [--force] [--assert status|schem
 - ホップバイホップヘッダーと計算されるヘッダーは落とす: `content-length`、`host`、`connection`、`keep-alive`、`transfer-encoding`、`te`、`trailer`、`upgrade`、`proxy-connection`。
 - マスク値(`***`)は再現できない。URL・ヘッダー・body の文字列中の `***` はすべて <code v-pre>{{env.TODO_*}}</code> に置き換えるため、ファイルにリテラルの `***` は残らない。名前は場所から決まる: ヘッダー `Authorization` は `TODO_AUTHORIZATION`、body のパス `$.user.password` は `TODO_BODY_USER_PASSWORD`、クエリパラメータ `api_key` は `TODO_QUERY_API_KEY`、URL パスの3番目のセグメントは `TODO_URL_PATH_3`。同じ値の中の2つ目の `***` には `_2` が付く。同じ場所は全ステップで同じ名前になる。実行前に OS 環境変数として設定する。コマンドの出力に一覧が出る。
 - `--base-url-var <name>` はすべての URL の origin を <code v-pre>{{name}}</code> に置き換え(他の origin は `name_2`、`name_3` ...)、環境ファイルに書く値を表示する。既定では URL はリテラルのまま。
-- SSE ステップは、リクエストと `sse: {}` だけを持ち、status のみをアサートするステップになる。WebSocket ステップ・skipped ステップ・`error` で終わったステップ(安全柵の拒否にはレスポンスが無い)はスキップされ、出力に理由が示される。
+- SSE ステップは、リクエストと `sse: {}` だけを持ち、status のみをアサートするステップになる。WebSocket ステップ・skipped ステップ・`error` で終わったステップ(安全柵の拒否にはレスポンスが無く、レスポンスを受け取った後に失敗したステップは基準にしない)はスキップされ、出力に理由が示される。
 - リクエストの記録値(URL・クエリ・ヘッダー値・body の文字列)にリテラルの <code v-pre>{{</code> が含まれる場合は生成を拒否する(exit 2、ステップと場所を示す)。klaus には <code v-pre>{{</code> のエスケープ構文が無く、そのままだとフロー実行時にテンプレートとして展開されるため、敵対的なサーバーが返した <code v-pre>{{env.SECRET}}</code> のような値で OS 環境変数が次のリクエストの送信先へ漏れてしまう。`--allow-template-literals` を付けると出力し、各箇所を警告(出力・`notes`・ファイル先頭のコメント)に列挙する。`klaus promote` 自身が生成するプレースホルダーとキャプチャは対象外。
 - 再現できないマスクの形: `=` を持たないクエリ要素中の `***`(`?***`)は `TODO_QUERY_PARAM` になる。マスクされた body キー・ヘッダー名・クエリパラメータ名は、場所を示して拒否する(exit 2)。
 - 100 階層より深く入れ子になったリクエスト body は拒否する。

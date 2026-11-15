@@ -47,7 +47,7 @@ UI が使う API。すべて `X-Klaus-Token` ヘッダーが必要。
 | `guard.redirect` | リダイレクトのホップが、コードを持たない安全柵に拒否された(ホップ自身の拒否が上のコードを持つなら、そちらを残す) |
 | `response-too-large` | `http.maxResponseBytes` 超過(応答・SSE) |
 
-履歴に残るのは安全柵の拒否だけなので、`GET /api/history` に現れるのは `guard.*` のみ。値は公開契約として固定。`GET /api/history` のクエリには status の絞り込みを追加していない(CLI の `klaus history --status` だけ)。
+履歴に残るのは安全柵の拒否と、レスポンスを受け取った後に失敗したステップ(例: `capture` の失敗。`errorCode` は付かない)なので、`GET /api/history` に現れるのは `guard.*` のみ。レスポンスを受け取った後に失敗したステップは `status: "error"` で `request` と `response` の両方を持つ(入れ子が 200 段を超える JSON の本文は、`response` に `bodyTooDeep: true` が付いた文字列の `body`)。UI はその HTTP ステータスとエラーメッセージを表示する。値は公開契約として固定。`GET /api/history` のクエリには status の絞り込みを追加していない(CLI の `klaus history --status` だけ)。
 
 **クライアント切断時の挙動**: ブラウザを閉じる・リロードしても実行中のフローは**最後まで完走し、履歴も全ステップ分書き込まれる**。切断されるのは SSE 配信だけで、サーバーは後続リクエストに正常に応答し続ける。
 

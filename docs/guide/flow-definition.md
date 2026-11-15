@@ -75,6 +75,8 @@ request:
 
 If the Content-Type is JSON, the response is automatically parsed and becomes the target of JSONPath assertions / captures. Otherwise it's kept as text and becomes the target of `bodyText` assertions. Redirects are not followed unless `http.followRedirects` is set (see [http](#http-http-client-settings)).
 
+**Depth limit:** a JSON response nested deeper than 200 levels is not parsed. It is kept as text (a string `body`; the recorded `response` carries `bodyTooDeep: true`), because masking and result shaping walk the structure recursively. JSONPath captures, `body` path assertions, and `bodySchema` on such a response fail with the message `response body is nested deeper than 200 levels and is kept as text; JSONPath and schema checks cannot be applied` (a capture failure makes the step `error`). Checks on the whole text (`bodyText` assertions, `regex` captures) still work. The same limit applies to a `--body` of `klaus req`, a `klaus_request` body, and the JSON in an SSE event or WebSocket message used with a `path`.
+
 The query string already written in `url` is kept byte for byte (it is not re-parsed or re-encoded, so a value containing `&`, `+`, `=`, or `/` reaches the server as written). Only the `query` entries are added, form-urlencoded; an entry whose key already appears in `url` replaces the first occurrence and drops later ones.
 
 ### form, multipart, and bodyFile

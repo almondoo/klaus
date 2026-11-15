@@ -47,7 +47,7 @@ A step result with `status: "error"` carries a free-text English `error` and, wh
 | `guard.redirect` | A redirect hop was refused by a guard with no code of its own (if the hop's own refusal has one of the codes above, that one is kept) |
 | `response-too-large` | `http.maxResponseBytes` exceeded (response or SSE) |
 
-Only guard refusals are recorded in history, so only `guard.*` codes appear in `GET /api/history`. The values are a fixed public contract. The `GET /api/history` query has no status filter (only the CLI's `klaus history --status` does).
+History records guard refusals and steps that failed after receiving a response (a failed capture, for example, which has no `errorCode`), so only `guard.*` codes appear in `GET /api/history`. A step that failed after a response has `status: "error"` with `request` and `response` both present (a JSON body nested deeper than 200 levels is a string `body` with `bodyTooDeep: true` on the response); the UI shows its HTTP status and the error message. The values are a fixed public contract. The `GET /api/history` query has no status filter (only the CLI's `klaus history --status` does).
 
 **Behavior on client disconnect**: closing or reloading the browser does **not** stop the in-flight flow — it runs to completion and the full history is written for every step. Only the SSE delivery is cut off; the server keeps responding normally to subsequent requests.
 
