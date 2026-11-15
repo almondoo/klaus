@@ -49,7 +49,7 @@ UI が使う API。すべて `X-Klaus-Token` ヘッダーが必要。
 
 履歴に残るのは安全柵の拒否と、レスポンスを受け取った後に失敗したステップ(例: `capture` の失敗。`errorCode` は付かない)なので、`GET /api/history` に現れるのは `guard.*` のみ。レスポンスを受け取った後に失敗したステップは `status: "error"` で `request` と `response` の両方を持つ(入れ子が 200 段を超える JSON の本文は、`response` に `bodyTooDeep: true` が付いた文字列の `body`)。UI はその HTTP ステータスとエラーメッセージを表示する。値は公開契約として固定。`GET /api/history` のクエリには status の絞り込みを追加していない(CLI の `klaus history --status` だけ)。
 
-`GET /api/history` の `entries[]` は、保護された環境($protected: true / readonly)を読み込んで書かれたエントリに省略可能な `envProtection: "protected" | "readonly"` を持つ(環境を名前で選んだ場合も `--env-file` の場合も、どの入口で書かれたものでも、安全柵の拒否のエントリにも付く。保護されていない環境・環境なし・このフィールドが導入される前のエントリには無い)。UI は未知のこのフィールドがあっても動作に影響しない(表示には使わない)。`klaus mcp` はこれを見て、`klaus_promote` を拒否し、履歴を読むツールの出力を絞る。
+`GET /api/history` の `entries[]` は、保護された環境($protected: true / readonly)を読み込んで書かれたエントリに省略可能な `envProtection: "protected" | "readonly"` を持つ(環境を名前で選んだ場合も `--env-file` の場合も、どの入口で書かれたものでも、安全柵の拒否のエントリにも付く。保護されていない環境・環境なし・このフィールドが導入される前のエントリには無い)。あわせて、環境を `--env-file` から読み込んだエントリには `envSource: "file"` が付く(名前付き環境・旧エントリには無い)。UI は未知のこれらのフィールドがあっても動作に影響しない(表示には使わない)。`klaus mcp` はこれを見て、`klaus_promote` を拒否し、履歴を読むツールの出力を絞る。
 
 **クライアント切断時の挙動**: ブラウザを閉じる・リロードしても実行中のフローは**最後まで完走し、履歴も全ステップ分書き込まれる**。切断されるのは SSE 配信だけで、サーバーは後続リクエストに正常に応答し続ける。
 

@@ -45,6 +45,7 @@ One line = one step execution. `runId` lets you group steps from the same run.
   "errorCode": "guard.allowed-hosts",  // optional, only with error: see Error Codes
   "env": "local",               // optional: see Audit Fields
   "envProtection": "protected", // optional: only for a protected environment, see Audit Fields
+  "envSource": "file",          // optional: only when the environment came from --env-file, see Audit Fields
   "file": "api/auth-flow.yaml", // optional
   "actor": { "kind": "agent", "name": "claude-code" },  // optional
   "git": { "commit": "<sha>", "dirty": false }          // optional
@@ -90,17 +91,18 @@ A step that ends as `error` carries a free-text `error` message in English. When
 
 ## Audit Fields
 
-Five optional fields record where a run came from. They are additive, so `v` stays 1, and entries written before they existed simply lack them.
+Six optional fields record where a run came from. They are additive, so `v` stays 1, and entries written before they existed simply lack them.
 
 | Field | Content |
 |---|---|
 | `env` | Environment name. With `--env-file`, the file's basename. Omitted when no environment is used |
 | `envProtection` | `"protected"` (`$protected: true`) or `"readonly"` (`$protected: readonly`). Set on every entry written while a protected environment was loaded, whether chosen by name or with `--env-file`, from every entry point (CLI, `klaus ui`, `klaus mcp`) and including guard-refusal entries. Absent for unprotected environments, runs without an environment, and entries written before the field existed. `klaus mcp` uses it: `klaus_promote` refuses such runs, and the history tools withhold the request and response of such entries when the environment's values cannot be obtained for masking (see [MCP Server](/guide/mcp)) |
+| `envSource` | `"file"` when the environment was loaded from an `--env-file` path (all entry points); absent for environments chosen by name. `env` then holds only the file's basename, so a file without an extension (`secrets/ro`) looks like the named environment `ro`; this field keeps the two apart. `--env-file environments/ro.yaml` also counts as a file (`env` is `ro.yaml`). `klaus mcp` never resolves such an entry by name |
 | `file` | Flow file path relative to the working directory (POSIX separators). Omitted for single requests |
 | `actor` | `{ kind, name? }`. `kind` is `human`, `agent`, or `ci`, detected from the environment: the agent markers `CLAUDECODE` / `AI_AGENT` first, then `CI`, otherwise `human`. `klaus run --actor <name>` / `klaus req --actor <name>` sets `name` (the `kind` is still detected). Runs from `klaus ui` record `human` |
 | `git` | `{ commit, dirty }`: `HEAD` at run time, and whether tracked files have uncommitted changes (untracked files are ignored). Omitted when git is unavailable |
 
-View them with `klaus history --fields env,envProtection,file,actor,git` or `klaus history show <runId>`.
+View them with `klaus history --fields env,envProtection,envSource,file,actor,git` or `klaus history show <runId>`.
 
 ## Comparing Runs
 
