@@ -71,7 +71,7 @@ interface RunFlowOptions {
 
 ## ビルド
 
-- **tsup で3エントリ**: `dist/index.js`(ライブラリ、d.ts 付き)/ `dist/cli.js`(shebang 付き bin)/ `dist/server.js`(`klaus ui` 時に dynamic import される)
+- **tsup で5エントリ**: `dist/index.js`(ライブラリ、d.ts 付き)/ `dist/cli.js`(shebang 付き bin)/ `dist/server.js`(`klaus ui` 時に dynamic import される)/ `dist/openapi-worker.js`(OpenAPI のスキーマ検証をワーカースレッドで行う。`files` に含める)/ `dist/schema-gen.js`(スキーマ JSON 生成用のビルド時専用。`files` には含めない)
 - **ui は Vite** で `dist/ui/` に出力(`ui/vite.config.ts` の outDir)
 - `pnpm build:all` = `pnpm clean` → `pnpm build`(tsup)→ `pnpm build:ui`(Vite)
 - **clean の役割分担**: tsup 側は `clean: false` にしてある。tsup の clean は outDir 全体を消すため、有効にすると Vite が出力した `dist/ui` まで巻き添えで消え、`pnpm build` / `pnpm test` の後に `klaus ui` が 503 になるからである。その代わり、エントリを削除・リネームした際に古い成果物が `dist/` に残り `files: ["dist"]` 経由で publish に同梱される危険があるため、**リリース用のフルビルド `build:all` では `scripts/clean.mjs` で `dist/` を空にしてから**ビルドし直す。開発時の `pnpm build` 単体は clean せず、`dist/ui` を保持する
@@ -81,7 +81,7 @@ interface RunFlowOptions {
 
 「テストは過不足なく」(仕様のふるまい単位でカバーし、実装詳細への張り付き・重複・水増しをしない)が方針。
 
-**root(vitest、tests/、33ファイル468件)**
+**root(vitest、tests/、67ファイル1469件)**
 
 | 種類 | 対象 |
 |---|---|
@@ -91,7 +91,7 @@ interface RunFlowOptions {
 | CLI 統合 | ビルド済み `dist/cli.js` を spawn し、exit code 0/1/2/3/4・JSON 出力・JUnit 生成を検証 |
 | server 統合 | 認証(401/403)・path traversal・SSE イベント列・履歴ページング・クライアント切断時の完走 |
 
-**ui(vitest + jsdom、4ファイル22件)**: SSE ストリームパーサー / API クライアントのトークン付与 / 履歴グルーピングの純関数
+**ui(vitest + jsdom、16ファイル97件)**: SSE ストリームパーサー / API クライアントのトークン付与 / フック / 履歴グルーピングなどのロジック層
 
 ## 開発コマンド
 

@@ -60,7 +60,7 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
 - \`klaus validate [files...]\`: schema-validate flow YAML without executing (with no arguments, discovers and validates all flows; errors carry a fix-example hint)
 - \`klaus schema\`: print the flow YAML's JSON Schema to stdout (useful for editor completion and improving flow generation accuracy)
 - \`klaus history\`: list execution history (\`--flow <name>\` / \`--failed\` / \`--last <n>\` / \`--fields <csv>\`; the default output is a summary without bodies)
-- \`klaus history show <runId> [--step <name>]\`: fetch the full (masked) history entries as JSON
+- \`klaus history show <runId> [--step <name>]\`: fetch the (masked) history entries as JSON (a snapshot assertion's \`candidate\` response copy is included only with \`--step\`)
 - \`klaus promote <runId...>\`: turn recorded history into a re-runnable flow YAML with inferred assertions (\`--assert status|schema|values|all\`; never overwrites an existing file without \`--force\`); masked values become \`{{env.TODO_*}}\` placeholders to set before running
 - \`klaus diff [<runA> <runB>]\`: compare two recorded runs per step (\`latest\` / \`previous\` need \`--flow <name>\`; \`--ignore-path <jsonpath>\` hides volatile fields); exit 0 when identical, 4 when they differ, 2 for an unknown run
 - \`klaus snapshot list [runId]\` / \`klaus snapshot accept <runId> [--step <name>]\`: review the \`assert.snapshot\` mismatches recorded for a run, and write them as the new baseline from the masked responses in history (only \`__snapshots__\` files are written; review the git diff afterwards). \`accept\` exits 1 when there is nothing pending
@@ -76,10 +76,17 @@ Non-TTY output (pipes, CI, agent execution, etc.) is automatically JSON. Result 
 
 - flow: \`name\` (required) / \`env\` (optional, overridable with --env) / \`steps\` (one or more, name must be unique within the flow)
 - step: alongside \`name\`, exactly one of \`request\`, \`ws\`, or \`use\` is required (mutually exclusive). \`capture\` / \`assert\` / \`sse\` / \`if\` / \`retry\` / \`continueOnError\` are optional
-- request: \`method\` (omittable only when \`graphql\` is set, defaults to POST) / \`url\` / \`headers\` / \`query\` (key-value, merged into the URL's query string; \`query\` wins on key collision) / \`body\` (mutually exclusive with \`graphql\`) / \`timeoutMs\` (defaults to 30000ms)
+- request: \`method\` (omittable only when \`graphql\` is set, defaults to POST) / \`url\` / \`headers\` / \`query\` (key-value, merged into the URL's query string; \`query\` wins on key collision) / \`body\`, \`graphql\`, \`form\`, \`multipart\`, \`bodyFile\` (at most one of them) / \`auth\` (\`basic\` / \`bearer\` / \`oauth2\`) / \`timeoutMs\` (defaults to 30000ms). A top-level \`http:\` sets \`followRedirects\` / \`cookies\`; proxy and TLS live only in \`klaus.config.yaml\`
 - capture: extract variables from the response body via JSONPath (e.g. \`{ token: "$.data.token" }\`)
 - \`assert.snapshot\` (\`true\` or \`{ ignore, include, headers, name }\`): compare the masked response with a baseline stored in \`__snapshots__/<flow file>.snap.json\` next to the flow file. A changed response fails the step with a structural diff (exit 4); a missing baseline is recorded on the first local run but fails in CI. List volatile fields (ids, timestamps) in \`ignore\` (JSONPath such as \`$.items[*].id\`) so the baseline does not churn. Baselines are committed files: they hold response bodies with only declared secrets masked, so review them before committing
 - \`{{var}}\` resolution order: (1) the step's capture variables, then (2) values from environments. \`{{env.X}}\` references OS environment variable X (a runtime error if undefined)
+
+## Recommended workflow
+
+1. Explore with \`klaus req\` (secrets as \`{{env.X}}\`), then \`klaus promote <runId...>\` to turn the recorded evidence into a flow; review its inferred assertions and \`TODO_*\` placeholders.
+2. \`klaus validate\`, then \`klaus run\` it. Add \`assert.snapshot\` for responses that must not change and \`--openapi <spec>\` to check responses against the API's OpenAPI document.
+3. After a change, run again and review with \`klaus diff --flow <name>\` / \`klaus snapshot list\`; accept a snapshot change only when it is intended.
+4. A refusal by \`guard.allowedHosts\` or \`$protected\` (exit 3) is a decision for the user: do not edit the guard settings or the \`$protected\` marker, pass \`--allow-protected\`, or fall back to \`curl\` to get past it. Use \`klaus run --dry-run\` to check beforehand.
 
 ## Assert operating guidance
 
@@ -101,11 +108,11 @@ Non-TTY output (pipes, CI, agent execution, etc.) is automatically JSON. Result 
 |---|---|
 | 0 | all passed |
 | 1 | general error (invalid CLI arguments, unexpected exception) |
-| 2 | definition file parse error |
-| 3 | runtime error (connection failure, timeout, capture failure, etc.) |
+| 2 | definition file parse error (also an unreadable \`--openapi\` document) |
+| 3 | runtime error (connection failure, timeout, capture failure, a step refused by \`$protected\` or \`guard.allowedHosts\`, etc.) |
 | 4 | assertion failure |
 
-Decision rule: all files are parse-validated before execution; if even one fails, exit 2 (nothing is run). After execution, exit 3 if any flow has a runtime error (status "error"), otherwise exit 4 if there's an assertion failure (status "failed"), otherwise exit 0 for all passed (when both 3 and 4 apply, 3 takes priority). The exit code alone identifies where to look: 2 means fix the definition, 3 means check whether the target API is up, and 4 means compare the assertion against the response.
+Decision rule: all files are parse-validated before execution; if even one fails, exit 2 (nothing is run). After execution, exit 3 if any flow has a runtime error (status "error"), otherwise exit 4 if there's an assertion failure (status "failed"), otherwise exit 0 for all passed (when both 3 and 4 apply, 3 takes priority). With \`--openapi\`, a response that violates the document is an assertion failure (4) and an unreadable document is a definition error (2). The exit code alone identifies where to look: 2 means fix the definition, 3 means check whether the target API is up, and 4 means compare the assertion against the response.
 
 ## History
 

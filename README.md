@@ -22,6 +22,8 @@ Documentation site: https://almondoo.github.io/klaus/
 - **Record, diff, promote, mock**: `klaus diff` compares two recorded runs, `klaus promote` turns recorded runs into a re-runnable flow with inferred assertions, and `klaus mock` serves a recorded cassette as a local mock server
 - **Snapshots**: `assert.snapshot` compares a response with a baseline file (secrets masked, volatile fields ignorable). A changed response fails with a structural diff, and accepting it is explicit (`klaus run -u`, `klaus snapshot accept`); in CI a missing baseline fails instead of being recorded
 - **OpenAPI validation**: `klaus run --openapi spec.yaml` checks every response against an OpenAPI 3.0/3.1 document (status, content type, required headers, body schema) and reports which operations the run covered; `--openapi-coverage-min` makes low coverage fail the run
+- **HTTP client and request bodies**: redirects, an in-memory cookie jar, `basic` / `bearer` / `oauth2` auth helpers, `form` / `multipart` / `bodyFile` bodies, and config-only proxy / TLS settings (`http` in `klaus.config.yaml`; every redirect hop is re-checked against the guards). Runs can be parallelised with `--jobs` and data-driven with `--data`
+- **Review in the UI**: the history viewer compares two runs, saves a recorded run as a new flow (new files only), shows snapshot and OpenAPI verdicts, and accepts snapshot changes
 - **Reports**: `--report` writes `junit`, `tap`, `html` (a single self-contained file), and `github` (a job summary with annotations for GitHub Actions)
 - **Local-first**: Execution history is appended to `.klaus/history/*.jsonl`. No cloud sync or account mechanism
 
@@ -114,7 +116,7 @@ See the [CLI reference](https://almondoo.github.io/klaus/guide/cli) for the full
 | 0 | All succeeded |
 | 1 | General error (unexpected failure) |
 | 2 | Definition file parse error |
-| 3 | Runtime error (connection failure, timeout, etc.) |
+| 3 | Runtime error (connection failure, timeout, a step refused by a guardrail, etc.) |
 | 4 | Assertion failure |
 
 ## Documentation

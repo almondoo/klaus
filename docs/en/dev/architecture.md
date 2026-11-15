@@ -71,7 +71,7 @@ interface RunFlowOptions {
 
 ## Build
 
-- **tsup with 3 entries**: `dist/index.js` (the library, with a d.ts) / `dist/cli.js` (a bin with a shebang) / `dist/server.js` (dynamically imported on `klaus ui`)
+- **tsup with 5 entries**: `dist/index.js` (the library, with a d.ts) / `dist/cli.js` (a bin with a shebang) / `dist/server.js` (dynamically imported on `klaus ui`) / `dist/openapi-worker.js` (runs OpenAPI schema validation in a worker thread; listed in `files`) / `dist/schema-gen.js` (build-time only, generates the schema JSON; not in `files`)
 - **ui uses Vite**, outputting to `dist/ui/` (the outDir in `ui/vite.config.ts`)
 - `pnpm build:all` = `pnpm clean` → `pnpm build` (tsup) → `pnpm build:ui` (Vite)
 - **Division of responsibility for clean**: tsup's own `clean` is set to `false`. tsup's clean wipes the entire outDir, and turning it on would take out Vite's `dist/ui` output along with it, leaving `klaus ui` returning 503 after `pnpm build` / `pnpm test`. The tradeoff is that when entries are removed or renamed, stale artifacts can linger in `dist/` and get bundled into the publish via `files: ["dist"]`. So **the full release build `build:all` empties `dist/` via `scripts/clean.mjs`** before rebuilding. A plain `pnpm build` during development does not clean and preserves `dist/ui`
@@ -81,7 +81,7 @@ interface RunFlowOptions {
 
 The policy is "tests neither too many nor too few" (cover behavior at the spec level; don't glue tests to implementation details, and don't duplicate or pad).
 
-**root (vitest, tests/, 33 files, 468 tests)**
+**root (vitest, tests/, 67 files, 1469 tests)**
 
 | Kind | Target |
 |---|---|
@@ -91,7 +91,7 @@ The policy is "tests neither too many nor too few" (cover behavior at the spec l
 | CLI integration | Spawns the built `dist/cli.js` and verifies exit codes 0/1/2/3/4, JSON output, and JUnit generation |
 | server integration | Auth (401/403), path traversal, SSE event sequence, history pagination, completion on client disconnect |
 
-**ui (vitest + jsdom, 4 files, 22 tests)**: pure functions for the SSE stream parser / API client token attachment / history grouping
+**ui (vitest + jsdom, 16 files, 97 tests)**: the logic layer: the SSE stream parser / API client token attachment / hooks / history grouping and other utilities
 
 ## Development commands
 

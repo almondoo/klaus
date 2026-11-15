@@ -5,9 +5,35 @@ The current spec lives in the respective references ([CLI](../../guide/cli.md) /
 
 0.2.0 through 0.14.4 were reconstructed after the fact from the git history (taking the `chore: vX.Y.Z` version-bump commits as boundaries: everything between the previous bump and a given bump belongs to that version). Only user-visible changes (feat / fix) are summarized, briefly; internal refactors, tests, and dependency-update details are left out.
 
+From 0.15.0 on, each release was written by checking its commit range with `git log` (everything from one bump commit up to the next belongs to the later version). The exception is 0.23.0 through 0.25.0: their bump commits landed before the feature commits (`99d8002` mock, `0a35c3e` reports, `fac3194` diff / promote), so versions are assigned by content: 0.23.0 = `klaus mock`, 0.24.0 = HTML / GitHub reports, 0.25.0 = `klaus diff` / `klaus promote`.
+
+## 0.29.0
+
+Tidied masking and a few UI / CLI details (fixes from the final review, plus documentation consistency).
+
+- **Behaviour change: the value of a `Cookie` header is always `***` in output, even when no secret is registered.** This covers the stdout (JSON and text) of `klaus run` / `klaus req` / `--dry-run` and `--report html` / `--report github`, so a `Cookie` header written in a flow or passed with `klaus req -H` is masked too. Previously a run with no registered secret skipped output masking altogether. `--no-mask` means what it did (only stdout stays raw; history and report files are always masked). The text output of `klaus run` also masks the step result before formatting it
+- **Behaviour change: `klaus history` (the list) no longer prints a snapshot's `candidate`** (the masked copy of the whole response), not even with `--fields assertions`. `klaus history show <runId>` also omits it when printing the whole run, and includes it only when narrowed to one step with `--step`. This keeps large responses out of list and whole-run output, where they would flood an agent's context
+- The guidance at the end of a protected-environment refusal is now chosen by core through `RunFlowOptions.entryPoint` (`"cli"` / `"ui"` / `"library"`; unset behaves as `"cli"`). A run started from the UI gets the UI wording (the UI cannot pass `--allow-protected`), and **history records the wording the user actually saw**. Before, the server only replaced the string it delivered, so history disagreed with the screen. The replacement module (`src/server/protection-hint.ts`) is gone
+- Documentation: the CLI reference's command count and a `klaus snapshot` mention, the README, the AGENTS.md template, and the agent skill now match the final behaviour. Statements that implementation overturned in the requirements, architecture, and improvement-proposal documents (leave HTTP concerns to undici, no mock server planned, no flow editing in the UI, parallel execution deferred) were corrected. A results section was added to the implementation plan
+
+## 0.28.2
+
+Handling of snapshots that cannot be approved in the UI, plus fixes from an adversarial review of the HTTP layer.
+
+- UI: the snapshot of a step whose other assertions failed cannot be approved, and the reason is shown (the accept API answers 409). `POST /api/runs` always closes the OpenAPI validation worker when it finishes
+- **Behaviour change: on a cross-origin redirect, only `accept*` headers and `user-agent` (plus `content-type*` when the body is kept) are forwarded.** Every other user-set header is dropped regardless of its value (before, only credentials and headers carrying a secret value were dropped). The names of the dropped headers stay in `droppedHeaders` on the result and in history. A `Location` with userinfo is refused and its fragment is dropped
+- **Behaviour change: cookies are scoped by port as well as host** (a cookie for `localhost:3000` is not sent to `localhost:4000`). The `Domain` attribute is still stored as host-only and never shared across subdomains
+- A cookie value and a proxy user name are no longer registered as substring secrets. Instead the values of `Cookie` / `Set-Cookie` headers are replaced with `***` by position (so a short cookie value cannot corrupt other strings in the output). History, cassettes, and output all go through the same function
+- With `guard.allowedHosts` or a proxy configured, a `Host` header that differs from the URL is refused; with a proxy configured, hop-by-hop headers are refused too (so a request cannot reach a virtual host outside the allow-list)
+- File inputs (`bodyFile`, multipart `file`, `--body @file`) are read through a descriptor opened with `O_NOFOLLOW` and then verified, and have a size limit. Response bodies and SSE streams have a limit too (`http.maxResponseBytes`, 100 MiB by default); a step that exceeds it ends as `error`
+- OAuth2 `token_type` and `access_token` are refused if they contain control characters. Comparison matchers on headers (`gt` and so on) treat only decimal notation as a number
+
 ## 0.28.1
 
-Hardened snapshots and OpenAPI validation (a response to an adversarial review).
+Hardened snapshots and OpenAPI validation (a response to an adversarial review). Also added snapshot approval and the new run results to the UI.
+
+- UI: snapshot approval (`GET /api/snapshots/mismatches` / `POST /api/snapshots/accept`; runs against a protected environment are refused), and the snapshot and OpenAPI verdicts, warnings, and redirect routes shown in the runner and in history. `run.openapi` from `klaus.config.yaml` also applies to runs started from the UI. `GET /api/history` omits the candidate used for approval (`candidate`), and the accept API refuses paths containing a backslash
+- **Behaviour change: where the UI's "Save as flow" may write is an allow-list.** Only under `api/` and `flows/`, or in a directory that already contains flows (case and Unicode differences cannot be used to get around it). Anything else is refused
 
 - Snapshots: the OpenAPI check now runs first, and a response that failed it is never recorded as a baseline. If another assertion of the same step failed, neither `-u` nor `klaus snapshot accept` (new failure kind `failed-step`) records it. The `snapshot list --json` items gain `otherAssertionsFailed`. A history candidate is validated with the same shape as a baseline entry (`corrupt`), and a baseline or response nested deeper than 200 levels no longer crashes: exit 2 for a baseline, a failed snapshot assertion for a response
 - Unambiguous keys: the name of a step with `assert.snapshot` cannot contain ` :: ` or end with ` #<number>` (a definition error, exit 2). Duplicate keys are also a definition error
@@ -40,6 +66,7 @@ Added snapshot assertions (`assert.snapshot`): a response is stored as a baselin
 - Decisions: (1) baselines are written once at the end of the run, because `--jobs` and `--data` iterations touch the same file, and this avoids races and half-written files. (2) `--replay` compares but never writes (a replayed response is not what the real API returns now). (3) Implicit new baselines are refused when the run targets a protected (`$protected`) environment without `-u`, so production data does not end up in a committed file. (4) A response whose step failed other assertions is not made a baseline implicitly. (5) Obsolete entries are judged only when every step of the flow ran, so a run that stopped on a failure cannot delete baselines. (6) A corrupt snapshot file exits 2 before anything runs and its content is never printed (even if a hostile link points at an unrelated file)
 - Writes are confined to a `__snapshots__` directory inside the cwd, with `findUnsafeSymlinkInWritePath` and O_NOFOLLOW, never through a symbolic link (the same policy as `klaus promote`); a temporary file is written and renamed
 - History keeps a (masked) candidate on each snapshot assertion that needs approval. Core `listSnapshotMismatches` / `acceptSnapshot` and the CLI `klaus snapshot list|accept` write that candidate as the baseline without calling the API again. Approving from the UI is a later change that calls these functions
+- Added run comparison to the UI (`GET /api/history/diff` and a compare panel in the history tab, with ignore paths) and "Save as flow" (`POST /api/history/promote`; new files only, never overwrites). `http` from `klaus.config.yaml` also applies to runs started from the UI
 - The JSON output gains a top-level `snapshots` (totals and the files written), and snapshot assertions carry `state` / `snapshotKey` / `snapshotFile` / `differences` / `differenceCount`. The candidate used for approval is not in the JSON output (it is a copy of the whole response)
 
 ## 0.26.0
@@ -48,6 +75,7 @@ Follow-ups to the run report (HTTP client).
 
 - A step's `redirects` and `droppedHeaders` are now in the JSON output too (for any status, only on steps that have them). Text output shows them in the detail lines of `FAIL` / `ERROR`, and the HTML report shows them in the step detail (passed steps get a collapsed section)
 - Added a top-level `warnings` to the JSON output (only when there is at least one). The `tls.insecure` warning used to appear only on stderr, so a CI that captures just the JSON on stdout never saw it. The stderr output is unchanged; text prints a `warning:` line before the summary, HTML shows a warnings box, and the GitHub summary shows a quote line. Warnings are de-duplicated across the whole run
+- Added `Host` header validation to `klaus mock` (DNS-rebinding protection). When listening on loopback it accepts only `127.0.0.1` / `localhost` / `[::1]` paired with the listening port, and `--allow-host` permits extra host names
 - The flow schema note printed by `klaus schema` described the request-body exclusivity as `body` / `graphql` only; it now also lists `form` / `multipart` / `bodyFile` (an omission from when 0.21.0 widened the exclusivity)
 
 ## 0.25.0

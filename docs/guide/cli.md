@@ -1,6 +1,6 @@
 # CLI Reference
 
-klaus has eleven commands: `run` (executes flows), `req` (sends a single ad-hoc request), `ui` (launches the localhost web UI), `validate` (schema-validates flows), `schema` (prints a JSON Schema), `generate` (generates flows from an OpenAPI spec; see [Generating Flows from OpenAPI](./generate.md)), `init` (scaffolds a starting point), `history` (inspects execution history), `diff` (compares two recorded runs), `promote` (turns recorded runs into a flow), and `mock` (serves a recorded cassette as a local mock server).
+klaus has twelve commands: `run` (executes flows), `req` (sends a single ad-hoc request), `ui` (launches the localhost web UI), `validate` (schema-validates flows), `schema` (prints a JSON Schema), `generate` (generates flows from an OpenAPI spec; see [Generating Flows from OpenAPI](./generate.md)), `init` (scaffolds a starting point), `history` (inspects execution history), `diff` (compares two recorded runs), `promote` (turns recorded runs into a flow), `mock` (serves a recorded cassette as a local mock server), and `snapshot` (reviews and accepts `assert.snapshot` results).
 
 ## --help
 

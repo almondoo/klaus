@@ -1,6 +1,6 @@
 # CLI リファレンス
 
-klaus のコマンドは `run`(フロー実行)・`req`(単発リクエストの送信)・`ui`(localhost Web UI 起動)・`validate`(スキーマ検証)・`schema`(JSON Schema 出力)・`generate`(OpenAPI 仕様からのフロー生成。[OpenAPI からのフロー生成](./generate.md)を参照)・`init`(雛形生成)・`history`(実行履歴の参照)・`diff`(2つの run の比較)・`promote`(履歴からのフロー生成)・`mock`(記録済みカセットのモックサーバー化)の11個。
+klaus のコマンドは `run`(フロー実行)・`req`(単発リクエストの送信)・`ui`(localhost Web UI 起動)・`validate`(スキーマ検証)・`schema`(JSON Schema 出力)・`generate`(OpenAPI 仕様からのフロー生成。[OpenAPI からのフロー生成](./generate.md)を参照)・`init`(雛形生成)・`history`(実行履歴の参照)・`diff`(2つの run の比較)・`promote`(履歴からのフロー生成)・`mock`(記録済みカセットのモックサーバー化)・`snapshot`(`assert.snapshot` の結果の確認と承認)の12個。
 
 ## --help
 
