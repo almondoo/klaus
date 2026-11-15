@@ -59,7 +59,7 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
   - Exit 0 whenever a response arrives (any HTTP status; there are no assertions), 3 on a send error or a guard refusal, 2 on invalid input. There is no \`--allow-protected\`
 - \`klaus validate [files...]\`: schema-validate flow YAML without executing (with no arguments, discovers and validates all flows; errors carry a fix-example hint)
 - \`klaus schema\`: print the flow YAML's JSON Schema to stdout (useful for editor completion and improving flow generation accuracy)
-- \`klaus history\`: list execution history (\`--flow <name>\` / \`--failed\` / \`--last <n>\` / \`--fields <csv>\`; the default output is a summary without bodies)
+- \`klaus history\`: list execution history (\`--flow <name>\` / \`--failed\` (assertion failures only) / \`--status <passed|failed|skipped|error,...>\` (e.g. \`error\` for guard refusals; not with \`--failed\`) / \`--last <n>\` / \`--fields <csv>\`; the default output is a summary without bodies)
 - \`klaus history show <runId> [--step <name>]\`: fetch the (masked) history entries as JSON (a snapshot assertion's \`candidate\` response copy is included only with \`--step\`)
 - \`klaus promote <runId...>\`: turn recorded history into a re-runnable flow YAML with inferred assertions (\`--assert status|schema|values|all\`; never overwrites an existing file without \`--force\`); masked values become \`{{env.TODO_*}}\` placeholders to set before running
 - \`klaus diff [<runA> <runB>]\`: compare two recorded runs per step (\`latest\` / \`previous\` need \`--flow <name>\`; \`--ignore-path <jsonpath>\` hides volatile fields); exit 0 when identical, 4 when they differ, 2 for an unknown run

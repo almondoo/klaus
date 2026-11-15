@@ -31,6 +31,24 @@ UI が使う API。すべて `X-Klaus-Token` ヘッダーが必要。
 | `step-result` | `{ flow, file, result: StepResult }` | ステップ完了時(skipped 含む) |
 | `run-result` | `{ flow: FlowResult, warnings?, openapi? }` | フロー完了時(最後に1回)。`warnings` は結果に影響しない警告、`openapi` はサーバーに `run.openapi` を設定したときのカバレッジ集計 |
 
+### StepResult の errorCode
+
+`status: "error"` のステップ結果は、自由文の `error`(英語)に加えて、原因が下記のものなら安定した `errorCode?: string` を持つ。`step-result` の `result`・`run-result` の `flow.steps[]`・`POST /api/request` の `result`・`GET /api/history` の `entries[]` にそのまま載る(UI はこれで日本語の説明を出し、元の `error` は詳細として残す)。コードを持たないエラーでは省略する(包括的なコードは無い)。
+
+| `errorCode` | 原因 |
+|---|---|
+| `guard.allowed-hosts` | 送信先ホストが `guard.allowedHosts` に無い |
+| `guard.protected` | 環境の `$protected: true` による拒否 |
+| `guard.readonly` | `$protected: readonly` で読み取り系以外のメソッドを拒否 |
+| `guard.method-override` | `$protected: readonly` でメソッド上書きヘッダーを拒否 |
+| `guard.host-header` | Host ヘッダーが URL と違う、または不正 |
+| `guard.proxy-header` | proxy 利用時のホップ間ヘッダー等の禁止ヘッダー |
+| `guard.path` | cwd の外のファイル(送信ファイル・スナップショット)の参照 |
+| `guard.redirect` | リダイレクトのホップが、コードを持たない安全柵に拒否された(ホップ自身の拒否が上のコードを持つなら、そちらを残す) |
+| `response-too-large` | `http.maxResponseBytes` 超過(応答・SSE) |
+
+履歴に残るのは安全柵の拒否だけなので、`GET /api/history` に現れるのは `guard.*` のみ。値は公開契約として固定。`GET /api/history` のクエリには status の絞り込みを追加していない(CLI の `klaus history --status` だけ)。
+
 **クライアント切断時の挙動**: ブラウザを閉じる・リロードしても実行中のフローは**最後まで完走し、履歴も全ステップ分書き込まれる**。切断されるのは SSE 配信だけで、サーバーは後続リクエストに正常に応答し続ける。
 
 ## アーキテクチャ上の位置づけ

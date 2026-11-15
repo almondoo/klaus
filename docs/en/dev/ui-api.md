@@ -31,6 +31,24 @@ The API used by the UI. All endpoints require an `X-Klaus-Token` header.
 | `step-result` | `{ flow, file, result: StepResult }` | When a step completes (including skipped) |
 | `run-result` | `{ flow: FlowResult, warnings?, openapi? }` | When the flow completes (once, at the end). `warnings` are notices that do not change the result; `openapi` is the coverage summary when the server has `run.openapi` |
 
+### errorCode on StepResult
+
+A step result with `status: "error"` carries a free-text English `error` and, when the cause is one of those below, a stable `errorCode?: string`. It is passed through unchanged in `result` of `step-result`, in `flow.steps[]` of `run-result`, in `result` of `POST /api/request`, and in `entries[]` of `GET /api/history` (the UI uses it to show a Japanese explanation and keeps the original `error` as the detail). It is omitted for errors without a code (there is no catch-all code).
+
+| `errorCode` | Cause |
+|---|---|
+| `guard.allowed-hosts` | The target host is not in `guard.allowedHosts` |
+| `guard.protected` | Refused by the environment's `$protected: true` |
+| `guard.readonly` | `$protected: readonly` refused a non-read method |
+| `guard.method-override` | `$protected: readonly` refused a method-override header |
+| `guard.host-header` | The Host header differs from the URL, or is invalid |
+| `guard.proxy-header` | A hop-by-hop or other forbidden header while a proxy is in use |
+| `guard.path` | A file outside the cwd (sent file, snapshot) was referenced |
+| `guard.redirect` | A redirect hop was refused by a guard with no code of its own (if the hop's own refusal has one of the codes above, that one is kept) |
+| `response-too-large` | `http.maxResponseBytes` exceeded (response or SSE) |
+
+Only guard refusals are recorded in history, so only `guard.*` codes appear in `GET /api/history`. The values are a fixed public contract. The `GET /api/history` query has no status filter (only the CLI's `klaus history --status` does).
+
 **Behavior on client disconnect**: closing or reloading the browser does **not** stop the in-flight flow — it runs to completion and the full history is written for every step. Only the SSE delivery is cut off; the server keeps responding normally to subsequent requests.
 
 ## Position in the architecture

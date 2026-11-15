@@ -7,6 +7,16 @@ API の現在の仕様は各リファレンス([CLI](../ja/guide/cli.md) / [フ�
 
 0.15.0 以降は、各リリースのコミット範囲を `git log` で確認して書いている(更新コミットから次の更新コミットまでが後のバージョン)。ただし 0.23.0〜0.25.0 は、更新コミットが機能コミット(`99d8002` mock、`0a35c3e` レポート、`fac3194` diff / promote)より前に入っているため、機能の内容で 0.23.0 = `klaus mock`、0.24.0 = HTML / GitHub レポート、0.25.0 = `klaus diff` / `klaus promote` とした。
 
+## 0.30.0
+
+`klaus history` の絞り込みの拡張、`error` ステップの安定したエラーコード、UI の説明表示、カセットの構造的ヘッダーの絞り込み。
+
+- **追加: `klaus history --status <statuses>`**。status(`passed` / `failed` / `skipped` / `error`)のカンマ区切りで一覧を絞る。`--failed` は assertion の失敗だけを返し、送信エラー・安全柵の拒否(`error`)は出ないため、`error` を含めて見る手段が無かった。`--failed` は変えない。未知の値は有効な値の一覧つきで、`--failed` との併用は引数の衝突として、どちらも exit 1(`--failed` は `--status failed` と同じ意味なので併用に意味が無く、黙ってどちらかを優先するより拒否するほうが驚きが少ない)。UI サーバーの `GET /api/history` には同じ絞り込みを足していない
+- **追加: `error` ステップの `errorCode`**。自由文(英語)の `error` だけでは機械的に扱えなかったため、原因を識別する安定したコードを、エラーを作る箇所(`GuardRefusalError` と応答サイズ超過)で付ける(メッセージの文字列照合はしない)。`guard.allowed-hosts` / `guard.protected` / `guard.readonly` / `guard.method-override` / `guard.host-header` / `guard.proxy-header` / `guard.redirect` / `response-too-large`、そして送信ファイル・スナップショットが cwd の外を指す拒否のための `guard.path`。それ以外のエラーには付けない(包括的なコードは作らない)。履歴エントリ、`run --json` / `req --json` の `error` と並ぶ位置、`--dry-run` の `guard.errorCode`、UI サーバーの SSE(`step-result` / `run-result`)・`POST /api/request`・`GET /api/history` に載る。サマリーだけの出力には付けない。リダイレクトのホップが拒否されたときは、ホップ自身の拒否が持つ具体的なコードを残し、コードを持たない拒否のときだけ `guard.redirect` にする(現在の安全柵はすべてコードを持つため、`guard.redirect` は将来の拒否のための予備)。履歴に残るのは安全柵の拒否だけなので、履歴に現れるのは `guard.*` のみ
+- **修正: カセットの構造的ヘッダーが、env・認証トークンなどの秘密値を含んでいてもマスクされていなかった**(0.29.2 の指摘)。`content-type` などを記録した値のまま書く例外は、`ct=application/json` のような cookie 値で replay が壊れるのを防ぐためだったが、cookie 由来ではない秘密値を含むヘッダーまで平文になった。秘密値の収集先が cookie 由来の登録を区別して覚えるようにし(`SecretSet`)、構造的ヘッダーは、cookie 由来ではない秘密値でマスクしても値が変わらない場合に限り元の値へ戻す
+- UI: ガードによる拒否とよくあるエラーに日本語の説明を表示する(`errorCode` に基づく。元のメッセージは詳細として残す)
+- UI: 履歴テーブルのレイアウトを、狭い画面向けに調整した
+
 ## 0.29.2
 
 0.29.1 の最終レビューで見つかった 3 点を直した。

@@ -41,6 +41,8 @@ One line = one step execution. `runId` lets you group steps from the same run.
   "assertions": [
     { "ok": true, "kind": "status", "expected": 200, "actual": 200, "message": "…" }
   ],
+  "error": "…",                 // only when status is "error" (a step refused by a guardrail): the refusal reason
+  "errorCode": "guard.allowed-hosts",  // optional, only with error: see Error Codes
   "env": "local",               // optional: see Audit Fields
   "file": "api/auth-flow.yaml", // optional
   "actor": { "kind": "agent", "name": "claude-code" },  // optional
@@ -62,6 +64,26 @@ One line = one step execution. `runId` lets you group steps from the same run.
 **Snapshot results** are recorded as an assertion with `kind: "snapshot"` and a `snapshot` object: `key`, `file` (the snapshot file), `state` (`matched` / `written` / `updated` / `mismatch` / `missing`), and, for a mismatch, `differences` (at most 20) and `differenceCount`. A `mismatch` or `missing` result also keeps `candidate`, the masked `{ status?, headers?, body }` that would be written as the baseline. `klaus snapshot accept <runId>` writes exactly that candidate, so accepting a change never calls the API again ([klaus snapshot](cli.md#klaus-snapshot)). The candidate is built after the same secret masking as the rest of the entry. Because it is a full response copy, `klaus history` (list) never prints it, and `klaus history show <runId>` omits it unless `--step` is given.
 
 Newly written entries always include `status`. Older entries without a `status` field can still be read by deriving pass/fail from `assertions`, as before (backward compatible).
+
+## Error Codes
+
+A step that ends as `error` carries a free-text `error` message in English. When the cause is one of the cases below, it also carries a stable `errorCode` that tools can rely on instead of matching the message. The field is optional and additive, so `v` stays 1; errors that have no code (a connection failure, a timeout, an unresolved template variable, and so on) leave it out.
+
+| `errorCode` | Cause |
+|---|---|
+| `guard.allowed-hosts` | The target host is not in `guard.allowedHosts` (also when the URL cannot be parsed while the allowlist is set) |
+| `guard.protected` | The environment is `$protected: true` |
+| `guard.readonly` | The environment is `$protected: readonly` and the method is not `GET` / `HEAD` / `OPTIONS` (WebSocket steps included) |
+| `guard.method-override` | The environment is `$protected: readonly` and the request carries a method-override header |
+| `guard.host-header` | The `Host` header differs from the URL's host, or is not a valid host |
+| `guard.proxy-header` | A hop-by-hop or other forbidden header was set while `http.proxy` is in use |
+| `guard.path` | A file outside the current directory was referenced (`bodyFile`, `multipart` files, snapshot files) |
+| `guard.redirect` | A redirect hop was refused by a guard that has no more specific code (see below) |
+| `response-too-large` | The response (or SSE stream) exceeded `http.maxResponseBytes` |
+
+- **Redirects**: when a hop of a redirect chain is refused, the more specific code of that refusal is kept (a hop to a host outside the allowlist is `guard.allowed-hosts`, not `guard.redirect`). `guard.redirect` is used only when the refusal itself has no code of its own.
+- **Where it appears**: `errorCode` sits next to the error message wherever it is reported: each `error` step in `klaus run --json`, `klaus req --json`, `guard.errorCode` of a refused step in `klaus run --dry-run --json`, the history entry, and the UI server's responses. It is not added to summary-only output.
+- **In history**: only guard refusals are recorded as `error` entries, so only the `guard.*` codes can appear in a history file. `response-too-large` is reported in the run output and the UI only.
 
 ## Audit Fields
 

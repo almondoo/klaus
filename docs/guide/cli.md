@@ -104,7 +104,7 @@ Nothing is sent and nothing is written: no history entries, no cassette reads or
 - **Variables that cannot resolve at run time either**: a variable that is neither defined by an earlier step's `capture` nor in the environment, `--var`, or the data row, and an <code v-pre>{{env.X}}</code> whose OS environment variable is undefined, are reported in the step's `error` with the same message as at run time, and the step has no `request`.
 - **Generated values**: <code v-pre>{{newUuid}}</code>, <code v-pre>{{newDate}}</code>, and <code v-pre>{{newTimestamp}}</code> are expanded like at run time, so the values differ from the ones a real run generates.
 - **`if` conditions** depend on run-time statuses and captures, so they are not evaluated: the step is marked `conditional: true`, its `if` text is shown, and its request is still expanded.
-- **Guards**: `guard.status` is `allowed`, `refused` (with the same reason as the run-time refusal), or `undetermined` when `guard.allowedHosts` is set and the target host itself contains an unresolved variable (for example `url: "{{base}}/x"` where `base` is captured earlier). A refusal that does not depend on the host, such as a `POST` in a `$protected: readonly` environment, is still reported as `refused`. If only the path or query is unresolved, the host is known and the allowlist is checked. Each step is judged on its own: a refused step does not hide the steps after it, although a real run would skip them.
+- **Guards**: `guard.status` is `allowed`, `refused` (with the same reason as the run-time refusal, and the same [`errorCode`](history.md#error-codes) as `guard.errorCode`), or `undetermined` when `guard.allowedHosts` is set and the target host itself contains an unresolved variable (for example `url: "{{base}}/x"` where `base` is captured earlier). A refusal that does not depend on the host, such as a `POST` in a `$protected: readonly` environment, is still reported as `refused`. If only the path or query is unresolved, the host is known and the allowlist is checked. Each step is judged on its own: a refused step does not hide the steps after it, although a real run would skip them.
 
 JSON output (non-TTY, or `--json`) is one compact object with a top-level `"dryRun": true` marker. Its `flows[].steps[]` structure and field names follow the [`run` JSON output](#json-output-for-machines), but there is no `status` per step, no `assertions`, and no `historyRef`, and request bodies are not truncated (a dry run has no history to fetch the full text from). Secrets from <code v-pre>{{env.X}}</code> are masked as usual (`--no-mask` disables it).
 
@@ -291,6 +291,7 @@ full detail (request/response snapshots, assertions, etc).
 - **Truncation**: the `body` of request/response snapshots in the detail (JSON bodies are stringified first), the `data` of SSE `events`, and the `data` of WS `wsMessages` are all truncated to about 500 characters (same rule as the text output). The full untruncated JSON body is only available from history
 - Secrets sourced from <code v-pre>{{env.X}}</code> are masked by default (same rules as the history JSONL and `--report junit`, URL-encoded forms included (encodeURIComponent, form-urlencoded, and the encodeURI form used to approximate WHATWG URL normalization) as well as JSON-escaped forms; see [Execution History](history.md) for details). Pass `--no-mask` to disable masking for this JSON output only (the history JSONL and JUnit file output are always masked)
 - Control-character escaping (as done in text output and JUnit reports) is **not** applied here — values are printed as-is
+- **errorCode**: an `error` step also carries `errorCode` (for example `guard.allowed-hosts`, `response-too-large`) when its cause has a stable code, next to the `error` message. It is omitted for other errors and for passed / failed / skipped steps; the codes are listed in [Error Codes](history.md#error-codes)
 - **historyRef**: when history recording is enabled (i.e. `--no-history` was not passed), every step (including passed ones) gets a `historyRef: { date, runId, step }`. Fetch the full detail with `klaus history show <runId> --step <step>` (see [klaus history](#klaus-history) / [Execution History](history.md)). `historyRef.date` is the UTC date of the history file the step was written to (derived from the step's `startedAt`). `historyRef` is omitted entirely when run with `--no-history`
 - For SSE / WebSocket steps, `response.body` is absent; received data instead goes into the `events` (SSE) / `wsMessages` (WS) fields
 - **snapshots**: a top-level `snapshots: { matched, written, updated, mismatched, missing, obsolete, files, obsoleteEntries }` summary, present only when a step has a snapshot assertion, a snapshot file has obsolete entries, or snapshot files were written (`files` lists them, relative to the current directory). A snapshot assertion in `assertions` has `kind: "snapshot"`, `state` (`matched` / `written` / `updated` / `mismatch` / `missing`), `snapshotKey`, `snapshotFile`, and for a mismatch `differences` (`[{ "path": "$.body.name", "kind": "changed", "before": "a", "after": "b" }]`, at most 20) with the total in `differenceCount`. Passed steps are one-line summaries, so a baseline that was written shows up in `snapshots.written` / `snapshots.files` and, in text output, as `[snapshot written]` on its `PASS` line. The candidate that `klaus snapshot accept` writes is kept in history, never in this output
@@ -399,7 +400,7 @@ The JSON output is one compact object. Its field names match the step objects of
 }
 ```
 
-- `error` carries the failure reason when `status` is `"error"` (connection failure, timeout, unresolved template variable, guard refusal); `response` is then absent. `events` lists the received SSE events for an `Accept: text/event-stream` request.
+- `error` carries the failure reason when `status` is `"error"` (connection failure, timeout, unresolved template variable, guard refusal); `response` is then absent. `errorCode` is a stable code next to it for the causes that have one (for example `guard.allowed-hosts`); see [Error Codes](history.md#error-codes). `events` lists the received SSE events for an `Accept: text/event-stream` request.
 - **Truncation**: request and response `body` and SSE `data` are truncated to about 500 characters. The full text is available through `historyRef`.
 - **historyRef**: present only when a history entry was actually written (history enabled, and the request either got a response or was refused by a guard; connection failures and timeouts are not recorded). Fetch the full record with `klaus history show <runId> --step request`. The entry has `flow: "(single)"` and `source: "single"`, and carries the audit fields (`env`, `actor`, `git`) like any other entry; see [Execution History](history.md).
 - Secrets from <code v-pre>{{env.X}}</code> are masked in the output by default, as for `klaus run`. Literal tokens typed into `-H` or `--body` are not secrets and are not masked; pass real secrets through <code v-pre>{{env.X}}</code>.
@@ -566,7 +567,8 @@ klaus history [options]
 | Option | Description | Default |
 |---|---|---|
 | `--flow <name>` | Filter by flow name (exact match) | — |
-| `--failed` | Only entries whose status is failed | — |
+| `--failed` | Only entries whose status is failed (assertion failures; runs that ended as `error` are not listed). Cannot be combined with `--status` | — |
+| `--status <statuses>` | Only entries whose status is one of the comma-separated values `passed`, `failed`, `skipped`, `error` (for example `--status failed,error` lists every run that did not pass). An unknown value, or combining it with `--failed`, is an invalid argument (exit code 1) | — |
 | `--last <n>` | Number of entries to fetch | 20 |
 | `--fields <csv>` | Comma-separated list of fields to output | `startedAt,runId,flow,step,status,durationMs` |
 | `--json` | Forces JSON output even on a TTY | — |
@@ -584,6 +586,8 @@ login    passed  6
 $ klaus history --json --failed
 [{"startedAt":"2026-08-08T…","runId":"<uuid>","flow":"auth flow","step":"get-me","status":"failed","durationMs":3}]
 ```
+
+`--status error` lists the steps that were refused by a guard (the `error` entries of [Execution History](history.md#error-codes)); add `--fields step,status,errorCode` to see why. `--status` combines with `--flow`, `--last`, and `--fields`, and works with both the JSON and the text output.
 
 ### Detail view (klaus history show)
 

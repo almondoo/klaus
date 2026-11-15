@@ -41,6 +41,8 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
   "assertions": [
     { "ok": true, "kind": "status", "expected": 200, "actual": 200, "message": "…" }
   ],
+  "error": "…",                 // status が "error" のときだけ(安全柵に拒否されたステップ): 拒否理由
+  "errorCode": "guard.allowed-hosts",  // 省略可、error があるときだけ: エラーコードを参照
   "env": "local",               // 省略可: 監査項目を参照
   "file": "api/auth-flow.yaml", // 省略可
   "actor": { "kind": "agent", "name": "claude-code" },  // 省略可
@@ -62,6 +64,26 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
 **スナップショットの結果**は、`kind: "snapshot"` のアサーションと `snapshot` オブジェクトとして記録される。`snapshot` には `key`、`file`(スナップショットファイル)、`state`(`matched` / `written` / `updated` / `mismatch` / `missing`)が入り、不一致なら `differences`(最大 20 件)と `differenceCount` も入る。`mismatch` と `missing` の結果は、基準として書き込まれるはずだったマスク済みの `{ status?, headers?, body }` を `candidate` としても保持する。`klaus snapshot accept <runId>` はこの候補をそのまま書き込むので、変更を受け入れても API をもう一度呼ぶことはない([klaus snapshot](cli.md#klaus-snapshot))。候補は、エントリの他の部分と同じ秘密値のマスクを通した後の値から作られる。レスポンス全体のコピーなので、`klaus history`(一覧)は出力せず、`klaus history show <runId>` も `--step` を付けたときだけ含める。
 
 新規に書き込まれるエントリには常に `status` が設定される。`status` フィールドが無い旧エントリは、従来どおり `assertions` の内容から成否を導出して読み込める(後方互換)。
+
+## エラーコード
+
+`error` で終わったステップは、英語の自由文の `error` メッセージを持つ。原因が下記のいずれかなら、メッセージの文字列照合に頼らずに使える安定した `errorCode` も持つ。このフィールドは省略可で追加のみの変更なので `v` は 1 のまま。コードを持たないエラー(接続不能・タイムアウト・テンプレート変数の未解決など)では省略する。
+
+| `errorCode` | 原因 |
+|---|---|
+| `guard.allowed-hosts` | 送信先ホストが `guard.allowedHosts` に無い(許可リストの設定時に URL を解釈できない場合も含む) |
+| `guard.protected` | 環境が `$protected: true` |
+| `guard.readonly` | 環境が `$protected: readonly` で、メソッドが `GET` / `HEAD` / `OPTIONS` 以外(WebSocket ステップを含む) |
+| `guard.method-override` | 環境が `$protected: readonly` で、リクエストがメソッド上書きヘッダーを持つ |
+| `guard.host-header` | `Host` ヘッダーが URL のホストと違う、またはホストとして不正 |
+| `guard.proxy-header` | `http.proxy` の使用中に、ホップ間ヘッダーなどの禁止ヘッダーが設定された |
+| `guard.path` | カレントディレクトリの外のファイル(`bodyFile`・`multipart` のファイル・スナップショットのファイル)を参照した |
+| `guard.redirect` | リダイレクトのホップが、より具体的なコードを持たない安全柵に拒否された(下記) |
+| `response-too-large` | 応答(または SSE ストリーム)が `http.maxResponseBytes` を超えた |
+
+- **リダイレクト**: リダイレクトの途中のホップが拒否されたときは、その拒否が持つより具体的なコードを残す(許可リスト外のホストへのホップは `guard.redirect` ではなく `guard.allowed-hosts`)。`guard.redirect` になるのは、拒否そのものがコードを持たない場合だけ
+- **現れる場所**: `errorCode` は、エラーメッセージが出る場所にそのメッセージと並んで付く。`klaus run --json` の `error` ステップ、`klaus req --json`、`klaus run --dry-run --json` で拒否されたステップの `guard.errorCode`、履歴エントリ、UI サーバーの応答。サマリーだけの出力には付けない
+- **履歴では**: `error` として記録されるのは安全柵の拒否だけなので、履歴ファイルに現れるのは `guard.*` のコードだけ。`response-too-large` は実行の出力と UI にだけ出る
 
 ## 監査項目
 

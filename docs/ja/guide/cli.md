@@ -104,7 +104,7 @@ klaus run <files...> [options]
 - **実行時にも解決できない変数**: 前段の `capture` が定義するものでも、環境・`--var`・データ行にあるものでもない変数や、OS 環境変数が未定義の <code v-pre>{{env.X}}</code> は、実行時と同じメッセージでステップの `error` に報告され、そのステップに `request` は付かない。
 - **生成される値**: <code v-pre>{{newUuid}}</code>・<code v-pre>{{newDate}}</code>・<code v-pre>{{newTimestamp}}</code> は実行時と同じように展開されるため、実際の実行で生成される値とは異なる。
 - **`if` 条件**は実行時のステータスや capture に依存するため評価しない: ステップに `conditional: true` を付け、`if` のテキストを表示し、リクエストは引き続き展開する。
-- **安全柵**: `guard.status` は `allowed`、`refused`(実行時の拒否と同じ理由つき)、または `guard.allowedHosts` が設定されていて送信先ホストそのものに未解決の変数が含まれる場合(例: `base` が前段で capture される `url: "{{base}}/x"`)の `undetermined` のいずれか。`$protected: readonly` の環境での `POST` のように、ホストに依存しない拒否は引き続き `refused` と報告する。パスやクエリだけが未解決ならホストは確定しているので、許可リストを判定する。各ステップは個別に判定する: 拒否されたステップがあっても、その後のステップは隠れない(実際の実行では後続はスキップされる)。
+- **安全柵**: `guard.status` は `allowed`、`refused`(実行時の拒否と同じ理由つき。同じ[エラーコード](history.md#エラーコード)が `guard.errorCode` に入る)、または `guard.allowedHosts` が設定されていて送信先ホストそのものに未解決の変数が含まれる場合(例: `base` が前段で capture される `url: "{{base}}/x"`)の `undetermined` のいずれか。`$protected: readonly` の環境での `POST` のように、ホストに依存しない拒否は引き続き `refused` と報告する。パスやクエリだけが未解決ならホストは確定しているので、許可リストを判定する。各ステップは個別に判定する: 拒否されたステップがあっても、その後のステップは隠れない(実際の実行では後続はスキップされる)。
 
 JSON 出力(非 TTY、または `--json`)は、最上位に `"dryRun": true` の印を持つ compact な1つのオブジェクト。`flows[].steps[]` の構造とフィールド名は [`run` の JSON 出力](#json-出力-機械向け)に揃えてあるが、ステップごとの `status`、`assertions`、`historyRef` は無く、リクエストボディは切り詰めない(ドライランには全文を引き直せる履歴が無いため)。<code v-pre>{{env.X}}</code> 由来のシークレットは通常どおりマスクされる(`--no-mask` で無効化)。
 
@@ -291,6 +291,7 @@ request/response スナップショットや assertions などの詳細を持つ
 - **truncate**: 詳細に含まれる request/response の `body`(JSON ボディは文字列化してから)、SSE `events` の `data`、WS `wsMessages` の `data` はいずれも約500文字で切り詰める(text 出力の切り詰めと同じ規則)。JSON ボディの構造そのままの全文は履歴側にしか無い
 - <code v-pre>{{env.X}}</code> 由来のシークレットは既定でマスクされる(履歴 JSONL・`--report junit` と同じ規則。URL エンコード形(encodeURIComponent 形・form-urlencoded 形・WHATWG URL 正規化に近い encodeURI 形)・JSON エスケープ形も対象。詳細は [実行履歴](history.md) を参照)。`--no-mask` を付けるとこの JSON 出力のマスクだけを無効化できる(履歴 JSONL・JUnit ファイル出力は常にマスクされる)
 - 制御文字の可視エスケープ(text 出力や JUnit レポートで行われるもの)はここには適用されず、生の値のまま出力される
+- **errorCode**: `error` ステップは、原因が安定したコードを持つとき `error` メッセージと並んで `errorCode`(例: `guard.allowed-hosts`・`response-too-large`)を持つ。ほかのエラーや passed / failed / skipped のステップでは省略する。コードの一覧は[エラーコード](history.md#エラーコード)
 - **historyRef**: 履歴記録が有効な実行(`--no-history` を付けていない)では、各ステップ(passed 含む)に `historyRef: { date, runId, step }` が付く。全文が必要な場合は `klaus history show <runId> --step <step>` で取得する(詳細は [klaus history](#klaus-history) / [実行履歴](history.md) を参照)。`historyRef.date` はそのステップが書き込まれた履歴ファイルの UTC 日付(ステップの `startedAt` から導出)。`--no-history` 実行時は `historyRef` を省略する
 - SSE / WebSocket ステップでは `response.body` は無く、受信データは `events`(SSE)/ `wsMessages`(WS)フィールドに入る
 - **snapshots**: トップレベルの集計 `snapshots: { matched, written, updated, mismatched, missing, obsolete, files, obsoleteEntries }`。snapshot アサーションを持つステップがある、スナップショットファイルに古いエントリがある、またはスナップショットファイルを書き込んだ場合にだけ付く(`files` は書き込んだファイルで、カレントディレクトリからの相対パス)。`assertions` の snapshot アサーションは `kind: "snapshot"`、`state`(`matched` / `written` / `updated` / `mismatch` / `missing`)、`snapshotKey`、`snapshotFile` を持ち、不一致なら `differences`(`[{ "path": "$.body.name", "kind": "changed", "before": "a", "after": "b" }]`、最大 20 件)と、総数の `differenceCount` も持つ。成功したステップは 1 行の要約なので、書き込んだ基準は `snapshots.written` / `snapshots.files` と、text 出力ではその `PASS` 行の `[snapshot written]` で分かる。`klaus snapshot accept` が書き込む候補は履歴に残り、この出力には含まれない
@@ -399,7 +400,7 @@ JSON 出力は compact な1つのオブジェクト。フィールド名は [`ru
 }
 ```
 
-- `status` が `"error"` のとき `error` に失敗理由(接続不能・タイムアウト・未解決のテンプレート変数・安全柵による拒否)が入り、`response` は無い。`Accept: text/event-stream` のリクエストでは、受信した SSE イベントが `events` に入る。
+- `status` が `"error"` のとき `error` に失敗理由(接続不能・タイムアウト・未解決のテンプレート変数・安全柵による拒否)が入り、`response` は無い。その隣の `errorCode` は、コードを持つ原因(例: `guard.allowed-hosts`)での安定したコード。[エラーコード](history.md#エラーコード)を参照。`Accept: text/event-stream` のリクエストでは、受信した SSE イベントが `events` に入る。
 - **切り詰め**: request / response の `body` と SSE の `data` は約500文字で切り詰める。全文は `historyRef` から取得できる。
 - **historyRef**: 履歴エントリが実際に書き込まれた場合のみ付く(履歴が有効で、リクエストが応答を得たか安全柵に拒否された場合。接続不能・タイムアウトは履歴に残らない)。`klaus history show <runId> --step request` で全文を取得する。エントリは `flow: "(single)"`・`source: "single"` になり、ほかのエントリと同じく監査項目(`env`、`actor`、`git`)を持つ。[実行履歴](history.md)を参照。
 - <code v-pre>{{env.X}}</code> 由来のシークレットは、`klaus run` と同じく出力で既定でマスクされる。`-H` や `--body` に直接書いたトークンはシークレットとして扱われずマスクされない。本物のシークレットは <code v-pre>{{env.X}}</code> 経由で渡す。
@@ -566,7 +567,8 @@ klaus history [options]
 | オプション | 説明 | デフォルト |
 |---|---|---|
 | `--flow <name>` | フロー名で絞り込む(完全一致) | — |
-| `--failed` | status が failed のエントリのみに絞り込む | — |
+| `--failed` | status が failed のエントリのみに絞り込む(アサーション失敗。`error` で終わった run は出ない)。`--status` とは併用できない | — |
+| `--status <statuses>` | status がカンマ区切りの値(`passed` / `failed` / `skipped` / `error`)のいずれかであるエントリのみに絞り込む(例: `--status failed,error` で成功しなかった run をすべて出す)。未知の値や `--failed` との併用は引数エラー(exit code 1) | — |
 | `--last <n>` | 取得件数 | 20 |
 | `--fields <csv>` | 出力するフィールド(カンマ区切り) | `startedAt,runId,flow,step,status,durationMs` |
 | `--json` | TTY でも JSON 出力を強制する | — |
@@ -584,6 +586,8 @@ login    passed  6
 $ klaus history --json --failed
 [{"startedAt":"2026-08-08T…","runId":"<uuid>","flow":"認証フロー","step":"get-me","status":"failed","durationMs":3}]
 ```
+
+`--status error` は安全柵に拒否されたステップ([実行履歴](history.md#エラーコード)の `error` エントリ)を出す。理由は `--fields step,status,errorCode` を足して見る。`--status` は `--flow` / `--last` / `--fields` と組み合わせられ、JSON でもテキストでも使える。
 
 ### 詳細表示(klaus history show)
 

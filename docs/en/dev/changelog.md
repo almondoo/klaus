@@ -7,6 +7,16 @@ The current spec lives in the respective references ([CLI](../../guide/cli.md) /
 
 From 0.15.0 on, each release was written by checking its commit range with `git log` (everything from one bump commit up to the next belongs to the later version). The exception is 0.23.0 through 0.25.0: their bump commits landed before the feature commits (`99d8002` mock, `0a35c3e` reports, `fac3194` diff / promote), so versions are assigned by content: 0.23.0 = `klaus mock`, 0.24.0 = HTML / GitHub reports, 0.25.0 = `klaus diff` / `klaus promote`.
 
+## 0.30.0
+
+A wider `klaus history` filter, a stable error code on `error` steps, explanations in the UI, and a narrower exception for the cassette's structural headers.
+
+- **Added: `klaus history --status <statuses>`.** Filters the list by a comma-separated set of statuses (`passed` / `failed` / `skipped` / `error`). `--failed` returns only assertion failures and leaves out send errors and guard refusals (`error`), so there was no way to list `error` runs. `--failed` is unchanged. An unknown value (the message lists the valid ones) and combining it with `--failed` (an argument conflict) both exit 1: `--failed` means the same as `--status failed`, so combining them is pointless, and refusing is less surprising than silently preferring one. The UI server's `GET /api/history` did not get the same filter
+- **Added: `errorCode` on `error` steps.** The free-text English `error` alone could not be handled mechanically, so a stable code identifying the cause is now attached where the error is built (`GuardRefusalError` and the response-size error), never by matching messages. `guard.allowed-hosts` / `guard.protected` / `guard.readonly` / `guard.method-override` / `guard.host-header` / `guard.proxy-header` / `guard.redirect` / `response-too-large`, plus `guard.path` for refusals of a sent file or snapshot outside the cwd. Other errors get none (no catch-all code). It is stored in history entries, sits next to `error` in `run --json` / `req --json`, appears as `guard.errorCode` in `--dry-run`, and is passed through the UI server's SSE (`step-result` / `run-result`), `POST /api/request`, and `GET /api/history`. Summary-only output does not carry it. When a redirect hop is refused, the more specific code of the hop's own refusal is kept, and `guard.redirect` is used only for a refusal without a code (every current guard has one, so `guard.redirect` is reserved for future refusals). Only guard refusals are recorded in history, so only `guard.*` codes appear there
+- **Fix: the cassette's structural headers were not masked even when they contained an env or auth secret** (flagged in the 0.29.2 review). Writing `content-type` and similar headers as recorded prevents replay from breaking on cookie values such as `ct=application/json`, but it also left headers that contain a non-cookie secret in plain text. The secret collection now remembers which registrations came from cookies (`SecretSet`), and a structural header is restored to its original value only when masking it with the non-cookie secrets leaves it unchanged
+- UI: guard refusals and common errors are explained in Japanese (based on `errorCode`), with the original message kept as detail
+- UI: the history table layout is adjusted for narrow screens
+
 ## 0.29.2
 
 Fixed three issues found by the final review of 0.29.1.
