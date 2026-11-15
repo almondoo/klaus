@@ -10,6 +10,7 @@
  *   承認待ちの組のみ・保護環境は拒否)。実体は Hono 非依存の共有関数に置いてあり、ここでは再実装しない
  * - フローのパスは cwd 配下(シンボリックリンク解決後も)の .yaml / .yml に限る
  */
+import { JSONPath } from "jsonpath-plus";
 import { z } from "zod";
 import { detectActor, MAX_ACTOR_NAME_LENGTH, resolveGitState } from "../cli/audit.js";
 import { loadCliConfig, loadHttpOptions, resolveGuardOptions } from "../cli/config.js";
@@ -20,6 +21,7 @@ import {
   diffRuns,
   dryRunLoadedFlows,
   errorCodeOf,
+  exceedsDepth,
   executeSingleRequest,
   expandSecretVariants,
   type FlowResult,
@@ -35,6 +37,7 @@ import {
   listSnapshotMismatches,
   loadEnvironmentFile,
   loadFlow,
+  MAX_JSON_BODY_DEPTH,
   maskDeep,
   OpenApiValidator,
   parseJsonPathPattern,
@@ -211,10 +214,10 @@ function guardHint(errorCode: string | undefined): string | undefined {
     case "guard.protected":
     case "guard.readonly":
     case "guard.method-override":
-      return "Environment protection cannot be overridden through klaus mcp. Do not try to work around this; tell the user, who can run `klaus run --allow-protected` from a terminal if it is intended.";
+      return "The selected environment is protected and klaus mcp has no option to override that. Do not try to work around this; tell the user, who can run `klaus run --allow-protected` from a terminal if it is intended.";
     default:
       return errorCode?.startsWith("guard.") === true
-        ? "This is a safety guard refusal and cannot be overridden through klaus mcp. Do not try to work around it; tell the user."
+        ? "This is a safety guard refusal and klaus mcp has no option to override it. Do not try to work around it; tell the user."
         : undefined;
   }
 }
@@ -290,7 +293,7 @@ async function loadFlowOrFail(abs: string, cwd: string) {
 // 結果の整形
 // ---------------------------------------------------------------------------
 
-function summarizeStep(step: StepResult) {
+function summarizeStep(step: StepResult, runId: string) {
   const failures = step.assertions
     .filter(
       (assertion) =>
@@ -313,6 +316,8 @@ function summarizeStep(step: StepResult) {
     ...(step.attempts !== undefined ? { attempts: step.attempts } : {}),
     ...(step.error !== undefined ? { error: step.error } : {}),
     ...(step.errorCode !== undefined ? { errorCode: step.errorCode } : {}),
+    // 履歴に実際に記録されたステップにだけ、klaus_history_show へ渡す引数を付ける(記録されない実行時エラーに付けると引けない)
+    ...(step.historyRecorded === true ? { historyRef: { runId, step: step.name } } : {}),
     assertions: { total: step.assertions.length, failed: failures },
     // candidate(応答全体のコピー)は含めない。承認は klaus_snapshot_accept が履歴から読む
     ...(snapshot !== undefined
@@ -332,14 +337,14 @@ function summarizeStep(step: StepResult) {
   };
 }
 
-function summarizeFlowResult(flow: FlowResult) {
+function summarizeFlowResult(flow: FlowResult, runId: string) {
   return {
     name: flow.name,
     file: flow.file,
     status: flow.status,
     ...(flow.iteration !== undefined ? { iteration: flow.iteration } : {}),
     durationMs: Math.round(flow.durationMs),
-    steps: flow.steps.map(summarizeStep),
+    steps: flow.steps.map((step) => summarizeStep(step, runId)),
   };
 }
 
@@ -348,7 +353,9 @@ function summarizeRunResult(result: RunResult, cwd: string) {
     runId: result.runId,
     status: result.status,
     durationMs: Math.round(result.durationMs),
-    flows: relativizeFlowFiles(result.flows, cwd).map(summarizeFlowResult),
+    flows: relativizeFlowFiles(result.flows, cwd).map((flow) =>
+      summarizeFlowResult(flow, result.runId),
+    ),
     ...(result.warnings !== undefined ? { warnings: result.warnings } : {}),
     ...(result.snapshots !== undefined ? { snapshots: result.snapshots } : {}),
     ...(result.openapi !== undefined ? { openapi: result.openapi } : {}),
@@ -467,7 +474,7 @@ const validateFlowTool: ToolDefinition<typeof validateFlowSchema> = {
 const listEnvironmentsTool: ToolDefinition = {
   name: "klaus_list_environments",
   description:
-    "List the environments (environments/<name>.yaml) with their protection mode: none, protected (every request is refused), or readonly (only GET, HEAD and OPTIONS are sent); unknown if the file cannot be read. Values are never returned. Protection cannot be overridden through klaus mcp. Read-only.",
+    "List the environments (environments/<name>.yaml) with their protection mode: none, protected (every request is refused), or readonly (only GET, HEAD and OPTIONS are sent); unknown if the file cannot be read. This tool returns names and protection only. Protection applies to runs that select that environment by name (klaus_run_flow, klaus_dry_run, klaus_request with env); it does not restrict hosts, which is the job of guard.allowedHosts. Read-only.",
   inputSchema: z.object({}),
   annotations: READ_ONLY_LOCAL,
   write: false,
@@ -496,11 +503,18 @@ const listEnvironmentsTool: ToolDefinition = {
   }),
 };
 
-const dryRunSchema = z.object({ file: fileSchema, env: envSchema });
+const variablesSchema = z
+  .record(z.string(), z.string())
+  .optional()
+  .describe(
+    "Extra template variables (name to value), available as {{name}}. They are NOT masked in output or history, so never put secrets here; reference OS environment variables with {{env.NAME}} in the flow instead.",
+  );
+
+const dryRunSchema = z.object({ file: fileSchema, env: envSchema, variables: variablesSchema });
 const dryRunTool: ToolDefinition<typeof dryRunSchema> = {
   name: "klaus_dry_run",
   description:
-    "Show what a flow would send, without sending anything or writing history: each step's expanded request (secrets masked) and the guard decision (allowed, refused with an errorCode, or undetermined when the host depends on an earlier response). Use it before klaus_run_flow, especially with a protected environment or when guard.allowedHosts is set. A refused step cannot be overridden through klaus mcp.",
+    "Show what a flow would send, without sending anything or writing history: each step's expanded request and the guard decision (allowed, refused with an errorCode, or undetermined when the host depends on an earlier response). Values that come from the selected environment file (including a protected one, and also when the step is refused) are shown expanded in the request; only values the run itself marks as secrets (for example {{env.NAME}} from OS environment variables) are masked. Use it before klaus_run_flow, especially when guard.allowedHosts is set. klaus mcp has no option to override a refused step.",
   inputSchema: dryRunSchema,
   annotations: READ_ONLY_LOCAL,
   write: false,
@@ -514,6 +528,7 @@ const dryRunTool: ToolDefinition<typeof dryRunSchema> = {
     const result = await dryRunLoadedFlows([{ filePath: file.abs, flow }], {
       cwd: ctx.cwd,
       envNameOverride: env,
+      variables: args.variables,
       // allowProtected は渡さない: klaus mcp は保護環境の拒否を上書きできない
       entryPoint: "mcp",
       guard: settings.guard,
@@ -530,17 +545,12 @@ const dryRunTool: ToolDefinition<typeof dryRunSchema> = {
 const runFlowSchema = z.object({
   file: fileSchema,
   env: envSchema,
-  variables: z
-    .record(z.string(), z.string())
-    .optional()
-    .describe(
-      "Extra template variables (name to value), available as {{name}}. They are NOT masked in output or history, so never put secrets here; reference OS environment variables with {{env.NAME}} in the flow instead.",
-    ),
+  variables: variablesSchema,
 });
 const runFlowTool: ToolDefinition<typeof runFlowSchema> = {
   name: "klaus_run_flow",
   description:
-    "Run a flow definition: sends the real HTTP/SSE/WebSocket requests it defines, evaluates assertions, snapshots and OpenAPI validation (run.openapi), and records every step in history. Returns a summary per step (status, HTTP status, error, errorCode, failed assertions, snapshot and OpenAPI results); response bodies are not included, use klaus_history_show with the runId and step. Guards from klaus.config.yaml and environment protection always apply and cannot be overridden: a refused step is reported with its errorCode, so tell the user instead of working around it. A missing snapshot baseline is written; a mismatch is reported, never updated. Steps may change data on the target API.",
+    "Run a flow definition: sends the real HTTP/SSE/WebSocket requests it defines and evaluates assertions, snapshots and OpenAPI validation (run.openapi). Steps that end passed, failed (assertions, snapshot or OpenAPI), or skipped, and steps refused by a guard, are recorded in history; a step that ends with any other error (a failed capture, timeout, connection or mid-body network error, response too large) is not recorded. Returns a summary per step (status, HTTP status, error, errorCode, failed assertions, snapshot and OpenAPI results); response bodies are not included. Each recorded step carries historyRef {runId, step} for klaus_history_show; a step without historyRef has no history entry. guard.allowedHosts from klaus.config.yaml applies to every step, and a step is refused when the run selects a protected environment ($protected); klaus mcp has no option to override a refusal, so a refused step is reported with its errorCode: tell the user instead of working around it. A missing snapshot baseline is written; a mismatch is reported, never updated. Steps may change data on the target API.",
   inputSchema: runFlowSchema,
   annotations: {
     readOnlyHint: false,
@@ -628,14 +638,18 @@ const requestToolSchema = z.object({
   body: bodySchema
     .optional()
     .describe(
-      "Request body. A string is sent as-is (set Content-Type in headers); an object, array, number, boolean or null is sent as JSON.",
+      `Request body. A string is sent as-is (set Content-Type in headers); an object, array, number, boolean or null is sent as JSON. An object or array nested deeper than ${MAX_JSON_BODY_DEPTH} levels is refused: send it as a string instead.`,
     ),
-  env: envSchema,
+  env: z
+    .string()
+    .optional()
+    .describe(
+      "Environment (environments/<name>.yaml; letters, digits, underscores and hyphens) whose values {{name}} placeholders can use; its protection ($protected) applies to this request. Omit it to use no environment: then {{...}} only resolves from OS environment variables ({{env.NAME}}) and no environment protection applies.",
+    ),
 });
 const requestTool: ToolDefinition<typeof requestToolSchema> = {
   name: "klaus_request",
-  description:
-    "Send one ad-hoc HTTP request through the same guards as a flow, record it in history, and return the runId, status, response status, headers and body (secrets masked). Use it to explore an API; turn a good run into a flow with klaus_promote. {{...}} placeholders in url, headers, query and body are expanded from the environment and from OS environment variables ({{env.NAME}}). A refused request (guard.allowedHosts, protected environment) or a failed one (connection error, timeout) returns an error with errorCode when there is one; guard refusals cannot be overridden through klaus mcp, so tell the user instead of working around them. HTTP error statuses such as 404 are normal results.",
+  description: `Send one ad-hoc HTTP request, record it in history, and return the runId, status, response status, headers and body (secrets masked). Use it to explore an API; turn a good run into a flow with klaus_promote. {{...}} placeholders in url, headers, query and body are expanded from the selected environment (env) and from the OS environment variables of the klaus mcp process ({{env.NAME}}); any such variable can therefore be sent to any host the request is allowed to reach. Without env, no environment protection applies and the request can reach every host that guard.allowedHosts permits (every host if it is not set). A refused request (guard.allowedHosts, or a protected env) or a failed one (connection error, timeout) returns an error with errorCode when there is one; klaus mcp has no option to override a refusal, so tell the user instead of working around it. A response body nested deeper than ${MAX_JSON_BODY_DEPTH} levels is returned as text. HTTP error statuses such as 404 are normal results.`,
   inputSchema: requestToolSchema,
   annotations: {
     readOnlyHint: false,
@@ -647,6 +661,15 @@ const requestTool: ToolDefinition<typeof requestToolSchema> = {
   serialize: true,
   handler: guarded(async (args, ctx) => {
     const env = validateEnvName(args.env);
+    // 深すぎる JSON は、マスク・履歴・結果の整形の再帰でスタックを使い果たし得るため、構造化したままでは受け付けない
+    if (args.body !== undefined && exceedsDepth(args.body, MAX_JSON_BODY_DEPTH)) {
+      throw new ToolError(
+        `body is nested deeper than ${MAX_JSON_BODY_DEPTH} levels and is refused`,
+        {
+          hint: "Send the body as a string (set Content-Type in headers) instead of an object or array.",
+        },
+      );
+    }
     const settings = await loadSettings(ctx.cwd);
     const request = {
       method: args.method,
@@ -750,19 +773,78 @@ const historyListTool: ToolDefinition<typeof historyListSchema> = {
   }),
 };
 
+/** path の最大長 */
+const MAX_JSON_PATH_LENGTH = 512;
+/** offset / length の単位は文字(UTF-16 コード単位)。length の既定値。JSON のエスケープで最大 6 倍になっても結果の上限に収まる大きさ */
+const DEFAULT_WINDOW_LENGTH = 32 * 1024;
+/** length の最大値(すべて制御文字でも 40000 x 6 バイト + 枠が結果の上限 256 KiB に収まる) */
+const MAX_WINDOW_LENGTH = 40_000;
+
 const historyShowSchema = z.object({
   runId: runIdSchema("Run ID, from klaus_run_flow, klaus_request or klaus_history_list."),
   step: z
     .string()
     .optional()
     .describe(
-      "Only this step. Snapshot candidates (full response copies) are included only when step is given.",
+      "Only this step. Snapshot candidates (full response copies) are included only when step is given. Required with path.",
+    ),
+  path: z
+    .string()
+    .optional()
+    .describe(
+      "JSONPath evaluated against each selected step entry as stored, returning only the matched values instead of the whole entry: for example $.response.body, $.response.body.items[0], $.response.headers, $.request.url. Requires step.",
+    ),
+  offset: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      "Start of a window, in characters (UTF-16 code units), into the single string value that path selects (for example the text body at $.response.body). Requires path. Read a long value in windows by passing the returned nextOffset.",
+    ),
+  length: z
+    .number()
+    .int()
+    .min(1)
+    .max(MAX_WINDOW_LENGTH)
+    .optional()
+    .describe(
+      `Window size in characters (default ${DEFAULT_WINDOW_LENGTH}, max ${MAX_WINDOW_LENGTH}). Requires path.`,
     ),
 });
+
+/** 文字列の [offset, offset+length) を、サロゲートペアを分断しないように切り出す */
+function sliceWindow(text: string, offset: number, length: number) {
+  const start = Math.min(offset, text.length);
+  let end = Math.min(start + length, text.length);
+  const last = text.charCodeAt(end - 1);
+  // 上位サロゲートで終わるときは 1 文字戻し、ペアの途中で切らない(次の offset がペアの先頭になる)
+  if (end < text.length && end - start > 1 && last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return {
+    offset: start,
+    length: end - start,
+    totalLength: text.length,
+    text: text.slice(start, end),
+    ...(end < text.length ? { nextOffset: end } : {}),
+  };
+}
+
+/** 履歴エントリに JSONPath を当て、一致した値の配列を返す。不正な path は期待される失敗にする */
+function selectByPath(entry: HistoryEntry, path: string): unknown[] {
+  try {
+    const matches = JSONPath({ path, json: entry as never, wrap: true });
+    return Array.isArray(matches) ? matches : [];
+  } catch {
+    throw new ToolError(
+      `invalid path "${path.slice(0, 80)}" (expected a JSONPath such as $.response.body)`,
+    );
+  }
+}
+
 const historyShowTool: ToolDefinition<typeof historyShowSchema> = {
   name: "klaus_history_show",
   description:
-    "Return the recorded entries of one run in execution order: request, response (status, headers, body), assertions, error, actor. Secrets are masked as stored. Pass step to narrow to one step; only then are snapshot candidates included. Large values are cut with a marker when the result exceeds 256 KiB. Read-only.",
+    "Return the recorded entries of one run in execution order: request, response (status, headers, body), assertions, error, actor. Secrets are masked as stored. Pass step to narrow to one step; only then are snapshot candidates included. When the result exceeds 256 KiB, large values are cut with a marker; to read such a value, pass step and path (a JSONPath into the entry, for example $.response.body or $.response.body.items[0]) to get only that value, and for a long string add offset and length to read it in windows (each window result carries totalLength and nextOffset). A body nested deeper than 200 levels is stored as text. Read-only.",
   inputSchema: historyShowSchema,
   annotations: READ_ONLY_LOCAL,
   write: false,
@@ -772,16 +854,58 @@ const historyShowTool: ToolDefinition<typeof historyShowSchema> = {
     if (args.step !== undefined && (args.step.length === 0 || hasControlCharacter(args.step))) {
       throw new ToolError("step is invalid");
     }
+    const windowed = args.offset !== undefined || args.length !== undefined;
+    if (args.path === undefined && windowed) {
+      throw new ToolError("offset and length require path");
+    }
+    if (args.path !== undefined) {
+      if (args.step === undefined) throw new ToolError("path requires step");
+      if (
+        args.path.length === 0 ||
+        args.path.length > MAX_JSON_PATH_LENGTH ||
+        hasControlCharacter(args.path)
+      ) {
+        throw new ToolError("path is invalid");
+      }
+    }
     const all = selectRunEntries(await readAllHistoryEntries(ctx.cwd), runId);
     const entries = all.filter((entry) => args.step === undefined || entry.step === args.step);
     if (entries.length === 0) {
       const suffix = args.step !== undefined ? ` (step "${args.step}")` : "";
       throw new ToolError(`no history entries found for runId "${runId}"${suffix}`);
     }
-    return ok({
-      runId,
-      entries: args.step !== undefined ? entries : entries.map(stripSnapshotCandidates),
+
+    const path = args.path;
+    if (path === undefined) {
+      return ok({
+        runId,
+        entries: args.step !== undefined ? entries : entries.map(stripSnapshotCandidates),
+      });
+    }
+
+    // path 指定: 一致した値だけを返す。offset / length を指定したときは、単一の文字列の値の一部だけを返す
+    const selected = entries.map((entry) => {
+      const matches = selectByPath(entry, path);
+      const label = {
+        ...(entry.iteration !== undefined ? { iteration: entry.iteration } : {}),
+        matchCount: matches.length,
+      };
+      if (!windowed) return { ...label, matches };
+      const [value] = matches;
+      if (matches.length !== 1 || typeof value !== "string") {
+        throw new ToolError(
+          `offset and length need path to select exactly one string value, but it matched ${matches.length} value(s)${matches.length === 1 ? ` of type ${value === null ? "null" : typeof value}` : ""}`,
+          {
+            hint: "Narrow path to a single string, for example $.response.body when the body is text.",
+          },
+        );
+      }
+      return {
+        ...label,
+        window: sliceWindow(value, args.offset ?? 0, args.length ?? DEFAULT_WINDOW_LENGTH),
+      };
     });
+    return ok({ runId, step: args.step, path, entries: selected });
   }),
 };
 

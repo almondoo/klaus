@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createSerialQueue } from "../../src/mcp/queue.js";
+import { createSerialQueue, QueueClosedError } from "../../src/mcp/queue.js";
 import {
   MAX_RESULT_BYTES,
   serializeOutcome,
@@ -27,7 +27,11 @@ describe("stringifyWithLimit(結果のサイズ上限)", () => {
     expect(parsed.runId).toBe("r1");
     expect(parsed.entries[0].step).toBe("s");
     expect(parsed.entries[0].response.body).toContain(`[truncated: ${huge.length} bytes`);
-    expect(parsed.entries[0].response.body).toContain("klaus_history_show with step");
+    // 印は、klaus_history_show の step・path・offset・length での読み方を示す
+    expect(parsed.entries[0].response.body).toContain(
+      "klaus_history_show: pass step and path (a JSONPath into the history entry, for example $.response.body)",
+    );
+    expect(parsed.entries[0].response.body).toContain("offset and length");
     expect(parsed.resultTruncated).toBe(true);
   });
 
@@ -94,5 +98,37 @@ describe("createSerialQueue(直列キュー)", () => {
     expect(log).toEqual(["start a", "end a", "start b", "end b", "start c", "end c"]);
     expect(results.map((r) => r.status)).toEqual(["rejected", "fulfilled", "fulfilled"]);
     expect((results[1] as PromiseFulfilledResult<string>).value).toBe("b");
+  });
+});
+
+describe("createSerialQueue の close(終了処理)", () => {
+  it("close 後は、まだ開始していない待機中のタスクを実行せずに拒否し、実行中のタスクは最後まで走る", async () => {
+    const queue = createSerialQueue();
+    const log: string[] = [];
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const first = queue(async () => {
+      log.push("start first");
+      await gate;
+      log.push("end first");
+      return "first";
+    });
+    const second = queue(async () => {
+      log.push("start second");
+      return "second";
+    });
+    // 1 つ目が実行中・2 つ目が待機中の状態で閉じる
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    queue.close();
+    release();
+
+    await expect(first).resolves.toBe("first");
+    await expect(second).rejects.toBeInstanceOf(QueueClosedError);
+    // close 後の新しい呼び出しも開始されない
+    await expect(queue(async () => "late")).rejects.toBeInstanceOf(QueueClosedError);
+    expect(log).toEqual(["start first", "end first"]);
   });
 });

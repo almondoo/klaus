@@ -49,7 +49,7 @@ export function registerMcpCommand(program: Command): void {
   program
     .command("mcp")
     .description(
-      "run a stdio MCP server that exposes klaus operations as tools for AI agents (guards and secret masking always apply and cannot be overridden)",
+      "run a stdio MCP server that exposes klaus operations as tools for AI agents (guards and secret masking always apply; there is no option to turn them off)",
     )
     .option(
       "--read-only",
@@ -60,7 +60,7 @@ export function registerMcpCommand(program: Command): void {
       `
 Run from the project directory. The server speaks the Model Context Protocol over stdin/stdout only (no network listener);
 all diagnostics go to stderr. It exits 0 when stdin closes or on SIGINT/SIGTERM.
-Environment protection ($protected) and guard.allowedHosts cannot be overridden through klaus mcp; there is no --allow-protected or --no-mask.
+There is no --allow-protected, --no-mask or guard option. guard.allowedHosts in klaus.config.yaml is what limits where requests can be sent (set it when using klaus mcp); $protected only gates runs that select that environment.
 `,
     )
     .action(async (options: McpCommandOptions) => {

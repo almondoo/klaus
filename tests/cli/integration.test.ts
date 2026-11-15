@@ -20,9 +20,27 @@ const cliPath = join(projectRoot, "dist", "cli.js");
 /** /snap が返す本文(スナップショットのテストが差し替える) */
 let snapBody: unknown = { id: 1, name: "alice", at: "t1" };
 
+/** /slow-* が受信したリクエストの URL(シャットダウン時に待機中の送信が届かないことの検証用) */
+const slowHits: string[] = [];
+
 /** 成功/失敗/接続不能を再現するための最小限のローカル HTTP サーバー */
 async function startFixtureServer() {
   const server = createServer((req, res) => {
+    // 深さ 3000 の JSON をテキストとして返す(深い値を JSON.stringify しない: Node 22.19 でスタックが溢れるため)
+    if (req.url === "/deep") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(`${"[".repeat(3000)}${"]".repeat(3000)}`);
+      return;
+    }
+    // 受信してから 1.5 秒後に応答する(送信中のリクエストを作る)
+    if (req.url?.startsWith("/slow-")) {
+      slowHits.push(req.url);
+      setTimeout(() => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      }, 1500);
+      return;
+    }
     if (req.url === "/snap") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(snapBody));
@@ -113,8 +131,8 @@ interface RpcResponse {
  * フレーミングは SDK の StdioServerTransport と同じ(1 メッセージ 1 行、末尾は改行)。
  * stdout の全行を stdoutLines に溜め、プロトコル以外のものが混ざっていないことの検証に使う。
  */
-function startMcp(args: string[], cwd: string) {
-  const child = spawn("node", [cliPath, "mcp", ...args], { cwd });
+function startMcp(args: string[], cwd: string, env?: NodeJS.ProcessEnv) {
+  const child = spawn("node", [cliPath, "mcp", ...args], { cwd, ...(env ? { env } : {}) });
   const stdoutLines: string[] = [];
   const waiting = new Map<number, (response: RpcResponse) => void>();
   let buffer = "";
@@ -1709,6 +1727,121 @@ steps:
       .split("\n")
       .map((line) => JSON.parse(line));
     expect(history[0].actor).toEqual({ kind: "agent", name: "protocol-test" });
+  }, 30000);
+
+  it("(ae) 入れ子が深すぎる JSON 応答(深さ 3000): klaus req も klaus mcp の klaus_request も、環境変数のシークレットを使っていても正常終了し、本文はテキストとして履歴に残る", async () => {
+    const deepDir = join(workDir, "deep-json");
+    await mkdir(deepDir, { recursive: true });
+    const env = { ...process.env, KLAUS_IT_DEEP_SECRET: "it-deep-secret-value-1234" };
+    const secretHeader = "X-Secret: {{env.KLAUS_IT_DEEP_SECRET}}";
+
+    const req = await runCli(
+      ["req", "GET", `${fixture.baseUrl}/deep`, "-H", secretHeader],
+      deepDir,
+      cliPath,
+      env,
+    );
+    expect(req.status).toBe(0);
+    const report = JSON.parse(req.stdout);
+    expect(report.status).toBe("passed");
+    expect(typeof report.response.body).toBe("string");
+    expect(report.historyRef).toBeDefined();
+
+    const mcp = startMcp([], deepDir, env);
+    await mcp.request("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "protocol-test", version: "9.9.9" },
+    });
+    mcp.notify("notifications/initialized");
+    const called = await mcp.request("tools/call", {
+      name: "klaus_request",
+      arguments: {
+        method: "GET",
+        url: `${fixture.baseUrl}/deep`,
+        headers: { "X-Secret": "{{env.KLAUS_IT_DEEP_SECRET}}" },
+      },
+    });
+    const exitCode = await mcp.close();
+
+    expect(called.result.isError).not.toBe(true);
+    const result = JSON.parse(called.result.content[0].text);
+    expect(result.status).toBe("passed");
+    expect(typeof result.response.body).toBe("string");
+    expect(exitCode).toBe(0);
+    const historyDir = join(deepDir, ".klaus", "history");
+    const lines = (
+      await readFile(join(historyDir, (await readdir(historyDir))[0] as string), "utf-8")
+    )
+      .trim()
+      .split("\n");
+    expect(lines).toHaveLength(2);
+    for (const line of lines) expect(typeof JSON.parse(line).response.body).toBe("string");
+  }, 30000);
+
+  it("(af) klaus mcp: 標準入力を閉じたとき、送信中のリクエストは続き、待機中の 2 つ目の送信は開始されない", async () => {
+    const shutdownDir = join(workDir, "mcp-shutdown");
+    await mkdir(shutdownDir, { recursive: true });
+    slowHits.length = 0;
+    const mcp = startMcp([], shutdownDir);
+    await mcp.request("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "protocol-test", version: "9.9.9" },
+    });
+    mcp.notify("notifications/initialized");
+
+    // 応答は待たない(接続を閉じるので届かない)。1 つ目が送信中の間に 2 つ目が直列キューで待機する
+    void mcp.request("tools/call", {
+      name: "klaus_request",
+      arguments: { method: "GET", url: `${fixture.baseUrl}/slow-first` },
+    });
+    void mcp.request("tools/call", {
+      name: "klaus_request",
+      arguments: { method: "GET", url: `${fixture.baseUrl}/slow-second` },
+    });
+    for (let waited = 0; slowHits.length === 0 && waited < 10000; waited += 20) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(slowHits).toEqual(["/slow-first"]);
+    const exitCode = await mcp.close();
+    // 1 つ目の応答(1.5 秒後)の後に 2 つ目が始まらないことを、十分に待ってから確認する
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    expect(exitCode).toBe(0);
+    expect(slowHits).toEqual(["/slow-first"]);
+  }, 30000);
+
+  it("(ag) klaus run --json: 履歴に記録されなかったステップ(キャプチャ失敗)には historyRef を付けず、記録されたステップには付ける", async () => {
+    const refDir = join(workDir, "history-ref");
+    await mkdir(refDir, { recursive: true });
+    await writeFile(
+      join(refDir, "capture.yaml"),
+      `name: capture flow
+steps:
+  - name: login
+    request:
+      method: GET
+      url: "${fixture.baseUrl}/ok"
+    capture:
+      token: "$.does.not.exist"
+  - name: after
+    request:
+      method: GET
+      url: "${fixture.baseUrl}/ok"
+`,
+      "utf-8",
+    );
+
+    const run = await runCli(["run", "capture.yaml", "--json"], refDir);
+
+    expect(run.status).not.toBe(0);
+    const report = JSON.parse(run.stdout);
+    const [login, after] = report.flows[0].steps;
+    expect(login).toMatchObject({ name: "login", status: "error" });
+    expect(Object.hasOwn(login, "historyRef")).toBe(false);
+    expect(after).toMatchObject({ name: "after", status: "skipped" });
+    expect(after.historyRef).toMatchObject({ runId: report.runId, step: "after" });
   }, 30000);
 
   it("(ad) klaus mcp --read-only: 書き込みツール(klaus_promote / klaus_snapshot_accept)は登録されず、呼んでもエラーになる", async () => {

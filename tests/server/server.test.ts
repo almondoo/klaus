@@ -2461,6 +2461,8 @@ describe("GET /api/history/diff と POST /api/history/promote", () => {
       ["親ディレクトリへの脱出", "../escape.yaml"],
       ["絶対パス", "/tmp/klaus-escape.yaml"],
       ["拡張子が yaml / yml ではない", "flows/x.txt"],
+      ["拡張子の大文字小文字(探索は小文字の .yaml のみ拾う)", "flows/x.YAML"],
+      ["拡張子の大文字小文字(探索は小文字の .yml のみ拾う)", "flows/x.Yml"],
       ["隠しディレクトリ", ".git/hooks/x.yaml"],
       ["フロー探索の対象外ディレクトリ(environments)", "environments/x.yaml"],
       ["フロー探索の対象外ディレクトリ(node_modules)", "node_modules/x.yaml"],

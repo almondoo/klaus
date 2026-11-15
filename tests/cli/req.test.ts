@@ -26,6 +26,12 @@ async function startFixtureServer() {
         res.end("x".repeat(2000));
         return;
       }
+      if (req.url === "/deep") {
+        // 深さ 5000 の JSON をテキストとして返す(深い値を JSON.stringify しない: Node 22.19 でスタックが溢れるため)
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(`${"[".repeat(5000)}${"]".repeat(5000)}`);
+        return;
+      }
       if (req.url === "/sse") {
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         res.end("data: one\n\ndata: two\n\n");
@@ -152,6 +158,50 @@ describe("reqCommand", () => {
     const echo = readEcho();
     expect(echo.body).toBe("plain text");
     expect(echo.headers["content-type"]).toBeUndefined();
+  });
+
+  it("入れ子が深すぎる JSON の --body(深さ 5000)は構造化せず生の文字列として送られ、Content-Type は補われない", async () => {
+    const deep = `${"[".repeat(5000)}${"]".repeat(5000)}`;
+
+    const code = await reqCommand(
+      "POST",
+      `${fixture.baseUrl}/raw`,
+      opts({ body: deep, history: true }),
+      workDir,
+    );
+
+    expect(code).toBe(0);
+    // JSON 出力の本文は 500 文字に切り詰められるため、受信内容は履歴(応答のエコー)から確認する
+    const lines = (await readFile(historyFilePath(workDir), "utf-8")).trim().split("\n");
+    const entry = JSON.parse(lines[0] as string);
+    expect(entry.request.body).toBe(deep);
+    expect(entry.response.body.body).toBe(deep);
+    expect(entry.response.body.headers["content-type"]).toBeUndefined();
+  });
+
+  it("入れ子が深すぎる JSON 応答(深さ 5000)は、シークレットを登録していても exit 0 で、履歴にテキストとして残る", async () => {
+    process.env.KLAUS_REQ_DEEP_SECRET = "req-deep-secret-1234";
+    try {
+      const code = await reqCommand(
+        "GET",
+        `${fixture.baseUrl}/deep`,
+        opts({ history: true, header: { "X-Secret": "{{env.KLAUS_REQ_DEEP_SECRET}}" } }),
+        workDir,
+      );
+
+      expect(code).toBe(0);
+      const report = readJson();
+      expect(report.status).toBe("passed");
+      expect(typeof report.response.body).toBe("string");
+      expect(report.historyRef).toBeDefined();
+      const lines = (await readFile(historyFilePath(workDir), "utf-8")).trim().split("\n");
+      expect(lines).toHaveLength(1);
+      const entry = JSON.parse(lines[0] as string);
+      expect(typeof entry.response.body).toBe("string");
+      expect(entry.response.body).toHaveLength(10000);
+    } finally {
+      delete process.env.KLAUS_REQ_DEEP_SECRET;
+    }
   });
 
   it("--body @file は cwd 配下のファイルを読み、JSON ならパースして送る", async () => {

@@ -20,7 +20,7 @@ import { summarizeSteps, truncate } from "./text.js";
  * 圧縮するため v2 で構造を刷新した(後方互換は取らない: 利用者不在のため旧形式維持は不要)。
  * - failure-focused: passed ステップは1行要約に落とし、failed/error/skipped のみ詳細を持つ
  * - truncate: request/response ボディ・SSE events・WS wsMessages は 500 文字で切り詰める
- * - historyRef: 履歴記録が有効な実行では、全文取得用のポインタ(`klaus history show`)を各ステップに付与する
+ * - historyRef: 履歴記録が有効な実行では、履歴に実際に記録されたステップに、全文取得用のポインタ(`klaus history show`)を付与する
  * - compact: pretty print せず JSON.stringify する
  * - version: このスキーマの後方互換が壊れる変更(フィールド削除・型変更等)をする場合は値を上げること
  */
@@ -336,7 +336,7 @@ export const jsonStepReportSchema = z.strictObject({
   historyRef: historyRefSchema
     .optional()
     .describe(
-      "Pointer into the JSONL history file for this step's full record. Present only when history recording was enabled for the run.",
+      "Pointer into the JSONL history file for this step's full record. Present only when history recording was enabled for the run and this step's entry was actually recorded (steps that fail with a connection error, timeout, capture failure or similar leave no history entry and carry no historyRef).",
     ),
   redirects: z
     .array(z.string())
@@ -461,7 +461,7 @@ export const jsonReportSchema = z
       ),
   })
   .describe(
-    "klaus `run --json` output (v2). Failure-focused: passed steps are reduced to a one-line summary, while failed/error/skipped steps carry full request/response/assertion detail. Body and event/message payloads are truncated to 500 characters; use historyRef with `klaus history show` to retrieve full content when history recording is enabled.",
+    "klaus `run --json` output (v2). Failure-focused: passed steps are reduced to a one-line summary, while failed/error/skipped steps carry full request/response/assertion detail. Body and event/message payloads are truncated to 500 characters; use historyRef with `klaus history show` to retrieve full content of steps that have one (present only for steps recorded in history).",
   );
 export type JsonReport = z.infer<typeof jsonReportSchema>;
 
@@ -512,7 +512,9 @@ function buildWsMessages(messages: WsMessage[] | undefined): JsonWsMessage[] | u
 }
 
 /**
- * historyEnabled のときだけ、step.startedAt から履歴ファイルの日付を導出して historyRef を組み立てる。
+ * historyEnabled かつ履歴エントリが実際に書き込まれたステップ(step.historyRecorded)にだけ、
+ * step.startedAt から履歴ファイルの日付を導出して historyRef を組み立てる
+ * (接続不能・タイムアウト・キャプチャ失敗などで履歴に残らなかったステップには、引いても見つからないポインタを出さない)。
  * iteration は flow.iteration をそのまま引き継ぐ(--data 実行時のみ設定され、同一フロー・同一ステップ名の
  * 複数イテレーションを historyRef のみからでも区別できるようにする)。
  */
@@ -522,7 +524,7 @@ function buildHistoryRef(
   historyEnabled: boolean,
   iteration: number | undefined,
 ): HistoryRef | undefined {
-  if (!historyEnabled) return undefined;
+  if (!historyEnabled || step.historyRecorded !== true) return undefined;
   return { date: historyDateFromTimestamp(step.startedAt), runId, step: step.name, iteration };
 }
 

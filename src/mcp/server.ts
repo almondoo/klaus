@@ -6,7 +6,7 @@
  */
 import { McpServer } from "@modelcontextprotocol/server";
 import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
-import { createSerialQueue } from "./queue.js";
+import { createSerialQueue, QueueClosedError, type SerialQueue } from "./queue.js";
 import { serializeOutcome, type ToolOutcome } from "./result.js";
 import { TOOL_DEFINITIONS } from "./tools.js";
 
@@ -17,12 +17,17 @@ export interface KlausMcpServerOptions {
   readOnly: boolean;
   /** サーバー情報に載せるバージョン(klaus --version と同じ値) */
   version: string;
+  /**
+   * 送信・書き込みを伴うツールを通す直列キュー。省略時は内部で作る。
+   * 終了処理(接続が閉じたとき)で close() できるよう、runMcpServer が自分で作って渡す
+   */
+  queue?: SerialQueue;
 }
 
 /** initialize 時にクライアントへ渡す、エージェント向けの利用案内 */
 const INSTRUCTIONS = [
   "klaus runs YAML-defined HTTP request flows with guardrails. Start with klaus_list_flows and klaus_list_environments.",
-  "Guards from klaus.config.yaml (guard.allowedHosts) and environment protection ($protected) always apply and cannot be overridden through this server. When a request is refused (errorCode guard.*), tell the user; do not try to work around it.",
+  "Guards always apply and this server has no option to turn them off: guard.allowedHosts from klaus.config.yaml limits where requests can be sent, and $protected environments are refused when a run selects them. When a request is refused (errorCode guard.*), tell the user; do not try to work around it.",
   "Output is masked. Prefer klaus_dry_run before klaus_run_flow, and ask the user before accepting snapshot baselines.",
 ].join(" ");
 
@@ -42,7 +47,7 @@ export function createKlausMcpServer(options: KlausMcpServerOptions): McpServer 
   );
   // 送信・書き込みを伴うツールは 1 つずつ順に実行する(履歴・スナップショットを並行して書き換えない。
   // 呼び出し順も保たれるので、エージェントから見て結果が決定的になる)
-  const serialize = createSerialQueue();
+  const serialize = options.queue ?? createSerialQueue();
 
   for (const definition of TOOL_DEFINITIONS) {
     // --read-only では書き込みツールを登録すらしない(tools/list に出ず、呼んでも「不明なツール」になる)
@@ -63,13 +68,19 @@ export function createKlausMcpServer(options: KlausMcpServerOptions): McpServer 
           clientName: server.server.getClientVersion()?.name,
         };
         const run = () => definition.handler(args, context);
-        let outcome: ToolOutcome;
+        // 結果の直列化(深い値・巨大な値の整形)も含めて 1 つの try に入れ、例外がそのまま SDK へ漏れないようにする
+        let serialized: { text: string; isError: boolean };
         try {
-          outcome = await (definition.serialize ? serialize(run) : run());
+          const outcome = await (definition.serialize ? serialize(run) : run());
+          serialized = serializeOutcome(outcome);
         } catch (error) {
-          outcome = unexpectedFailure(definition.name, error);
+          serialized = serializeOutcome(
+            error instanceof QueueClosedError
+              ? { ok: false, error: error.message }
+              : unexpectedFailure(definition.name, error),
+          );
         }
-        const { text, isError } = serializeOutcome(outcome);
+        const { text, isError } = serialized;
         return {
           content: [{ type: "text" as const, text }],
           ...(isError ? { isError: true } : {}),
@@ -85,14 +96,21 @@ export function createKlausMcpServer(options: KlausMcpServerOptions): McpServer 
  * 閉じたら resolve する(終了コードの決定とプロセスの終了は呼び出し側)。
  */
 export async function runMcpServer(options: KlausMcpServerOptions): Promise<void> {
-  const server = createKlausMcpServer(options);
+  // 接続が閉じる・終了シグナルを受けたら、まだ開始していない送信を拒否する(待機中の呼び出しが閉じた後に送信されないように)。
+  // 実行中の送信は待たない(終了コードの決定後、猶予のあとにプロセスごと終了する)
+  const queue = createSerialQueue();
+  const server = createKlausMcpServer({ ...options, queue });
   const closed = new Promise<void>((resolve) => {
-    server.server.onclose = () => resolve();
+    server.server.onclose = () => {
+      queue.close();
+      resolve();
+    };
   });
   server.server.onerror = (error) => {
     process.stderr.write(`klaus mcp: ${error.message}\n`);
   };
   const shutdown = () => {
+    queue.close();
     server.close().catch((error: unknown) => {
       process.stderr.write(
         `klaus mcp: failed to close: ${error instanceof Error ? error.message : String(error)}\n`,

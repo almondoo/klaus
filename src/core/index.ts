@@ -87,8 +87,10 @@ export type {
 } from "./json-diff.js";
 export {
   diffJson,
+  exceedsDepth,
   formatJsonPath,
   MAX_DESCENDANT_OPERATORS,
+  MAX_JSON_BODY_DEPTH,
   parseJsonPathPattern,
   replaceIgnoredPaths,
 } from "./json-diff.js";

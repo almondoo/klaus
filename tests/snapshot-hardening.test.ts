@@ -226,16 +226,17 @@ describe("snapshot の堅牢化", () => {
     expect(JSON.parse(await readFile(snapFile(), "utf-8"))["get-user"].body.name).toBe("alice");
   });
 
-  it("深すぎる応答は、クラッシュせず分かりやすいメッセージでスナップショットの失敗にする", async () => {
+  it("深すぎる JSON 応答は、パースされずテキストのまま届くため、クラッシュせずテキストの本文として基準になる", async () => {
     await newCwd();
-    state.raw = `${"[".repeat(1000)}${"]".repeat(1000)}`;
+    const deep = `${"[".repeat(1000)}${"]".repeat(1000)}`;
+    state.raw = deep;
     const flow = flowOf([getStep("get-user", { snapshot: true })]);
 
     const result = await executeFlow(flow, "flows/snap.yaml", options());
 
-    expect(result.status).toBe("failed");
-    expect(result.steps[0]?.assertions[0]?.message).toContain("nested deeper than");
-    await expect(readFile(snapFile(), "utf-8")).rejects.toThrow();
+    expect(result.status).toBe("passed");
+    // 入れ子が上限を超える JSON は parseJsonBody がテキストのまま返す(スナップショットの深さの検査まで届かない)
+    expect(JSON.parse(await readFile(snapFile(), "utf-8"))["get-user"].body).toBe(deep);
   });
 
   it("accept は履歴の候補を検証し、形が不正なものは書かない", async () => {

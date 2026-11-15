@@ -3,7 +3,12 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import { dirname, join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { appendHistory, readAllHistoryEntries } from "../../src/core/index.js";
-import type { ToolFailure, ToolOutcome } from "../../src/mcp/result.js";
+import {
+  MAX_RESULT_BYTES,
+  serializeOutcome,
+  type ToolFailure,
+  type ToolOutcome,
+} from "../../src/mcp/result.js";
 import { resolveMcpActor, TOOL_DEFINITIONS, type ToolContext } from "../../src/mcp/tools.js";
 import { closeServer, listenEphemeral } from "../support/net.js";
 
@@ -22,6 +27,12 @@ interface Received {
   headers: IncomingMessage["headers"];
   body: string;
 }
+
+/** 300 KiB 超のテキスト本文。位置ごとに内容が違い、2 バイト文字・サロゲートペア(U+1D4B3)・引用符・改行を含む */
+const BIG_TEXT = Array.from(
+  { length: 30000 },
+  (_, i) => `${i.toString(36).padStart(4, "0")}|é"\n${String.fromCodePoint(0x1d4b3)}|`,
+).join("");
 
 let fixture: Server;
 let baseUrl = "";
@@ -86,6 +97,17 @@ beforeAll(async () => {
       };
       if (req.url === "/echo-auth") return json(200, { authorization: req.headers.authorization });
       if (req.url === "/snap") return json(200, snapBody);
+      if (req.url === "/deep") {
+        // 深さ 5000 の JSON をテキストとして返す(深い値を JSON.stringify しない: Node 22.19 でスタックが溢れるため)
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(`${"[".repeat(5000)}${"]".repeat(5000)}`);
+        return;
+      }
+      if (req.url === "/big") {
+        res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end(BIG_TEXT);
+        return;
+      }
       if (req.url === "/items" && req.method === "POST") return json(201, { id: 1, name: "a" });
       return json(200, { ok: true });
     });
@@ -209,6 +231,40 @@ describe("参照系のツール", () => {
   });
 });
 
+describe("klaus_dry_run の variables と環境の値の表示", () => {
+  it("variables はテンプレートの変数として展開される(送らない)", async () => {
+    await writeProjectFile(
+      "api/vars.yaml",
+      `name: vars\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "${baseUrl}/items/{{itemId}}"\n`,
+    );
+
+    const result = data(
+      await call("klaus_dry_run", { file: "api/vars.yaml", variables: { itemId: "42" } }),
+    );
+
+    expect(result.flows[0].steps[0].request.url).toBe(`${baseUrl}/items/42`);
+    expect(result.summary.expansionErrors).toBe(0);
+    expect(received).toHaveLength(0);
+  });
+
+  it("保護された環境ファイルの値は、拒否された(refused)ステップでも展開されて表示される(マスクされるのは秘密として登録された値だけ)", async () => {
+    await writeProjectFile(
+      "api/prod.yaml",
+      `name: prod flow\nenv: prod\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "${baseUrl}/ok"\n      headers:\n        X-Api-Key: "{{apiKey}}"\n`,
+    );
+    await writeProjectFile(
+      "environments/prod.yaml",
+      "$protected: true\napiKey: plain-env-file-value\n",
+    );
+
+    const prod = data(await call("klaus_dry_run", { file: "api/prod.yaml" }));
+
+    const step = prod.flows[0].steps[0];
+    expect(step.guard.errorCode).toBe("guard.protected");
+    expect(step.request.headers["X-Api-Key"]).toBe("plain-env-file-value");
+  });
+});
+
 describe("klaus_run_flow", () => {
   it("実行して要約を返し、履歴に agent とクライアント名で記録する(応答本文は含めない)", async () => {
     await writeProjectFile(
@@ -234,6 +290,58 @@ describe("klaus_run_flow", () => {
     expect(history).toHaveLength(1);
     expect(history[0]?.runId).toBe(result.runId);
     expect(history[0]?.actor).toEqual({ kind: "agent", name: "test-agent" });
+  });
+
+  it("履歴に記録されたステップにだけ historyRef を付け、記録されないエラー(キャプチャ失敗)のステップには付けない", async () => {
+    await writeProjectFile(
+      "api/capture.yaml",
+      `name: capture flow
+steps:
+  - name: login
+    request:
+      method: GET
+      url: "${baseUrl}/ok"
+    capture:
+      token: "$.does.not.exist"
+  - name: after
+    request:
+      method: GET
+      url: "${baseUrl}/ok"
+`,
+    );
+    await writeProjectFile("api/ok.yaml", getFlow("ok flow", "/ok"));
+
+    const failed = data(await call("klaus_run_flow", { file: "api/capture.yaml" }));
+    const passed = data(await call("klaus_run_flow", { file: "api/ok.yaml" }));
+
+    const [login, after] = failed.flows[0].steps;
+    expect(login).toMatchObject({ name: "login", status: "error" });
+    expect(login).not.toHaveProperty("historyRef");
+    // 先行ステップの失敗でスキップされたステップは記録される
+    expect(after).toMatchObject({ name: "after", status: "skipped" });
+    expect(after.historyRef).toEqual({ runId: failed.runId, step: "after" });
+    expect(passed.flows[0].steps[0].historyRef).toEqual({ runId: passed.runId, step: "get" });
+    // historyRef が指すエントリは引け、無いステップは引けない
+    expect(
+      data(await call("klaus_history_show", { runId: failed.runId, step: "after" })).entries,
+    ).toHaveLength(1);
+    expect(
+      failure(await call("klaus_history_show", { runId: failed.runId, step: "login" })).error,
+    ).toContain("no history entries found");
+  });
+
+  it("入れ子が深すぎる JSON 応答(深さ 5000)でも実行が完了し、履歴に記録され、結果を返せる", async () => {
+    await writeProjectFile(
+      "api/deep.yaml",
+      getFlow("deep flow", "/deep", "    assert:\n      status: 200\n"),
+    );
+
+    const result = data(await call("klaus_run_flow", { file: "api/deep.yaml" }));
+
+    expect(result.status).toBe("passed");
+    expect(result.flows[0].steps[0].historyRef).toEqual({ runId: result.runId, step: "get" });
+    const history = await readAllHistoryEntries(cwd);
+    expect(typeof history[0]?.response?.body).toBe("string");
   });
 
   it("失敗したアサーションは失敗のまま通常の結果として返し(ツールの失敗にしない)、秘密の値はマスクする", async () => {
@@ -394,6 +502,52 @@ describe("klaus_request", () => {
     expect(JSON.stringify(outcome)).not.toContain(TOKEN);
   });
 
+  it("入れ子が深すぎる JSON 応答(深さ 5000)は、シークレットの有無によらず通常の結果で返り、本文はテキストのまま履歴に残る", async () => {
+    for (const headers of [undefined, { Authorization: "Bearer {{env.MCP_TEST_TOKEN}}" }]) {
+      const outcome = await call("klaus_request", {
+        method: "GET",
+        url: `${baseUrl}/deep`,
+        ...(headers !== undefined ? { headers } : {}),
+      });
+
+      const result = data(outcome);
+      expect(result.status).toBe("passed");
+      expect(typeof result.response.body).toBe("string");
+      expect(result.response.body).toHaveLength(10000);
+      expect(result.historyRecorded).toBe(true);
+      expect(JSON.stringify(outcome)).not.toContain(TOKEN);
+    }
+    const history = await readAllHistoryEntries(cwd);
+    expect(history).toHaveLength(2);
+    expect(history.every((entry) => typeof entry.response?.body === "string")).toBe(true);
+  });
+
+  it("入れ子が深すぎる object / array の body は、分かりやすいエラーで拒否して送らない(文字列なら送れる)", async () => {
+    // 深い値は JSON.stringify せず、反復で組み立てる
+    let deep: unknown = [];
+    for (let i = 0; i < 300; i++) deep = [deep];
+
+    const refused = failure(
+      await call("klaus_request", { method: "POST", url: `${baseUrl}/items`, body: deep }),
+    );
+
+    expect(refused.error).toContain("nested deeper than 200 levels");
+    expect(refused.hint).toContain("string");
+    expect(received).toHaveLength(0);
+
+    const asText = `${"[".repeat(300)}${"]".repeat(300)}`;
+    const sent = data(
+      await call("klaus_request", {
+        method: "POST",
+        url: `${baseUrl}/items`,
+        headers: { "Content-Type": "application/json" },
+        body: asText,
+      }),
+    );
+    expect(sent.status).toBe("passed");
+    expect(received[0]?.body).toBe(asText);
+  });
+
   it("許可リスト外のホストは errorCode と案内つきのツールの失敗になり、送信しない", async () => {
     await writeProjectFile("klaus.config.yaml", "guard:\n  allowedHosts:\n    - example.com\n");
 
@@ -421,7 +575,7 @@ describe("klaus_request", () => {
 
     expect(prod.errorCode).toBe("guard.protected");
     expect(prod.error).toContain("klaus mcp cannot override environment protection");
-    expect(prod.hint).toContain("cannot be overridden through klaus mcp");
+    expect(prod.hint).toContain("has no option to override");
     expect(post.errorCode).toBe("guard.readonly");
     expect(get.response.status).toBe(200);
     expect(received.map((r) => r.method)).toEqual(["GET"]);
@@ -490,6 +644,123 @@ describe("履歴・差分・スナップショットの参照", () => {
     expect(failure(await call("klaus_history_show", { runId: "bad id!" })).error).toContain(
       "not a valid run ID",
     );
+  });
+
+  it("klaus_history_show: path で履歴エントリの一部だけを返し、offset / length で 300 KiB 超の本文を窓に区切って完全に読み戻せる", async () => {
+    const { runId } = data(await call("klaus_request", { method: "GET", url: `${baseUrl}/big` }));
+    expect(Buffer.byteLength(BIG_TEXT, "utf8")).toBeGreaterThan(300 * 1024);
+
+    // 全体を読むと切り詰められ、印は path・offset・length での読み方を示す
+    const whole = await call("klaus_history_show", { runId, step: "request" });
+    const wholeText = serializeOutcome(whole).text;
+    expect(wholeText).toContain("klaus_history_show: pass step and path");
+    expect(wholeText).toContain("offset and length");
+
+    // path だけなら、選んだ値が(必要なら印つきで)返る
+    const status = data(
+      await call("klaus_history_show", { runId, step: "request", path: "$.response.status" }),
+    );
+    expect(status.entries).toEqual([{ matchCount: 1, matches: [200] }]);
+
+    // 窓で読み進めて、元の本文に完全に一致することを確認する
+    let text = "";
+    let offset = 0;
+    let windows = 0;
+    for (;;) {
+      const outcome = await call("klaus_history_show", {
+        runId,
+        step: "request",
+        path: "$.response.body",
+        offset,
+        ...(windows === 0 ? {} : { length: 40000 }),
+      });
+      // 窓の結果は、結果の上限(256 KiB)に収まり、切り詰められない
+      const serialized = serializeOutcome(outcome).text;
+      expect(Buffer.byteLength(serialized, "utf8")).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+      expect(serialized).not.toContain("[truncated:");
+      expect(serialized).not.toContain("resultTruncated");
+      const window = data(outcome).entries[0].window;
+      expect(window.totalLength).toBe(BIG_TEXT.length);
+      text += window.text;
+      windows += 1;
+      if (window.nextOffset === undefined) break;
+      expect(window.nextOffset).toBe(window.offset + window.length);
+      offset = window.nextOffset;
+    }
+    expect(windows).toBeGreaterThan(1);
+    expect(text).toBe(BIG_TEXT);
+  });
+
+  it("klaus_history_show: 最大の length の窓は、JSON のエスケープで 6 倍に膨らむ制御文字だけの本文でも結果の上限に収まる", async () => {
+    await appendHistory(cwd, {
+      v: 1,
+      runId: "ctl-run",
+      flow: "(single)",
+      step: "request",
+      startedAt: new Date().toISOString(),
+      durationMs: 1,
+      status: "passed",
+      source: "single",
+      request: { method: "GET", url: `${baseUrl}/x`, headers: {} },
+      response: { status: 200, headers: {}, body: "\u0001".repeat(100_000) },
+      assertions: [],
+    });
+
+    const outcome = await call("klaus_history_show", {
+      runId: "ctl-run",
+      step: "request",
+      path: "$.response.body",
+      offset: 0,
+      length: 40000,
+    });
+
+    const text = serializeOutcome(outcome).text;
+    expect(Buffer.byteLength(text, "utf8")).toBeLessThanOrEqual(MAX_RESULT_BYTES);
+    expect(text).not.toContain("resultTruncated");
+    expect(data(outcome).entries[0].window).toMatchObject({ length: 40000, nextOffset: 40000 });
+  });
+
+  it("klaus_history_show: offset / length / path の誤用は失敗にする(step なしの path、path なしの offset、文字列でない値、不正な path、範囲外の length)", async () => {
+    const { runId } = data(await call("klaus_request", { method: "GET", url: `${baseUrl}/ok` }));
+
+    expect(
+      failure(await call("klaus_history_show", { runId, path: "$.response.body" })).error,
+    ).toContain("path requires step");
+    expect(
+      failure(await call("klaus_history_show", { runId, step: "request", offset: 0 })).error,
+    ).toContain("offset and length require path");
+    // body は JSON のオブジェクトなので窓では読めない(path で絞る)
+    const notString = failure(
+      await call("klaus_history_show", {
+        runId,
+        step: "request",
+        path: "$.response.body",
+        offset: 0,
+      }),
+    );
+    expect(notString.error).toContain("exactly one string value");
+    expect(notString.hint).toContain("Narrow path");
+    expect(
+      failure(
+        await call("klaus_history_show", { runId, step: "request", path: "$.nothing", offset: 0 }),
+      ).error,
+    ).toContain("matched 0 value(s)");
+    expect(
+      failure(await call("klaus_history_show", { runId, step: "request", path: "$[?(" })).error,
+    ).toContain("invalid path");
+    // length は上限を超えられない(スキーマで拒否される)
+    expect(() =>
+      TOOL_DEFINITIONS.find((tool) => tool.name === "klaus_history_show")?.inputSchema.parse({
+        runId,
+        step: "request",
+        path: "$.response.body",
+        length: 40001,
+      }),
+    ).toThrow();
+    // 一致しない path は、空の matches で返る(失敗にしない)
+    expect(
+      data(await call("klaus_history_show", { runId, step: "request", path: "$.nothing" })).entries,
+    ).toEqual([{ matchCount: 0, matches: [] }]);
   });
 
   it("klaus_diff_runs: 2 つの run の差分を返し、latest / previous は flow を要求する", async () => {

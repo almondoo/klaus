@@ -22,6 +22,7 @@ import {
   diffJson,
   exceedsDepth,
   type JsonPathPattern,
+  MAX_JSON_BODY_DEPTH,
   parseJsonPathPattern,
   replaceIgnoredPaths,
 } from "./json-diff.js";
@@ -60,8 +61,8 @@ const MAX_INLINE_DIFFERENCES = 3;
 export const MAX_SNAPSHOT_ENTRY_BYTES = 1024 * 1024;
 /** スナップショットファイル全体の最大バイト数(読み込み時の上限) */
 export const MAX_SNAPSHOT_FILE_BYTES = 16 * 1024 * 1024;
-/** 保存・比較する body の最大の入れ子の深さ */
-const MAX_SNAPSHOT_DEPTH = 200;
+/** 保存・比較する body の最大の入れ子の深さ(構造化して扱う JSON 全体の上限と共通) */
+const MAX_SNAPSHOT_DEPTH = MAX_JSON_BODY_DEPTH;
 /** 古いエントリの警告に並べるキーの最大件数 */
 const MAX_OBSOLETE_KEYS_IN_WARNING = 10;
 

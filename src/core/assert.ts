@@ -1,6 +1,7 @@
 import Ajv2020 from "ajv/dist/2020";
 import { JSONPath } from "jsonpath-plus";
 import { maskCookieRequestHeader, maskSetCookieHeader } from "./cookie-jar.js";
+import { exceedsDepth, MAX_JSON_BODY_DEPTH } from "./json-diff.js";
 import type {
   AssertDef,
   BodyAssertion,
@@ -584,6 +585,8 @@ function resolveItemValue(
   } catch {
     return { exists: false, value: undefined };
   }
+  // 深すぎる JSON は本文と同様に構造化しない(JSONPath は一致しない扱い)
+  if (exceedsDepth(parsed, MAX_JSON_BODY_DEPTH)) return { exists: false, value: undefined };
   return safeJsonPath(path, parsed);
 }
 

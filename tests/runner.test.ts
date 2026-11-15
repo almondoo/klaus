@@ -28,6 +28,12 @@ async function startAuthServer() {
         }
         return;
       }
+      if (req.url === "/deep") {
+        // 深さ 5000 の JSON をテキストとして組み立てて返す(深い値を JSON.stringify しない: Node 22.19 でスタックが溢れるため)
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(`${"[".repeat(5000)}${"]".repeat(5000)}`);
+        return;
+      }
       if (req.url === "/me" && req.method === "GET") {
         const auth = req.headers.authorization ?? "";
         const token = auth.replace("Bearer ", "");
@@ -317,6 +323,79 @@ describe("executeFlow", () => {
     expect(first.flow).toBe("auth flow");
     expect(first.step).toBe("login");
     expect(first.status).toBe("passed");
+  });
+
+  it("履歴に書き込めたステップだけ historyRecorded: true になる(キャプチャ失敗の error・history: false は付かない)", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+    const flow = flowSchema.parse({
+      name: "recorded flag flow",
+      steps: [
+        {
+          name: "login",
+          request: {
+            method: "POST",
+            url: `${ctx.baseUrl}/login`,
+            headers: { "Content-Type": "application/json" },
+            body: { email: "user@example.com", password: "secret" },
+          },
+          capture: { missing: "$.does.not.exist" },
+        },
+        { name: "get-me", request: { method: "GET", url: `${ctx.baseUrl}/me` } },
+      ],
+    });
+
+    const result = await executeFlow(flow, "recorded-flag-flow.yaml", { cwd });
+
+    // 1 つ目はキャプチャ失敗で error(履歴エントリを作らない)、2 つ目は skipped(記録される)
+    expect(result.steps.map((step) => [step.status, step.historyRecorded])).toEqual([
+      ["error", undefined],
+      ["skipped", true],
+    ]);
+    const entries = await readAllHistoryEntries(cwd);
+    expect(entries.map((entry) => entry.step)).toEqual(["get-me"]);
+
+    const withoutHistory = await executeFlow(buildAuthFlow(), "auth-flow.yaml", {
+      cwd,
+      history: false,
+    });
+    expect(withoutHistory.steps.every((step) => step.historyRecorded === undefined)).toBe(true);
+  });
+
+  it("入れ子が深すぎる JSON 応答(深さ 5000)は、シークレットの登録の有無によらず実行が完了し、本文はテキストとして履歴に残る", async () => {
+    const SECRET_KEY = "KLAUS_TEST_DEEP_SECRET";
+    process.env[SECRET_KEY] = "deep-secret-value-1234";
+    try {
+      for (const withSecret of [false, true]) {
+        cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+        const flow = flowSchema.parse({
+          name: `deep flow ${withSecret}`,
+          steps: [
+            {
+              name: "deep",
+              request: {
+                method: "GET",
+                url: `${ctx.baseUrl}/deep`,
+                ...(withSecret ? { headers: { "X-Secret": `{{env.${SECRET_KEY}}}` } } : {}),
+              },
+              assert: { status: 200 },
+            },
+          ],
+        });
+
+        const result = await executeFlow(flow, "deep-flow.yaml", { cwd });
+
+        expect(result.status).toBe("passed");
+        const body = result.steps[0]?.response?.body;
+        expect(typeof body).toBe("string");
+        expect((body as string).length).toBe(10000);
+        const entries = await readAllHistoryEntries(cwd);
+        expect(entries).toHaveLength(1);
+        expect(typeof entries[0]?.response?.body).toBe("string");
+        expect(result.steps[0]?.historyRecorded).toBe(true);
+      }
+    } finally {
+      delete process.env[SECRET_KEY];
+    }
   });
 
   it("history に関数を渡すとカスタムシンクへ渡され、ディスクには書かれない", async () => {

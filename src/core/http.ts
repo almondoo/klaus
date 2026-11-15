@@ -1,5 +1,6 @@
 import { type Dispatcher, FormData, request } from "undici";
 import { RuntimeError } from "./errors.js";
+import { exceedsDepth, MAX_JSON_BODY_DEPTH } from "./json-diff.js";
 
 /** リクエスト共通オプション */
 export interface HttpRequestOptions {
@@ -138,6 +139,8 @@ function toRuntimeError(
  * bodyText をそのまま返す(sendRequest・cassette.ts の cassetteEntryToHttpResponse で共有する判定)。
  * contentType は undici の生ヘッダー値(string | string[] | undefined)をそのまま受け取る。
  * 重複 Content-Type ヘッダーで配列になった場合は JSON とみなさない(HEAD の挙動を維持)。
+ * 入れ子が MAX_JSON_BODY_DEPTH を超える JSON は、再帰で走査する後段(マスク・JSONPath 等)が
+ * スタックを使い果たさないよう、パース結果を捨てて生テキストのまま返す。
  */
 export function parseJsonBody(
   contentType: string | string[] | undefined,
@@ -146,7 +149,9 @@ export function parseJsonBody(
   const isJson = typeof contentType === "string" && contentType.includes("application/json");
   if (!isJson || bodyText.length === 0) return bodyText;
   try {
-    return JSON.parse(bodyText);
+    const parsed: unknown = JSON.parse(bodyText);
+    // 深すぎる JSON は構造化せずテキストのまま扱う
+    return exceedsDepth(parsed, MAX_JSON_BODY_DEPTH) ? bodyText : parsed;
   } catch {
     // JSON として壊れている場合はテキストのまま扱う
     return bodyText;

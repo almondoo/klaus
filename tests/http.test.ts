@@ -3,7 +3,8 @@ import type { AddressInfo } from "node:net";
 import { createServer as createNetServer } from "node:net";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { RuntimeError } from "../src/core/errors.js";
-import { sendRequest } from "../src/core/http.js";
+import { parseJsonBody, sendRequest } from "../src/core/http.js";
+import { MAX_JSON_BODY_DEPTH } from "../src/core/json-diff.js";
 import { closeServer, listenEphemeral } from "./support/net.js";
 
 async function startServer() {
@@ -31,6 +32,12 @@ async function startServer() {
             receivedBody: bodyText,
           }),
         );
+        return;
+      }
+      if (req.url === "/deep-json") {
+        // 深さ 5000 の JSON をテキストとして返す(深い値を JSON.stringify しない: Node 22.19 でスタックが溢れるため)
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(`${"[".repeat(5000)}${"]".repeat(5000)}`);
         return;
       }
       if (req.url === "/broken-json") {
@@ -93,6 +100,24 @@ describe("sendRequest", () => {
     const response = await sendRequest({ method: "GET", url: `${ctx.baseUrl}/broken-json` });
     expect(response.body).toBe("{not valid json");
     expect(response.bodyText).toBe("{not valid json");
+  });
+
+  it("入れ子が深すぎる JSON(深さ 5000)は、パース結果を捨ててテキストのまま返す", async () => {
+    const response = await sendRequest({ method: "GET", url: `${ctx.baseUrl}/deep-json` });
+    expect(typeof response.body).toBe("string");
+    expect(response.body).toBe(response.bodyText);
+    expect((response.body as string).length).toBe(10000);
+  });
+
+  it("parseJsonBody: 入れ子が上限未満の JSON はパースし、上限に達する JSON はテキストのまま返す", () => {
+    const nested = (levels: number) => `${"[".repeat(levels)}${"]".repeat(levels)}`;
+    // exceedsDepth は depth >= max で超過とみなすため、最も深い配列の深さが MAX_JSON_BODY_DEPTH - 1 まではパースされる
+    const withinLimit = nested(MAX_JSON_BODY_DEPTH);
+    const overLimit = nested(MAX_JSON_BODY_DEPTH + 1);
+    expect(typeof parseJsonBody("application/json", withinLimit)).toBe("object");
+    expect(parseJsonBody("application/json", overLimit)).toBe(overLimit);
+    // JSON ではない content-type は、深さによらずテキストのまま
+    expect(parseJsonBody("text/plain", withinLimit)).toBe(withinLimit);
   });
 
   it("body が string ならそのまま送信する", async () => {

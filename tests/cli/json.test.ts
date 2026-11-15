@@ -149,9 +149,16 @@ describe("formatJson", () => {
     expect((step.wsMessages[0].data as string).length).toBeLessThan(longData.length);
   });
 
-  it("historyEnabled=true の場合、各ステップに historyRef を付与する", () => {
+  it("historyEnabled=true の場合、履歴に記録されたステップに historyRef を付与する", () => {
     const flow = buildFlow({
-      steps: [buildStep({ name: "ok", status: "passed", startedAt: "2026-08-08T01:23:45.000Z" })],
+      steps: [
+        buildStep({
+          name: "ok",
+          status: "passed",
+          startedAt: "2026-08-08T01:23:45.000Z",
+          historyRecorded: true,
+        }),
+      ],
     });
     const parsed = JSON.parse(formatJson(buildRunResult([flow]), { historyEnabled: true }));
 
@@ -165,7 +172,14 @@ describe("formatJson", () => {
   it("historyEnabled=true かつ FlowResult.iteration が設定されている場合(--data 実行時)、historyRef.iteration に反映される", () => {
     const flow = buildFlow({
       iteration: 2,
-      steps: [buildStep({ name: "ok", status: "passed", startedAt: "2026-08-08T01:23:45.000Z" })],
+      steps: [
+        buildStep({
+          name: "ok",
+          status: "passed",
+          startedAt: "2026-08-08T01:23:45.000Z",
+          historyRecorded: true,
+        }),
+      ],
     });
     const parsed = JSON.parse(formatJson(buildRunResult([flow]), { historyEnabled: true }));
 
@@ -179,11 +193,40 @@ describe("formatJson", () => {
 
   it("historyEnabled=true かつ FlowResult.iteration が未設定の場合(通常実行)、historyRef.iteration キー自体が存在しない", () => {
     const flow = buildFlow({
-      steps: [buildStep({ name: "ok", status: "passed", startedAt: "2026-08-08T01:23:45.000Z" })],
+      steps: [
+        buildStep({
+          name: "ok",
+          status: "passed",
+          startedAt: "2026-08-08T01:23:45.000Z",
+          historyRecorded: true,
+        }),
+      ],
     });
     const parsed = JSON.parse(formatJson(buildRunResult([flow]), { historyEnabled: true }));
 
     expect(Object.hasOwn(parsed.flows[0].steps[0].historyRef, "iteration")).toBe(false);
+  });
+
+  it("historyEnabled=true でも、履歴に記録されなかったステップ(キャプチャ失敗などの error)には historyRef を付けない", () => {
+    const flow = buildFlow({
+      steps: [
+        buildStep({ name: "recorded", status: "failed", historyRecorded: true }),
+        buildStep({
+          name: "capture-failed",
+          status: "error",
+          error: 'capture "token" failed: path "$.token" not found',
+        }),
+        buildStep({ name: "skipped-recorded", status: "skipped", historyRecorded: true }),
+      ],
+    });
+    const parsed = JSON.parse(formatJson(buildRunResult([flow]), { historyEnabled: true }));
+
+    const refs = parsed.flows[0].steps.map((step: { historyRef?: unknown }) => step.historyRef);
+    expect(refs[0]).toMatchObject({ runId: "run-1", step: "recorded" });
+    expect(refs[1]).toBeUndefined();
+    expect(Object.hasOwn(parsed.flows[0].steps[1], "historyRef")).toBe(false);
+    expect(refs[2]).toMatchObject({ step: "skipped-recorded" });
+    expect(() => jsonReportSchema.parse(parsed)).not.toThrow();
   });
 
   it("historyEnabled=false の場合、historyRef を省略する", () => {

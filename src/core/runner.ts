@@ -1526,6 +1526,8 @@ export async function executeFlow(
         const maskedEntry = maskHistoryEntry({ ...historyEntry, ...auditFields }, [...secrets]);
         try {
           await historySink(maskedEntry);
+          // 書き込めた場合だけ印を付ける(履歴を引くポインタは、実際に記録されたステップにだけ出すため)
+          result = { ...result, historyRecorded: true };
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           options.onWarning?.(

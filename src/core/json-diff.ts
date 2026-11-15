@@ -211,6 +211,13 @@ export interface DiffJsonOptions {
   ignorePaths?: readonly JsonPathPattern[];
 }
 
+/**
+ * 本文として構造化して扱う JSON の入れ子の上限。これを超える JSON はパース結果を捨てて生テキストのまま扱う
+ * (マスク・JSONPath・スナップショットなど再帰で走査する処理がスタックを使い果たすのを避けるため。
+ * parseJsonBody・SSE/WS の data・klaus req の body・スナップショットが共有する)。
+ */
+export const MAX_JSON_BODY_DEPTH = 200;
+
 /** 値の入れ子が max を超えるか(反復で数えるためスタックを消費しない) */
 export function exceedsDepth(value: unknown, max: number): boolean {
   const stack: Array<[unknown, number]> = [[value, 0]];

@@ -113,7 +113,9 @@ export async function resolvePromoteOutput(
     return forbidden("path traversal detected");
   }
   const file = toDisplayPath(resolvedCwd, target);
-  if (!YAML_EXTENSIONS.has(extname(target).toLowerCase())) {
+  // フロー探索(discovery.ts)は大文字小文字を区別して .yaml / .yml だけを拾うため、ここも同じ規則にする
+  // (大文字の拡張子で書いたファイルは、書けても探索されず klaus run の対象に見えなくなる)
+  if (!YAML_EXTENSIONS.has(extname(target))) {
     return forbidden(`output file must end with .yaml or .yml: "${file}"`);
   }
   const segments = file.split("/");

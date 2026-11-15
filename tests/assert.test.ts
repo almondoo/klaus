@@ -287,6 +287,14 @@ describe("assertEvents", () => {
     expect(results[0]?.ok).toBe(false);
   });
 
+  it("data が入れ子の深すぎる JSON(深さ 5000)の場合は JSON として扱わず、path は一致しない(例外も出さない)", () => {
+    const deep = `${"[".repeat(5000)}${"]".repeat(5000)}`;
+    const results = assertEvents([{ index: 0, path: "$", exists: true }], [{ data: deep }]);
+    expect(results[0]?.ok).toBe(false);
+    // path を使わなければ、生文字列に対するアサーションは従来どおり
+    expect(assertEvents([{ index: 0, contains: "[[[" }], [{ data: deep }])[0]?.ok).toBe(true);
+  });
+
   it("path 省略時は data 生文字列にマッチャーを適用する", () => {
     const rawEvents = [{ data: "hello" }, { data: "world" }];
     const results = assertEvents([{ contains: "wor" }], rawEvents);

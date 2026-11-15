@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
+  exceedsDepth,
   executeSingleRequest,
   expandSecretVariants,
   formatZodError,
@@ -8,6 +9,7 @@ import {
   type HttpConfig,
   isPathWithinDir,
   isRealPathWithinDir,
+  MAX_JSON_BODY_DEPTH,
   maskDeep,
   ParseError,
   requestSchema,
@@ -58,6 +60,7 @@ type ResolveBodyResult = { ok: true; body: unknown } | { ok: false; message: str
  * - 内容が JSON としてパースできればその値(オブジェクト・配列・数値など)、できなければ生の文字列を使う。
  *   フロー定義の body と同じ扱いで、オブジェクトは JSON として送られ Content-Type: application/json が補われ、
  *   文字列はそのまま送られる(この場合 Content-Type は -H で指定する)。
+ * - 入れ子が MAX_JSON_BODY_DEPTH を超える JSON は構造化せず生の文字列として扱う。
  */
 async function resolveBody(value: string, cwd: string): Promise<ResolveBodyResult> {
   let text = value;
@@ -87,7 +90,9 @@ async function resolveBody(value: string, cwd: string): Promise<ResolveBodyResul
     }
   }
   try {
-    return { ok: true, body: JSON.parse(text) as unknown };
+    const parsed: unknown = JSON.parse(text);
+    // 深すぎる JSON は構造化せず生テキストのまま送る(マスク等の再帰走査でスタックを使い果たすのを避ける)
+    return { ok: true, body: exceedsDepth(parsed, MAX_JSON_BODY_DEPTH) ? text : parsed };
   } catch {
     return { ok: true, body: text };
   }

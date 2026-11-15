@@ -188,6 +188,12 @@ export interface StepResult {
    * 資格情報のヘッダーと、秘密値を値に含むヘッダーが対象。何も落としていなければ省略する
    */
   droppedHeaders?: { hop: number; headers: string[] }[];
+  /**
+   * このステップの履歴エントリを実際に書き込めたときだけ true(履歴が無効・書き込み失敗・
+   * 接続不能やタイムアウトなど履歴に残らない実行時エラーでは省略する)。
+   * historyRef のような「履歴を引くためのポインタ」は、これが true のときだけ出す
+   */
+  historyRecorded?: boolean;
 }
 
 /** 1フロー(YAML 1ファイル)の実行結果 */
