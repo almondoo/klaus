@@ -1,5 +1,14 @@
 import { execSync, spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -88,6 +97,57 @@ function runCli(
     child.on("error", reject);
     child.on("close", (status) => resolve({ status, stdout, stderr }));
   });
+}
+
+/** JSON-RPC の応答(result か error のどちらか) */
+interface RpcResponse {
+  jsonrpc: string;
+  id: number;
+  // biome-ignore lint/suspicious/noExplicitAny: プロトコルの応答の形はメソッドごとに異なるため
+  result?: any;
+  error?: { code: number; message: string };
+}
+
+/**
+ * node dist/cli.js mcp を子プロセスとして起動し、stdio の MCP(改行区切りの JSON-RPC)を手書きで話す。
+ * フレーミングは SDK の StdioServerTransport と同じ(1 メッセージ 1 行、末尾は改行)。
+ * stdout の全行を stdoutLines に溜め、プロトコル以外のものが混ざっていないことの検証に使う。
+ */
+function startMcp(args: string[], cwd: string) {
+  const child = spawn("node", [cliPath, "mcp", ...args], { cwd });
+  const stdoutLines: string[] = [];
+  const waiting = new Map<number, (response: RpcResponse) => void>();
+  let buffer = "";
+  child.stdout.on("data", (chunk: Buffer) => {
+    buffer += chunk.toString("utf-8");
+    for (let index = buffer.indexOf("\n"); index !== -1; index = buffer.indexOf("\n")) {
+      const line = buffer.slice(0, index);
+      buffer = buffer.slice(index + 1);
+      stdoutLines.push(line);
+      const message = JSON.parse(line) as RpcResponse;
+      waiting.get(message.id)?.(message);
+    }
+  });
+  let nextId = 1;
+  return {
+    stdoutLines,
+    request(method: string, params: unknown): Promise<RpcResponse> {
+      const id = nextId++;
+      const response = new Promise<RpcResponse>((resolve) => waiting.set(id, resolve));
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      return response;
+    },
+    notify(method: string): void {
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method })}\n`);
+    },
+    /** 標準入力を閉じ、プロセスの終了コードを返す */
+    close(): Promise<number | null> {
+      return new Promise((resolve) => {
+        child.on("close", (status) => resolve(status));
+        child.stdin.end();
+      });
+    },
+  };
 }
 
 describe("cli integration", () => {
@@ -1541,4 +1601,140 @@ steps:
     const broken = await runCli(["run", "flow.yaml", "--openapi", "broken.yaml"], apiDir, cliPath);
     expect(broken.status).toBe(2);
   });
+
+  it("(ac) klaus mcp: initialize → tools/list → tools/call を stdio の JSON-RPC で話し、stdout にはプロトコル以外を出さず、stdin を閉じると exit 0", async () => {
+    const mcpDir = join(workDir, "mcp-scenario");
+    await mkdir(mcpDir, { recursive: true });
+    const mcp = startMcp([], mcpDir);
+
+    const initialized = await mcp.request("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "protocol-test", version: "9.9.9" },
+    });
+    mcp.notify("notifications/initialized");
+    const listed = await mcp.request("tools/list", {});
+    const ok = await mcp.request("tools/call", {
+      name: "klaus_request",
+      arguments: { method: "GET", url: `${fixture.baseUrl}/ok` },
+    });
+    // 許可リスト外のホストは isError(上書きの手段は無い)
+    await writeFile(
+      join(mcpDir, "klaus.config.yaml"),
+      "guard:\n  allowedHosts:\n    - example.com\n",
+      "utf-8",
+    );
+    const refused = await mcp.request("tools/call", {
+      name: "klaus_request",
+      arguments: { method: "GET", url: `${fixture.baseUrl}/ok` },
+    });
+    const exitCode = await mcp.close();
+
+    expect(initialized.result.serverInfo.name).toBe("klaus");
+    expect(initialized.result.serverInfo.version).toMatch(/^\d+\.\d+\.\d+$/);
+    const tools = listed.result.tools as {
+      name: string;
+      description: string;
+      inputSchema: { type: string };
+      annotations: Record<string, boolean>;
+    }[];
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "klaus_list_flows",
+      "klaus_validate_flow",
+      "klaus_list_environments",
+      "klaus_dry_run",
+      "klaus_run_flow",
+      "klaus_request",
+      "klaus_history_list",
+      "klaus_history_show",
+      "klaus_diff_runs",
+      "klaus_snapshot_list",
+      "klaus_promote",
+      "klaus_snapshot_accept",
+    ]);
+    for (const tool of tools) {
+      expect(tool.description, tool.name).not.toBe("");
+      expect(tool.inputSchema.type, tool.name).toBe("object");
+      expect(Object.keys(tool.annotations), tool.name).toEqual(
+        expect.arrayContaining([
+          "readOnlyHint",
+          "destructiveHint",
+          "idempotentHint",
+          "openWorldHint",
+        ]),
+      );
+    }
+    const annotation = (name: string) => tools.find((tool) => tool.name === name)?.annotations;
+    expect(annotation("klaus_list_flows")).toMatchObject({ readOnlyHint: true });
+    expect(annotation("klaus_run_flow")).toMatchObject({
+      readOnlyHint: false,
+      openWorldHint: true,
+    });
+    expect(annotation("klaus_promote")).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+    });
+    expect(annotation("klaus_snapshot_accept")).toMatchObject({ destructiveHint: true });
+
+    expect(ok.result.isError).toBeUndefined();
+    const okBody = JSON.parse(ok.result.content[0].text);
+    expect(okBody.response).toMatchObject({ status: 200, body: { ok: true } });
+    expect(refused.result.isError).toBe(true);
+    expect(JSON.parse(refused.result.content[0].text)).toMatchObject({
+      errorCode: "guard.allowed-hosts",
+    });
+
+    // stdout の全行が JSON-RPC のメッセージ(プロトコル以外のものが混ざっていない)
+    expect(mcp.stdoutLines).toHaveLength(4);
+    for (const line of mcp.stdoutLines) {
+      expect(JSON.parse(line)).toMatchObject({ jsonrpc: "2.0" });
+    }
+    expect(exitCode).toBe(0);
+
+    // クライアントが名乗った名前が履歴の actor になる
+    const history = (
+      await readFile(
+        join(
+          mcpDir,
+          ".klaus",
+          "history",
+          (
+            await readdir(join(mcpDir, ".klaus", "history"))
+          )[0] as string,
+        ),
+        "utf-8",
+      )
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(history[0].actor).toEqual({ kind: "agent", name: "protocol-test" });
+  }, 30000);
+
+  it("(ad) klaus mcp --read-only: 書き込みツール(klaus_promote / klaus_snapshot_accept)は登録されず、呼んでもエラーになる", async () => {
+    const mcpDir = join(workDir, "mcp-read-only");
+    await mkdir(mcpDir, { recursive: true });
+    const mcp = startMcp(["--read-only"], mcpDir);
+
+    await mcp.request("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "protocol-test", version: "9.9.9" },
+    });
+    mcp.notify("notifications/initialized");
+    const listed = await mcp.request("tools/list", {});
+    const promote = await mcp.request("tools/call", {
+      name: "klaus_promote",
+      arguments: { runIds: ["x"], out: "flows/x.yaml" },
+    });
+    const exitCode = await mcp.close();
+
+    const names = (listed.result.tools as { name: string }[]).map((tool) => tool.name);
+    expect(names).toHaveLength(10);
+    expect(names).not.toContain("klaus_promote");
+    expect(names).not.toContain("klaus_snapshot_accept");
+    // 未登録のツールの呼び出しは、プロトコルのエラーか isError のどちらかで拒否される
+    expect(promote.error !== undefined || promote.result?.isError === true).toBe(true);
+    expect(exitCode).toBe(0);
+  }, 30000);
 });

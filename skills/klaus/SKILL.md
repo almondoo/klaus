@@ -55,6 +55,7 @@ klaus is an API testing CLI that defines request flows in YAML and runs executio
 - `klaus generate <spec>`: generate flow YAML skeletons from an OpenAPI 3.x spec
 - `klaus init`: generate a minimal flows/environments/AGENTS.md starting point in the current directory (existing files are never overwritten)
 - `klaus ui`: launch the localhost Web UI (runner + viewer) — starts a server and waits forever; do not launch it as part of a validate/run workflow
+- `klaus mcp [--read-only]`: run a stdio Model Context Protocol server that exposes klaus as `klaus_*` tools (list/validate/dry-run/run flows, single requests, history, diff, snapshots, promote); an MCP client starts it with command `klaus` and args `["mcp"]`. It waits on stdin, so do not launch it from a shell yourself
 
 Non-TTY output (pipes, CI, agent execution, etc.) is automatically JSON. Result data goes to stdout; diagnostic messages such as parse errors go to stderr. The `run` JSON output is failure-focused (passed steps are summarized only) and bodies are truncated to 500 characters. Fetch the full text via each step's `historyRef` (`{date, runId, step}`) using `klaus history show <runId> --step <name>`.
 
@@ -131,6 +132,7 @@ Place `baseUrl: https://example.com` in `environments/local.yaml`, then run with
 
 ## Notes for agent environments
 
+- When the klaus MCP tools (`klaus_*`, served by `klaus mcp`) are available in your session, prefer them over shelling out to the CLI. The same guardrails apply and cannot be overridden through MCP: output is always masked, and a refused request comes back as an error with an `errorCode` such as `guard.allowed-hosts` or `guard.protected`. Never try to get around a refusal; tell the user, who can change `klaus.config.yaml` or run `klaus run --allow-protected` from a terminal themselves.
 - `klaus ui` starts a server and then waits forever; do not launch it unless the task specifically calls for the web UI, and if launched, run it in the background with an explicit timeout.
 - OpenAI Codex CLI disables sandbox network access by default, which makes `klaus run`'s HTTP requests fail. Set `network_access = true` under `[sandbox_workspace_write]` in `~/.codex/config.toml` to allow them.
 - Mark production-like environments with `$protected: true` in the environment YAML; `klaus run` then refuses to execute against them (exit code 3) unless `--allow-protected` is explicitly passed. `$protected: readonly` is milder: GET / HEAD / OPTIONS run, every other method (and WebSocket) is refused without the flag.

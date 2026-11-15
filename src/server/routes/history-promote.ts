@@ -5,17 +5,10 @@
  * (--force も --allow-template-literals も UI には無い)。
  */
 import type { Context } from "hono";
-import {
-  type PromoteAssertMode,
-  promoteRuns,
-  readAllHistoryEntries,
-  renderPromotedYaml,
-  selectRunEntries,
-  validateFlowYaml,
-} from "../../core/index.js";
+import type { PromoteAssertMode } from "../../core/index.js";
 import { parseJsonBody } from "../json-body.js";
-import { outputExists, resolvePromoteOutput, writeNewFile } from "../promote-write.js";
-import type { PromoteRequestBody, PromoteResponse } from "../types.js";
+import { promoteHistoryToFile } from "../promote-write.js";
+import type { PromoteRequestBody } from "../types.js";
 import { hasControlCharacter, RUN_ID_PATTERN } from "../validation.js";
 
 /** 一度に連結できる run の最大数 */
@@ -130,88 +123,26 @@ export async function handleHistoryPromote(c: Context, cwd: string): Promise<Res
   if (!validated.ok) return c.json({ error: validated.error }, 400);
   const body = validated.value;
 
-  const history = await readAllHistoryEntries(cwd);
-  const runs = [];
-  for (const runId of body.runIds) {
-    // 同一ミリ秒のステップの順序を履歴の行順で確定させるため、追記順で取り出す(CLI と同じ)
-    const entries = selectRunEntries(history, runId);
-    if (entries.length === 0) {
-      return c.json({ error: `no history entries found for runId "${runId}"` }, 404);
-    }
-    runs.push({ runId, entries });
+  // 生成・検証・書き込みは klaus mcp と共有する promoteHistoryToFile が行い、ここでは結果を HTTP の応答に写すだけにする
+  const outcome = await promoteHistoryToFile(cwd, body);
+  if (outcome.ok) return c.json(outcome.payload);
+  switch (outcome.kind) {
+    case "not-found":
+      return c.json({ error: outcome.message }, 404);
+    case "usage":
+      return c.json({ error: outcome.message, kind: "usage" }, 400);
+    case "content":
+      return c.json(
+        {
+          error: outcome.message,
+          kind: "content",
+          ...(outcome.code !== undefined ? { code: outcome.code } : {}),
+        },
+        422,
+      );
+    case "forbidden":
+      return c.text(outcome.message, 403);
+    default:
+      return c.json({ error: outcome.message }, 409);
   }
-
-  const outcome = promoteRuns(runs, {
-    assert: body.assert,
-    baseUrlVar: body.baseUrlVar,
-    chain: body.chain,
-    name: body.name,
-    flow: body.flow,
-    // UI には許可手段を設けない(実行時にテンプレートとして展開され、OS 環境変数が送信先へ漏れ得るため)
-    allowTemplateLiterals: false,
-  });
-  if (!outcome.ok) {
-    if (outcome.kind === "usage") return c.json({ error: outcome.message, kind: "usage" }, 400);
-    const code = outcome.message.includes('literal "{{"') ? "template-literal" : undefined;
-    return c.json({ error: outcome.message, kind: "content", ...(code ? { code } : {}) }, 422);
-  }
-  const { result } = outcome;
-
-  const yaml = renderPromotedYaml(result, body.runIds);
-  // マスク値が再現できないまま残る場合は、生成物が誤ったリクエストを送るため書かない
-  if (yaml.includes("***")) {
-    return c.json(
-      {
-        error: "the generated flow still contains a masked value (***); refusing to write it",
-        kind: "content",
-      },
-      422,
-    );
-  }
-  const validation = validateFlowYaml(yaml);
-  if (!validation.valid) {
-    const issues = validation.errors.map((issue) => `${issue.path || "(root)"}: ${issue.message}`);
-    return c.json(
-      {
-        error: `the generated flow failed validation: ${issues.join("; ")}`,
-        kind: "content",
-      },
-      422,
-    );
-  }
-
-  const output = await resolvePromoteOutput(cwd, body.out ?? result.suggestedPath);
-  if (!output.ok) return c.text(output.message, output.status);
-
-  let exists: boolean | undefined;
-  if (body.dryRun) {
-    exists = await outputExists(output.target);
-  } else {
-    const written = await writeNewFile(cwd, output.target, output.file, yaml);
-    if (!written.ok) {
-      return written.status === 403
-        ? c.text(written.message, 403)
-        : c.json({ error: written.message }, 409);
-    }
-  }
-
-  const payload: PromoteResponse = {
-    dryRun: body.dryRun,
-    written: !body.dryRun,
-    file: output.file,
-    ...(exists !== undefined ? { exists } : {}),
-    yaml,
-    flow: result.flowName,
-    assert: result.assert,
-    steps: result.steps,
-    placeholders: result.placeholders,
-    variables: result.baseUrls,
-    captures: result.captures,
-    skipped: result.skipped,
-    redacted: result.redacted,
-    templateLiterals: result.templateLiterals,
-    notes: result.notes,
-    notice: result.notice,
-  };
-  return c.json(payload);
 }

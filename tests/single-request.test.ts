@@ -165,6 +165,30 @@ describe("executeSingleRequest", () => {
     expect(run.steps[0]?.error).not.toContain("Single requests");
   });
 
+  it("entryPoint が mcp の単発リクエストの保護環境の拒否は、klaus mcp が上書きできず利用者が端末から実行する案内になる", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
+    await mkdir(join(cwd, "environments"), { recursive: true });
+    await writeFile(
+      join(cwd, "environments", "prod.yaml"),
+      `$protected: true\nbaseUrl: ${ctx.baseUrl}\n`,
+      "utf-8",
+    );
+
+    const { result } = await executeSingleRequest({
+      request: { method: "GET", url: "{{baseUrl}}/ping" },
+      cwd,
+      envName: "prod",
+      history: false,
+      entryPoint: "mcp",
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.errorCode).toBe("guard.protected");
+    expect(result.error).toContain("klaus mcp cannot override environment protection");
+    expect(result.error).toContain("from a terminal with `klaus run --allow-protected`");
+    expect(result.error).not.toContain("Single requests");
+  });
+
   it('$protected: "readonly" の環境では安全メソッド(GET)のみ許可され、POST は拒否される', async () => {
     cwd = await mkdtemp(join(tmpRoot, "klaus-single-"));
     await mkdir(join(cwd, "environments"), { recursive: true });

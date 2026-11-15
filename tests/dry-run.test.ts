@@ -583,6 +583,25 @@ steps:
         expect(allowed.steps[0]?.guard.errorCode).toBeUndefined();
       });
 
+      it("entryPoint が mcp の dry-run の拒否理由は、klaus mcp が上書きできない旨の案内になる", async () => {
+        await writeEnv("prod", "true");
+        const flow = flowOf(`
+name: p
+env: prod
+steps:
+  - name: s
+    request: { method: GET, url: "{{baseUrl}}/x" }
+`);
+
+        const refused = await dryRunFlow(flow, "p.yaml", { cwd, entryPoint: "mcp" });
+
+        expect(refused.steps[0]?.guard.status).toBe("refused");
+        expect(refused.steps[0]?.guard.errorCode).toBe("guard.protected");
+        expect(refused.steps[0]?.guard.reason).toContain(
+          "klaus mcp cannot override environment protection",
+        );
+      });
+
       it('$protected: "readonly" は GET が allowed、POST・WebSocket・メソッド上書きヘッダーつきの GET が refused', async () => {
         await writeEnv("stg", "readonly");
         const flow = flowOf(`

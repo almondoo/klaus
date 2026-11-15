@@ -13,6 +13,7 @@
 import type { Context } from "hono";
 import { isProtectedEnvironment, resolveEnvironmentPath } from "../../core/env.js";
 import {
+  type AcceptSnapshotResult,
   acceptSnapshot,
   type HistoryEntry,
   listSnapshotMismatches,
@@ -25,7 +26,6 @@ import { parseJsonBody } from "../json-body.js";
 import {
   ENV_NAME_PATTERN,
   hasControlCharacter,
-  pathTraversalResponse,
   RUN_ID_PATTERN,
   resolveWithinCwd,
 } from "../validation.js";
@@ -45,7 +45,7 @@ export interface SnapshotMismatchesPayload {
  * run が保護環境で実行されていて承認できない場合に、その理由を返す(承認できるなら undefined)。
  * 履歴の env は環境名(--env-file の場合はファイル名)。環境ファイルを名前で読めない・読み込めないものは判定できないため拒否する。
  */
-async function findAcceptRefusal(
+export async function findAcceptRefusal(
   cwd: string,
   entries: readonly HistoryEntry[],
 ): Promise<string | undefined> {
@@ -119,44 +119,94 @@ export async function handleSnapshotAccept(c: Context, cwd: string): Promise<Res
   ) {
     return c.json({ error: "key is invalid" }, 400);
   }
+  const outcome = await acceptPendingSnapshot(cwd, { runId, snapshotFile, key });
+  if (outcome.ok) return c.json(outcome.result);
+  switch (outcome.kind) {
+    case "forbidden":
+      return c.text(`Forbidden: ${outcome.message}`, 403);
+    case "not-found":
+      return c.json({ error: outcome.message }, 404);
+    case "failed-step":
+      // そのステップの他のアサーションが失敗していた(失敗した応答は基準にできない)。状態の衝突として 409 にする
+      return c.json({ error: outcome.message }, 409);
+    default:
+      return c.json({ error: outcome.message }, 422);
+  }
+}
+
+/** acceptPendingSnapshot の入力。形式(長さ・制御文字・runId の書式)の検証は呼び出し側が済ませておく */
+export interface AcceptPendingSnapshotInput {
+  runId: string;
+  snapshotFile: string;
+  key: string;
+}
+
+/**
+ * acceptPendingSnapshot の結果。forbidden は拒否(メッセージに "Forbidden: " は含めない)、not-found は run または承認待ちが無い、
+ * failed-step は他のアサーションが失敗していた、corrupt / unsafe 相当の残りは "invalid"(HTTP では 422)
+ */
+export type AcceptPendingSnapshotOutcome =
+  | { ok: true; result: Extract<AcceptSnapshotResult, { ok: true }> }
+  | { ok: false; kind: "forbidden" | "not-found" | "failed-step" | "invalid"; message: string };
+
+/**
+ * 承認待ちの 1 件を基準として書き込む(Hono 非依存。POST /api/snapshots/accept と klaus mcp が共有する)。
+ * 呼び出し側は runId / snapshotFile / key の形式を検証済みであること。ここでは次の順に拒否する:
+ * バックスラッシュ → cwd 外のパス → run が履歴に無い → 承認待ちの組でない → 保護環境の run → core の書き込み失敗。
+ */
+export async function acceptPendingSnapshot(
+  cwd: string,
+  input: AcceptPendingSnapshotInput,
+): Promise<AcceptPendingSnapshotOutcome> {
+  const { runId, snapshotFile, key } = input;
   // バックスラッシュを含むパスは一律に拒否する(区切りの解釈が環境で変わり得るため)
   if (snapshotFile.includes("\\")) {
-    return c.text("Forbidden: backslashes are not allowed in snapshotFile", 403);
+    return {
+      ok: false,
+      kind: "forbidden",
+      message: "backslashes are not allowed in snapshotFile",
+    };
   }
   // cwd の外を指すパス(.. ・絶対パス・リンク経由)は、承認待ちの照合より前に拒否する
-  if (!resolveWithinCwd(cwd, snapshotFile)) return pathTraversalResponse(c);
+  if (!resolveWithinCwd(cwd, snapshotFile)) {
+    return { ok: false, kind: "forbidden", message: "path traversal detected" };
+  }
 
   const entries = selectRunEntries(await readAllHistoryEntries(cwd), runId);
   if (entries.length === 0) {
-    return c.json({ error: `no history entries found for runId "${runId}"` }, 404);
+    return {
+      ok: false,
+      kind: "not-found",
+      message: `no history entries found for runId "${runId}"`,
+    };
   }
   // core が返した承認待ちに含まれる組だけを受け付ける(クライアントのパスをそのまま core に渡さない)
   const pending = await listSnapshotMismatches(cwd, runId);
   const target = pending.find((item) => item.snapshotFile === snapshotFile && item.key === key);
   if (!target) {
-    return c.json(
-      { error: `run "${runId}" has no pending snapshot "${key}" for "${snapshotFile}"` },
-      404,
-    );
+    return {
+      ok: false,
+      kind: "not-found",
+      message: `run "${runId}" has no pending snapshot "${key}" for "${snapshotFile}"`,
+    };
   }
 
   const refusal = await findAcceptRefusal(cwd, entries);
-  if (refusal !== undefined) return c.text(`Forbidden: ${refusal}`, 403);
+  if (refusal !== undefined) return { ok: false, kind: "forbidden", message: refusal };
 
   const result = await acceptSnapshot(cwd, runId, {
     snapshotFile: target.snapshotFile,
     key: target.key,
   });
-  if (result.ok) return c.json(result);
+  if (result.ok) return { ok: true, result };
   switch (result.kind) {
     case "not-found":
-      return c.json({ error: result.message }, 404);
+      return { ok: false, kind: "not-found", message: result.message };
     case "unsafe":
-      return c.text(`Forbidden: ${result.message}`, 403);
+      return { ok: false, kind: "forbidden", message: result.message };
     case "failed-step":
-      // そのステップの他のアサーションが失敗していた(失敗した応答は基準にできない)。状態の衝突として 409 にする
-      return c.json({ error: result.message }, 409);
+      return { ok: false, kind: "failed-step", message: result.message };
     default:
-      return c.json({ error: result.message }, 422);
+      return { ok: false, kind: "invalid", message: result.message };
   }
 }

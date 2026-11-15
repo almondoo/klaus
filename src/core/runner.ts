@@ -127,7 +127,9 @@ export interface RunFlowOptions {
    * 呼び出し元の種別。保護環境による拒否メッセージ末尾の案内文を、利用者が実際に取れる回避策に合わせるために使う
    * (拒否メッセージは履歴にも記録されるため、利用者が見た文言がそのまま残る)。
    * "cli"(未指定も同じ): `--allow-protected` を案内する / "ui": UI は上書きできないため `klaus run --allow-protected` を案内する /
-   * "library": ライブラリ呼び出しなので `allowProtected: true` オプションを案内する。単発リクエストは別経路で固定の案内になる
+   * "library": ライブラリ呼び出しなので `allowProtected: true` オプションを案内する /
+   * "mcp": klaus mcp は上書きできないため、利用者が端末から `klaus run --allow-protected` を実行する案内にする。
+   * 単発リクエストは "mcp" 以外では別経路で固定の案内になる
    */
   entryPoint?: EntryPoint | undefined;
   /**
@@ -667,13 +669,17 @@ export interface StepGuard {
 }
 
 /** 保護環境の拒否メッセージの案内文を決める、フロー実行の呼び出し元種別 */
-export type EntryPoint = "cli" | "ui" | "library";
+export type EntryPoint = "cli" | "ui" | "library" | "mcp";
 
 /**
  * 保護環境による拒否メッセージの末尾に付ける案内。フロー実行(klaus run)には --allow-protected があるが、
  * 単発リクエストにはそのオプションが無いため、案内を切り替える。
  */
 function protectionHint(singleRequest: boolean | undefined, entryPoint?: EntryPoint): string {
+  // klaus mcp はフロー実行・単発リクエストのどちらでも上書き手段を持たない。利用者が端末から自分で実行する案内にする
+  if (entryPoint === "mcp") {
+    return "klaus mcp cannot override environment protection; the user must run this themselves from a terminal with `klaus run --allow-protected`.";
+  }
   if (singleRequest === true) {
     return "Single requests (klaus req, klaus ui) cannot override environment protection; run a flow with `klaus run --allow-protected` instead.";
   }
@@ -1875,6 +1881,8 @@ export interface ExecuteSingleRequestOptions {
   http?: HttpConfig | undefined;
   /** ステップの成否に影響しない警告(tls.insecure の使用など)の通知先 */
   onWarning?: (message: string) => void;
+  /** 保護環境の拒否メッセージの案内文を決める呼び出し元種別(RunFlowOptions.entryPoint と同じ。未指定は従来の単発リクエスト用の案内) */
+  entryPoint?: EntryPoint | undefined;
   /** 履歴エントリの actor に記録する実行主体(RunFlowOptions.actor と同じ) */
   actor?: HistoryActor | undefined;
   /** 履歴エントリの git に記録する実行時点の git の状態(RunFlowOptions.git と同じ) */
@@ -1920,6 +1928,7 @@ export async function executeSingleRequest(
     undefined,
     options.guard,
     true,
+    options.entryPoint,
   );
   const runId = randomUUID();
   const flowName = "(single)";

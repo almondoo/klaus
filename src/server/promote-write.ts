@@ -12,8 +12,15 @@ import {
   findUnsafeSymlinkInWritePath,
   isPathWithinDir,
   isRealPathWithinDir,
+  type PromoteAssertMode,
+  promoteRuns,
+  readAllHistoryEntries,
+  renderPromotedYaml,
+  selectRunEntries,
   toDisplayPath,
+  validateFlowYaml,
 } from "../core/index.js";
+import type { PromoteResponse } from "./types.js";
 import { hasControlCharacter } from "./validation.js";
 
 const MAX_OUT_LENGTH = 256;
@@ -217,4 +224,135 @@ export async function writeNewFile(
     }
     throw error;
   }
+}
+
+/** promoteHistoryToFile の入力。形式(長さ・書式・runIds の件数)の検証は呼び出し側が済ませておく */
+export interface PromoteHistoryInput {
+  runIds: string[];
+  flow?: string;
+  assert: PromoteAssertMode;
+  baseUrlVar?: string;
+  chain: boolean;
+  name?: string;
+  /** 出力先(cwd 相対)。省略時は promoteRuns の suggestedPath */
+  out?: string;
+  /** true なら書かずにプレビューだけ返す */
+  dryRun: boolean;
+}
+
+/**
+ * promoteHistoryToFile の結果。kind と HTTP ステータスの対応は UI のルート(not-found 404 / usage 400 / content 422 /
+ * forbidden 403 / conflict 409)。code は content の中でも呼び出し側が区別したいもの(リテラルの "{{")だけに付く
+ */
+export type PromoteHistoryOutcome =
+  | { ok: true; payload: PromoteResponse }
+  | {
+      ok: false;
+      kind: "not-found" | "usage" | "content" | "forbidden" | "conflict";
+      message: string;
+      code?: "template-literal";
+    };
+
+/**
+ * 履歴の run から「新規の」フロー YAML を生成し、dryRun でなければ新規ファイルとして書く(Hono 非依存。
+ * POST /api/history/promote と klaus mcp の klaus_promote が共有する)。UI と同じく既存ファイルの上書き(--force)と
+ * リテラルの "{{" の許可(--allow-template-literals)の手段は無い。生成物にマスク値(***)が残る場合や、
+ * フロー定義として検証に通らない場合は書かない。出力先は resolvePromoteOutput の許可リストに従う。
+ */
+export async function promoteHistoryToFile(
+  cwd: string,
+  input: PromoteHistoryInput,
+): Promise<PromoteHistoryOutcome> {
+  const history = await readAllHistoryEntries(cwd);
+  const runs = [];
+  for (const runId of input.runIds) {
+    // 同一ミリ秒のステップの順序を履歴の行順で確定させるため、追記順で取り出す(CLI と同じ)
+    const entries = selectRunEntries(history, runId);
+    if (entries.length === 0) {
+      return {
+        ok: false,
+        kind: "not-found",
+        message: `no history entries found for runId "${runId}"`,
+      };
+    }
+    runs.push({ runId, entries });
+  }
+
+  const outcome = promoteRuns(runs, {
+    assert: input.assert,
+    baseUrlVar: input.baseUrlVar,
+    chain: input.chain,
+    name: input.name,
+    flow: input.flow,
+    // 許可手段を設けない(実行時にテンプレートとして展開され、OS 環境変数が送信先へ漏れ得るため)
+    allowTemplateLiterals: false,
+  });
+  if (!outcome.ok) {
+    if (outcome.kind === "usage") return { ok: false, kind: "usage", message: outcome.message };
+    return {
+      ok: false,
+      kind: "content",
+      message: outcome.message,
+      ...(outcome.message.includes('literal "{{"') ? { code: "template-literal" as const } : {}),
+    };
+  }
+  const { result } = outcome;
+
+  const yaml = renderPromotedYaml(result, input.runIds);
+  // マスク値が再現できないまま残る場合は、生成物が誤ったリクエストを送るため書かない
+  if (yaml.includes("***")) {
+    return {
+      ok: false,
+      kind: "content",
+      message: "the generated flow still contains a masked value (***); refusing to write it",
+    };
+  }
+  const validation = validateFlowYaml(yaml);
+  if (!validation.valid) {
+    const issues = validation.errors.map((issue) => `${issue.path || "(root)"}: ${issue.message}`);
+    return {
+      ok: false,
+      kind: "content",
+      message: `the generated flow failed validation: ${issues.join("; ")}`,
+    };
+  }
+
+  const output = await resolvePromoteOutput(cwd, input.out ?? result.suggestedPath);
+  if (!output.ok) return { ok: false, kind: "forbidden", message: output.message };
+
+  let exists: boolean | undefined;
+  if (input.dryRun) {
+    exists = await outputExists(output.target);
+  } else {
+    const written = await writeNewFile(cwd, output.target, output.file, yaml);
+    if (!written.ok) {
+      return {
+        ok: false,
+        kind: written.status === 403 ? "forbidden" : "conflict",
+        message: written.message,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    payload: {
+      dryRun: input.dryRun,
+      written: !input.dryRun,
+      file: output.file,
+      ...(exists !== undefined ? { exists } : {}),
+      yaml,
+      flow: result.flowName,
+      assert: result.assert,
+      steps: result.steps,
+      placeholders: result.placeholders,
+      variables: result.baseUrls,
+      captures: result.captures,
+      skipped: result.skipped,
+      redacted: result.redacted,
+      templateLiterals: result.templateLiterals,
+      notes: result.notes,
+      notice: result.notice,
+    },
+  };
 }

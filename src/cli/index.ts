@@ -24,6 +24,7 @@ import {
   parseHistoryStatuses,
 } from "./history.js";
 import { initCommand } from "./init.js";
+import { registerMcpCommand } from "./mcp.js";
 import { registerMockCommand } from "./mock.js";
 import {
   collectHeaderOption,
@@ -533,6 +534,7 @@ registerDiffCommand(program);
 registerPromoteCommand(program);
 registerMockCommand(program);
 registerSnapshotCommand(program);
+registerMcpCommand(program);
 
 // このモジュールが直接実行された(node dist/cli.js ...)場合のみパースする。
 // テストから import した際に process.argv(vitest 自身の起動引数)を誤ってパースしないためのガード。

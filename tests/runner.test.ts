@@ -902,6 +902,7 @@ describe("executeFlow", () => {
       [undefined, "Pass --allow-protected to run"],
       ["ui", "klaus ui cannot override environment protection"],
       ["library", "Pass allowProtected: true"],
+      ["mcp", "klaus mcp cannot override environment protection"],
     ] as const)(
       "entryPoint=%s の拒否メッセージは対応する案内を含む",
       async (entryPoint, expected) => {
