@@ -49,6 +49,8 @@ A step result with `status: "error"` carries a free-text English `error` and, wh
 
 History records guard refusals and steps that failed after receiving a response (a failed capture, for example, which has no `errorCode`), so only `guard.*` codes appear in `GET /api/history`. A step that failed after a response has `status: "error"` with `request` and `response` both present (a JSON body nested deeper than 200 levels is a string `body` with `bodyTooDeep: true` on the response); the UI shows its HTTP status and the error message. The values are a fixed public contract. The `GET /api/history` query has no status filter (only the CLI's `klaus history --status` does).
 
+The `entries[]` of `GET /api/history` carry an optional `envProtection: "protected" | "readonly"` on entries written while a protected environment (`$protected: true` / `readonly`) was loaded (whether chosen by name or with `--env-file`, from any entry point, including guard-refusal entries; absent for unprotected environments, runs without an environment, and entries written before the field existed). The UI does not use the field, so its presence does not change behavior. `klaus mcp` reads it to refuse `klaus_promote` and to narrow what its history tools return.
+
 **Behavior on client disconnect**: closing or reloading the browser does **not** stop the in-flight flow — it runs to completion and the full history is written for every step. Only the SSE delivery is cut off; the server keeps responding normally to subsequent requests.
 
 ## Position in the architecture

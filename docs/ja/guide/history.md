@@ -44,6 +44,7 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
   "error": "…",                 // status が "error" のときだけ(安全柵の拒否、またはレスポンスを受け取った後に失敗したステップ): 理由
   "errorCode": "guard.allowed-hosts",  // 省略可、error があるときだけ: エラーコードを参照
   "env": "local",               // 省略可: 監査項目を参照
+  "envProtection": "protected", // 省略可: 保護された環境のときだけ。監査項目を参照
   "file": "api/auth-flow.yaml", // 省略可
   "actor": { "kind": "agent", "name": "claude-code" },  // 省略可
   "git": { "commit": "<sha>", "dirty": false }          // 省略可
@@ -89,16 +90,17 @@ klaus は全リクエスト / レスポンス / 所要時間をローカルの J
 
 ## 監査項目
 
-実行の出どころを記録する、省略可能な4つのフィールド。追加のみの変更なので `v` は 1 のままで、これらが導入される前のエントリには単に存在しない。
+実行の出どころを記録する、省略可能な5つのフィールド。追加のみの変更なので `v` は 1 のままで、これらが導入される前のエントリには単に存在しない。
 
 | フィールド | 内容 |
 |---|---|
 | `env` | 環境名。`--env-file` の場合はそのファイルのベース名。環境を使わない実行では省略 |
+| `envProtection` | `"protected"`(`$protected: true`)または `"readonly"`(`$protected: readonly`)。保護された環境を読み込んで書いたすべてのエントリに付く。環境を名前で選んだ場合も `--env-file` の場合も、どの入口(CLI・`klaus ui`・`klaus mcp`)からでも、安全柵の拒否のエントリにも付く。保護されていない環境・環境なしの実行・このフィールドが導入される前のエントリには無い。`klaus mcp` が使う: `klaus_promote` はこの run を拒否し、履歴を読むツールは、その環境の値をマスク用に得られないとき、このエントリのリクエストとレスポンスを返さない([MCP サーバー](/ja/guide/mcp)を参照) |
 | `file` | フロー定義ファイルの cwd からの相対パス(POSIX 区切り)。単発リクエストでは省略 |
 | `actor` | `{ kind, name? }`。`kind` は `human` / `agent` / `ci` で、環境から検出する: エージェントのマーカー `CLAUDECODE` / `AI_AGENT` を優先し、次に `CI`、どれも無ければ `human`。`klaus run --actor <name>` / `klaus req --actor <name>` で `name` を設定できる(`kind` は引き続き検出)。`klaus ui` からの実行は `human` を記録する |
 | `git` | `{ commit, dirty }`: 実行時の `HEAD` と、追跡対象ファイルに未コミットの変更があるか(未追跡ファイルは無視)。git が使えない場合は省略 |
 
-`klaus history --fields env,file,actor,git` または `klaus history show <runId>` で参照できる。
+`klaus history --fields env,envProtection,file,actor,git` または `klaus history show <runId>` で参照できる。
 
 ## run の比較
 
