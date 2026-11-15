@@ -36,8 +36,8 @@ export interface RunMeta {
  * 以降の整形は必ずこの戻り値だけを使い、生の RunResult には触れない。
  */
 export function maskRunResult(runResult: RunResult, secrets?: readonly string[]): RunResult {
-  if (!secrets || secrets.length === 0) return runResult;
-  return maskDeep(runResult, expandSecretVariants(secrets));
+  // シークレット未登録でも Cookie ヘッダーの構造的マスクは常に掛ける
+  return maskDeep(runResult, expandSecretVariants(secrets ?? []));
 }
 
 /** --data 実行時はフロー名に " (iteration N)" を付ける(junit/tap と同じ文言) */

@@ -101,6 +101,28 @@ steps:
       headers: { Authorization: "Bearer {{token}}" }
 `;
 
+  it("登録済みシークレットが無くても、Cookie ヘッダーの値は JSON・text の両方で *** になる(--no-mask なら生の値)", async () => {
+    const flow = await writeFlow(
+      "cookie.yaml",
+      `name: cookie\nsteps:\n  - name: c\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/c"\n      headers: { Cookie: "session=raw-cookie-abc; theme=dark" }\n`,
+    );
+
+    await runCommand([flow], baseOptions());
+    expect(stdoutSpy.join("")).not.toContain("raw-cookie-abc");
+    expect(readJson().flows[0]?.steps[0]?.request?.headers.Cookie).toBe("session=***; theme=***");
+
+    stdoutSpy.length = 0;
+    await runCommand([flow], baseOptions({ text: true }));
+    expect(stdoutSpy.join("")).not.toContain("raw-cookie-abc");
+    expect(stdoutSpy.join("")).toContain("session=***");
+
+    stdoutSpy.length = 0;
+    await runCommand([flow], baseOptions({ mask: false }));
+    expect(readJson().flows[0]?.steps[0]?.request?.headers.Cookie).toBe(
+      "session=raw-cookie-abc; theme=dark",
+    );
+  });
+
   it("2 ステップ(capture 依存つき): 何も送信せず、履歴も書かず、dryRun: true の JSON を出して exit 0", async () => {
     const flow = await writeFlow("chain.yaml", CHAIN_FLOW(fixture.baseUrl));
     const before = fixture.count();

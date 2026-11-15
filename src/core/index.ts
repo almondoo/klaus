@@ -153,6 +153,7 @@ export {
 } from "./run-diff.js";
 export type {
   CaptureResponse,
+  EntryPoint,
   ExecuteSingleRequestOptions,
   ExecuteSingleRequestResult,
   LoadedFlowEntry,

@@ -8,6 +8,7 @@ import {
   assertSendAllowed,
   buildRunUnits,
   buildStepGuard,
+  type EntryPoint,
   expandStepRequest,
   isSseStep,
   type LoadedFlowEntry,
@@ -28,6 +29,8 @@ export interface DryRunOptions {
   variables?: Record<string, string> | undefined;
   /** $protected の環境への実行を許可するか(実行時の --allow-protected と同じ。dry-run でも同じ判定にする) */
   allowProtected?: boolean | undefined;
+  /** 保護環境の拒否メッセージの案内文を決める呼び出し元種別(RunFlowOptions.entryPoint と同じ) */
+  entryPoint?: EntryPoint | undefined;
   /** 送信先ホストの許可リスト(実行時と同じ判定を通す) */
   guard?: GuardOptions | undefined;
   /** klaus.config.yaml の http(RunFlowOptions.http と同じ意味。dry-run では http.auth の展開にだけ使い、何も送信しない) */
@@ -271,6 +274,8 @@ export async function dryRunFlow(
     environment,
     options.allowProtected,
     options.guard,
+    undefined,
+    options.entryPoint,
   );
   const secrets = new Set<string>();
   // --var は環境ファイルの値を上書きする(executeFlow と同じ優先順位)

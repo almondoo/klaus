@@ -97,6 +97,76 @@ describe("historyListCommand / historyShowCommand", () => {
     await rm(workDir, { recursive: true, force: true });
   });
 
+  describe("スナップショットの candidate", () => {
+    const CANDIDATE = { status: 200, body: { big: "response copy" } };
+    const SNAPSHOT_ENTRY = {
+      ...ENTRY_PING,
+      runId: "run-snap",
+      step: "snap",
+      startedAt: "2026-08-08T12:00:00.000Z",
+      status: "failed",
+      assertions: [
+        {
+          ok: false,
+          kind: "snapshot",
+          expected: "baseline",
+          actual: "candidate",
+          message: "snapshot mismatch",
+          snapshot: {
+            key: "snap",
+            file: "s.json",
+            state: "mismatch",
+            differenceCount: 1,
+            candidate: CANDIDATE,
+          },
+        },
+      ],
+    };
+
+    beforeEach(async () => {
+      const file = join(workDir, ".klaus", "history", "2026-08-08.jsonl");
+      await writeFile(file, `${JSON.stringify(SNAPSHOT_ENTRY)}\n`, { flag: "a" });
+    });
+
+    it("一覧は --fields assertions を指定しても candidate を出さず、他の snapshot 情報は残す", async () => {
+      await historyListCommand({ last: 20, fields: "step,assertions", json: true }, workDir);
+
+      const output = JSON.parse(stdoutSpy.join("").trim()) as Array<{
+        step: string;
+        assertions: Array<{ snapshot: Record<string, unknown> }>;
+      }>;
+      const snap = output.find((e) => e.step === "snap");
+      expect(snap?.assertions[0]?.snapshot.state).toBe("mismatch");
+      expect(snap?.assertions[0]?.snapshot.candidate).toBeUndefined();
+      expect(stdoutSpy.join("")).not.toContain("response copy");
+    });
+
+    it("一覧のテキスト表にも candidate は出ない", async () => {
+      const original = process.stdout.isTTY;
+      process.stdout.isTTY = true;
+      try {
+        await historyListCommand({ last: 20, fields: "step,assertions" }, workDir);
+      } finally {
+        process.stdout.isTTY = original;
+      }
+      expect(stdoutSpy.join("")).toContain("mismatch");
+      expect(stdoutSpy.join("")).not.toContain("response copy");
+    });
+
+    it("show は run 全体を出すときは candidate を省き、--step を付けたときだけ含める", async () => {
+      await historyShowCommand("run-snap", {}, workDir);
+      expect(stdoutSpy.join("")).not.toContain("response copy");
+      expect(stdoutSpy.join("")).toContain('"state":"mismatch"');
+
+      stdoutSpy.length = 0;
+      await historyShowCommand("run-snap", { step: "snap" }, workDir);
+      const output = JSON.parse(stdoutSpy.join("").trim()) as Array<{
+        assertions: Array<{ snapshot: { candidate: unknown } }>;
+      }>;
+      expect(output[0]?.assertions[0]?.snapshot.candidate).toEqual(CANDIDATE);
+    });
+  });
+
   describe("historyListCommand", () => {
     it("デフォルトフィールドで新しい順に一覧を JSON 出力する", async () => {
       const exitCode = await historyListCommand(

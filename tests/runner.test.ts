@@ -897,6 +897,27 @@ describe("executeFlow", () => {
       expect(result.steps[0]?.error).toContain("--allow-protected");
     });
 
+    it.each([
+      ["cli", "Pass --allow-protected to run"],
+      [undefined, "Pass --allow-protected to run"],
+      ["ui", "klaus ui cannot override environment protection"],
+      ["library", "Pass allowProtected: true"],
+    ] as const)(
+      "entryPoint=%s の拒否メッセージは対応する案内を含む",
+      async (entryPoint, expected) => {
+        cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+        const flow = await buildProtectedFlow(cwd);
+
+        const result = await executeFlow(flow, "protected-flow.yaml", {
+          cwd,
+          history: false,
+          entryPoint,
+        });
+
+        expect(result.steps[0]?.error).toContain(expected);
+      },
+    );
+
     it("allowProtected: true を指定すると実行される", async () => {
       cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
       const flow = await buildProtectedFlow(cwd);

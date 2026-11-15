@@ -36,6 +36,25 @@ function parseFields(csv: string): string[] {
 }
 
 /**
+ * assertions[].snapshot.candidate(応答のマスク済みコピー全体)を取り除いたエントリを返す。
+ * 一覧や run 全体の表示では大きすぎるため省く。candidate を持たなければ元のエントリをそのまま返す。
+ * 元のエントリは変異させない。
+ */
+function omitSnapshotCandidates(entry: HistoryEntry): HistoryEntry {
+  if (!entry.assertions?.some((assertion) => assertion.snapshot?.candidate !== undefined)) {
+    return entry;
+  }
+  return {
+    ...entry,
+    assertions: entry.assertions.map((assertion) => {
+      if (assertion.snapshot?.candidate === undefined) return assertion;
+      const { candidate: _candidate, ...snapshot } = assertion.snapshot;
+      return { ...assertion, snapshot };
+    }),
+  };
+}
+
+/**
  * エントリから指定フィールドだけを取り出す。
  * "status" は旧エントリ(status フィールド無し)でも assertions から導出した値を返す。
  * 未知のフィールド名は undefined になる(JSON では省略、テキストでは空欄)。
@@ -99,7 +118,8 @@ export async function historyListCommand(
     limit: options.last,
     failed: options.failed || undefined,
   });
-  const rows = page.entries.map((entry) => pickFields(entry, fields));
+  // 一覧では --fields assertions を選んでも snapshot の candidate は出さない(全文は history show --step で見る)
+  const rows = page.entries.map((entry) => pickFields(omitSnapshotCandidates(entry), fields));
 
   if (useJson) {
     process.stdout.write(`${JSON.stringify(rows)}\n`);
@@ -113,7 +133,8 @@ export async function historyListCommand(
 /**
  * klaus history show 本体。
  * 指定 runId(必要なら step でも)に一致する履歴エントリを、保存されたまま(マスク済)の形で
- * 実行順(startedAt 昇順)に JSON(compact)出力する。TTY 判定はせず常に JSON を出す
+ * 実行順(startedAt 昇順)に JSON(compact)出力する。ただしスナップショットの candidate(応答の全文コピー)は
+ * --step で 1 ステップに絞ったときだけ含め、run 全体を出すときは省く。TTY 判定はせず常に JSON を出す
  * (単一 run のフル詳細を参照する用途で、エージェント・人間どちらでも同じ形式で扱えるようにするため)。
  * 該当エントリが無い場合は stderr にメッセージを出して 1 を返す。
  */
@@ -134,6 +155,7 @@ export async function historyShowCommand(
     return 1;
   }
 
-  process.stdout.write(`${JSON.stringify(entries)}\n`);
+  const output = options.step ? entries : entries.map(omitSnapshotCandidates);
+  process.stdout.write(`${JSON.stringify(output)}\n`);
   return 0;
 }

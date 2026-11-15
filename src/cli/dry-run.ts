@@ -65,7 +65,8 @@ export async function executeDryRun(
   // 整形より前にオブジェクト木のままマスクする(run の JSON 経路と同じ理由)。
   // 終了コードの判定はマスクの影響を受けないが、マスク前の結果を使う
   const variants = options.mask ? expandSecretVariants(collectedSecrets) : [];
-  const masked = variants.length > 0 ? maskDeep(result, variants) : result;
+  // 登録済みシークレットが無くても、Cookie ヘッダーの構造的マスクは常に掛ける(--no-mask のときだけ生のまま)
+  const masked = options.mask ? maskDeep(result, variants) : result;
 
   // OpenAPI: 計画の集計は、マスク前の展開結果(URL に秘密値が入らない照合用)から作り、出力側のマスクは summary にも掛ける
   let planned: OpenApiRunSummary | undefined;
@@ -83,7 +84,7 @@ export async function executeDryRun(
       partial,
       planned: true,
     });
-    planned = variants.length > 0 ? maskDeep(summary, variants) : summary;
+    planned = options.mask ? maskDeep(summary, variants) : summary;
   }
 
   if (useJson) {

@@ -571,7 +571,7 @@ klaus history [options]
 | `--fields <csv>` | Comma-separated list of fields to output | `startedAt,runId,flow,step,status,durationMs` |
 | `--json` | Forces JSON output even on a TTY | — |
 
-Output mode follows the same TTY convention as `klaus run`: a concise text table (one line per entry) when stdout is a TTY, and a compact JSON array when non-TTY (pipe / agent execution) or with `--json`. Passing `request` / `response` / `assertions` etc. to `--fields` lets you opt into the request/response bodies that are excluded by default.
+Output mode follows the same TTY convention as `klaus run`: a concise text table (one line per entry) when stdout is a TTY, and a compact JSON array when non-TTY (pipe / agent execution) or with `--json`. Passing `request` / `response` / `assertions` etc. to `--fields` lets you opt into the request/response bodies that are excluded by default. A snapshot assertion's `candidate` (a full masked copy of the response) is never printed by the list, even with `--fields assertions`; see `klaus history show --step`.
 
 ```
 $ klaus history --last 5 --fields step,status,durationMs
@@ -591,7 +591,7 @@ $ klaus history --json --failed
 klaus history show <runId> [--step <name>]
 ```
 
-Prints every history entry matching the given `runId`, exactly as stored (secrets already masked), as a JSON array (always JSON, regardless of TTY). Pass `--step` to narrow it down to a single step. If nothing matches, an error is printed to stderr and it exits with 1.
+Prints every history entry matching the given `runId`, as stored (secrets already masked), as a JSON array (always JSON, regardless of TTY). Pass `--step` to narrow it down to a single step. A snapshot assertion's `candidate` (the full masked response copy kept for `klaus snapshot accept`) is left out when the whole run is printed and included only with `--step`. If nothing matches, an error is printed to stderr and it exits with 1.
 
 ```
 $ klaus history show 3fa1c2e0-... --step get-me

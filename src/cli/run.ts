@@ -679,7 +679,18 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     dataRows,
     jobs,
     onStepStart: stepHandler ? (context) => stepHandler.onStepStart(context) : undefined,
-    onStepComplete: stepHandler ? (context) => stepHandler.onStepComplete(context) : undefined,
+    // テキスト出力もステップ結果を構造的にマスクしてから整形する(Cookie ヘッダー値は登録済みシークレットに依存せず ***)
+    onStepComplete: stepHandler
+      ? (context) =>
+          stepHandler.onStepComplete(
+            options.mask
+              ? {
+                  ...context,
+                  result: maskDeep(context.result, expandSecretVariants(collectedSecrets)),
+                }
+              : context,
+          )
+      : undefined,
     // 履歴書き込み失敗などステップの成否に影響しない警告を stderr に出力する
     onWarning: (message) => {
       process.stderr.write(`klaus: warning: ${message}\n`);
@@ -746,7 +757,8 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     // (maskDeep は新しいオブジェクトを返すため、元の runResult は変異しない。
     // 直後の determineExitCode はマスク前の runResult を使う)。
     const variants = options.mask ? expandSecretVariants(collectedSecrets) : [];
-    const maskedResult = variants.length > 0 ? maskDeep(runResult, variants) : runResult;
+    // 登録済みシークレットが無くても Cookie ヘッダーの構造的マスクは常に掛ける(--no-mask のときだけ生のまま)
+    const maskedResult = options.mask ? maskDeep(runResult, variants) : runResult;
     const json = formatJson(maskedResult, { historyEnabled: options.history });
     process.stdout.write(`${json}\n`);
   } else {

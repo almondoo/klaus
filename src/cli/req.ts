@@ -190,7 +190,8 @@ export async function reqCommand(
   // 切り詰め・文字列化より前にオブジェクト木のままマスクする(run の JSON 経路と同じ理由:
   // JSON 文字列化後の置換では、エスケープされるシークレットが平文のまま漏れるため)
   const variants = options.mask ? expandSecretVariants(collectedSecrets) : [];
-  const result = variants.length > 0 ? maskDeep(outcome.result, variants) : outcome.result;
+  // 登録済みシークレットが無くても Cookie ヘッダーの構造的マスクは常に掛ける(--no-mask のときだけ生のまま)
+  const result = options.mask ? maskDeep(outcome.result, variants) : outcome.result;
   const historyLink = outcome.historyRecorded ? { runId: outcome.runId } : undefined;
 
   if (useJson) {

@@ -517,6 +517,17 @@ describe("reqCommand", () => {
     }
   });
 
+  it("登録済みシークレットが無くても、Cookie ヘッダーの値は JSON で *** になる(--no-mask なら生の値)", async () => {
+    const header = { Cookie: "session=raw-cookie-abc" };
+
+    await reqCommand("GET", `${fixture.baseUrl}/c`, opts({ header }), workDir);
+    expect(readJson().request.headers.Cookie).toBe("session=***");
+
+    stdoutSpy.length = 0;
+    await reqCommand("GET", `${fixture.baseUrl}/c`, opts({ header, mask: false }), workDir);
+    expect(readJson().request.headers.Cookie).toBe("session=raw-cookie-abc");
+  });
+
   it("応答ボディは JSON 出力で 500 文字に切り詰められる", async () => {
     await reqCommand("GET", `${fixture.baseUrl}/big`, opts(), workDir);
 

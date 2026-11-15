@@ -122,6 +122,13 @@ export interface RunFlowOptions {
    */
   allowProtected?: boolean | undefined;
   /**
+   * 呼び出し元の種別。保護環境による拒否メッセージ末尾の案内文を、利用者が実際に取れる回避策に合わせるために使う
+   * (拒否メッセージは履歴にも記録されるため、利用者が見た文言がそのまま残る)。
+   * "cli"(未指定も同じ): `--allow-protected` を案内する / "ui": UI は上書きできないため `klaus run --allow-protected` を案内する /
+   * "library": ライブラリ呼び出しなので `allowProtected: true` オプションを案内する。単発リクエストは別経路で固定の案内になる
+   */
+  entryPoint?: EntryPoint | undefined;
+  /**
    * 送信先ホストの許可リストなどの安全柵。呼び出し元(CLI・server)が klaus.config.yaml の `guard` を
    * 読んで渡す(core は設定ファイルを読まない)。未指定なら制限なし。--allow-protected のような
    * 上書き手段は設けない。判定は送信直前のテンプレート展開後 URL に対して行う(--replay 時は送信しないため対象外)
@@ -646,16 +653,28 @@ export interface StepGuard {
   options?: GuardOptions;
   /** 単発リクエスト(klaus req / UI の単発実行)の判定か。拒否メッセージの案内を切り替えるために使う */
   singleRequest?: boolean;
+  /** フロー実行の呼び出し元種別。拒否メッセージの案内を切り替えるために使う(未指定は "cli" と同じ) */
+  entryPoint?: EntryPoint;
 }
+
+/** 保護環境の拒否メッセージの案内文を決める、フロー実行の呼び出し元種別 */
+export type EntryPoint = "cli" | "ui" | "library";
 
 /**
  * 保護環境による拒否メッセージの末尾に付ける案内。フロー実行(klaus run)には --allow-protected があるが、
  * 単発リクエストにはそのオプションが無いため、案内を切り替える。
  */
-function protectionHint(singleRequest: boolean | undefined): string {
-  return singleRequest === true
-    ? "Single requests (klaus req, klaus ui) cannot override environment protection; run a flow with `klaus run --allow-protected` instead."
-    : "Pass --allow-protected to run against this environment intentionally.";
+function protectionHint(singleRequest: boolean | undefined, entryPoint?: EntryPoint): string {
+  if (singleRequest === true) {
+    return "Single requests (klaus req, klaus ui) cannot override environment protection; run a flow with `klaus run --allow-protected` instead.";
+  }
+  if (entryPoint === "ui") {
+    return "klaus ui cannot override environment protection; run this flow with `klaus run --allow-protected` instead.";
+  }
+  if (entryPoint === "library") {
+    return "Pass allowProtected: true to run against this environment intentionally.";
+  }
+  return "Pass --allow-protected to run against this environment intentionally.";
 }
 
 /**
@@ -678,7 +697,7 @@ export function assertSendAllowed(
     throw new GuardRefusalError(
       `environment "${stepGuard.readonlyEnvName}" is protected ($protected: readonly) and only allows GET, HEAD, and OPTIONS by default; ` +
         `refusing ${method === "WS" ? "WebSocket" : method}. ` +
-        protectionHint(stepGuard.singleRequest),
+        protectionHint(stepGuard.singleRequest, stepGuard.entryPoint),
     );
   }
   // 安全メソッドの GET でも、サーバー側のメソッド上書きヘッダーで書き込みに化けさせられるため拒否する
@@ -687,7 +706,7 @@ export function assertSendAllowed(
   if (overrideHeader !== undefined) {
     throw new GuardRefusalError(
       `environment "${stepGuard.readonlyEnvName}" is protected ($protected: readonly) and refuses requests carrying the ${overrideHeader} header, which can turn a read into a write. ` +
-        protectionHint(stepGuard.singleRequest),
+        protectionHint(stepGuard.singleRequest, stepGuard.entryPoint),
     );
   }
   // 許可リストの指定時は、URL と違う Host ヘッダーを拒否する(Host ルーティングで許可リスト外の仮想ホストへ到達できるため)
@@ -1174,11 +1193,12 @@ function checkEnvironmentAllowed(
   environment: Environment,
   allowProtected: boolean | undefined,
   singleRequest: boolean | undefined,
+  entryPoint: EntryPoint | undefined,
 ): GuardRefusalError | undefined {
   if (getProtectedMode(environment) !== true || allowProtected) return undefined;
   return new GuardRefusalError(
     `environment "${envName}" is protected ($protected: true) and refuses execution by default. ` +
-      protectionHint(singleRequest),
+      protectionHint(singleRequest, entryPoint),
   );
 }
 
@@ -1193,8 +1213,15 @@ export function buildStepGuard(
   guard: GuardOptions | undefined,
   /** 単発リクエストの判定なら true(拒否メッセージの案内が flow 実行用の --allow-protected から切り替わる) */
   singleRequest?: boolean,
+  entryPoint?: EntryPoint,
 ): StepGuard | undefined {
-  const blockedError = checkEnvironmentAllowed(envName, environment, allowProtected, singleRequest);
+  const blockedError = checkEnvironmentAllowed(
+    envName,
+    environment,
+    allowProtected,
+    singleRequest,
+    entryPoint,
+  );
   const readonlyEnvName =
     getProtectedMode(environment) === "readonly" && !allowProtected ? String(envName) : undefined;
   if (!blockedError && readonlyEnvName === undefined && guard?.allowedHosts === undefined) {
@@ -1205,6 +1232,7 @@ export function buildStepGuard(
     ...(readonlyEnvName !== undefined ? { readonlyEnvName } : {}),
     ...(guard ? { options: guard } : {}),
     ...(singleRequest === true ? { singleRequest } : {}),
+    ...(entryPoint !== undefined ? { entryPoint } : {}),
   };
 }
 
@@ -1269,6 +1297,8 @@ export async function executeFlow(
     environment,
     options.allowProtected,
     options.guard,
+    undefined,
+    options.entryPoint,
   );
   const auditFields = buildAuditFields(
     cwd,

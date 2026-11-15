@@ -15,7 +15,6 @@ import {
   ParseError,
 } from "../../core/index.js";
 import { parseJsonBody } from "../json-body.js";
-import { adaptFlowResult, adaptStepResult } from "../protection-hint.js";
 import type {
   RunRequestBody,
   RunResultPayload,
@@ -115,6 +114,8 @@ export async function handleRunRequest(
         guard,
         http,
         openapi,
+        // 保護環境の拒否メッセージの案内を UI 向け(--allow-protected は UI から渡せない)にする。履歴にも同じ文言が残る
+        entryPoint: "ui",
         // UI 起点の実行は人間の操作として履歴に記録する
         actor: { kind: "human" },
         onStepStart: async (context) => {
@@ -129,8 +130,7 @@ export async function handleRunRequest(
           const payload: StepResultPayload = {
             flow: context.flow,
             file: context.file,
-            // 保護環境の拒否メッセージの案内を UI 向けに差し替える(--allow-protected は UI から渡せないため)
-            result: adaptStepResult(context.result),
+            result: context.result,
           };
           await safeWriteSSE({ event: "step-result", data: JSON.stringify(payload) });
         },
@@ -172,7 +172,7 @@ export async function handleRunRequest(
     }
 
     const runResultPayload: RunResultPayload = {
-      flow: adaptFlowResult(flowResult),
+      flow: flowResult,
       ...(warnings.length > 0 ? { warnings } : {}),
       ...(openapiSummary !== undefined ? { openapi: openapiSummary } : {}),
     };

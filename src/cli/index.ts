@@ -506,9 +506,11 @@ const historyCommand = program
 
 historyCommand
   .command("show")
-  .description("print the history entries for the given runId, exactly as stored, as JSON")
+  .description(
+    "print the history entries for the given runId as stored, as JSON (snapshot candidates are included only with --step)",
+  )
   .argument("<runId>", "the target runId")
-  .option("--step <name>", "filter by step name")
+  .option("--step <name>", "filter by step name (also includes snapshot candidates)")
   .action(async (runId: string, options: HistoryShowOptions) => {
     await runAction(async () => {
       process.exitCode = await historyShowCommand(runId, options);

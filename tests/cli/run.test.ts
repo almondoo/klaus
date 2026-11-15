@@ -483,6 +483,35 @@ describe("runCommand", () => {
       expect(await readFile(xmlPath, "utf-8")).toContain("<testsuite");
     });
 
+    it("登録済みシークレットが無くても、Cookie ヘッダーの値は stdout の JSON と html / github レポートで *** になる", async () => {
+      vi.stubEnv("GITHUB_ACTIONS", "");
+      const flowPath = join(workDir, "cookie.yaml");
+      await writeFile(
+        flowPath,
+        `name: f\nsteps:\n  - name: s\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n      headers: { Cookie: "session=raw-cookie-abc" }\n    assert:\n      status: 201\n`,
+        "utf-8",
+      );
+      const htmlPath = join(workDir, "cookie.html");
+      const mdPath = join(workDir, "cookie.md");
+      const xmlPath = join(workDir, "cookie.xml");
+
+      await runCommand(
+        [flowPath],
+        baseOptions({ report: "html,github,junit", reportFile: [htmlPath, mdPath, xmlPath] }),
+      );
+
+      expect(stdoutSpy.join("")).not.toContain("raw-cookie-abc");
+      expect(stdoutSpy.join("")).toContain("session=***");
+      for (const path of [htmlPath, mdPath, xmlPath]) {
+        expect(await readFile(path, "utf-8")).not.toContain("raw-cookie-abc");
+      }
+
+      // --no-mask は stdout だけを生のままにする(レポートファイルは従来どおりマスク)
+      stdoutSpy.length = 0;
+      await runCommand([flowPath], baseOptions({ mask: false }));
+      expect(stdoutSpy.join("")).toContain("raw-cookie-abc");
+    });
+
     it("--report html: {{env.X}} のシークレットは HTML に生値で現れない", async () => {
       vi.stubEnv("KLAUS_TEST_HTML_SECRET", "html-secret-value-789");
       const flowPath = join(workDir, "html-secret.yaml");

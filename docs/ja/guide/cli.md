@@ -571,7 +571,7 @@ klaus history [options]
 | `--fields <csv>` | 出力するフィールド(カンマ区切り) | `startedAt,runId,flow,step,status,durationMs` |
 | `--json` | TTY でも JSON 出力を強制する | — |
 
-出力モードは `klaus run` と同じ TTY 判定規約: stdout が TTY なら簡潔なテキスト表(1行1エントリ)、非 TTY(パイプ / エージェント実行)または `--json` 指定時は compact な JSON 配列を出力する。`--fields` に `request` / `response` / `assertions` 等を明示指定すれば、デフォルトでは含まれないリクエスト/レスポンスボディも取得できる。
+出力モードは `klaus run` と同じ TTY 判定規約: stdout が TTY なら簡潔なテキスト表(1行1エントリ)、非 TTY(パイプ / エージェント実行)または `--json` 指定時は compact な JSON 配列を出力する。`--fields` に `request` / `response` / `assertions` 等を明示指定すれば、デフォルトでは含まれないリクエスト/レスポンスボディも取得できる。スナップショットアサーションの `candidate`(マスク済みのレスポンス全体のコピー)は、`--fields assertions` を指定しても一覧には出ない。全文は `klaus history show --step` で見る。
 
 ```
 $ klaus history --last 5 --fields step,status,durationMs
@@ -591,7 +591,7 @@ $ klaus history --json --failed
 klaus history show <runId> [--step <name>]
 ```
 
-指定した `runId` に一致する履歴エントリを、保存されたままの形(シークレットはマスク済)ですべて JSON 出力する(TTY 判定はせず常に JSON)。`--step` を指定するとそのステップのみに絞り込む。該当エントリが無い場合は stderr にメッセージを出して exit 1。
+指定した `runId` に一致する履歴エントリを、保存された形(シークレットはマスク済)ですべて JSON 出力する(TTY 判定はせず常に JSON)。`--step` を指定するとそのステップのみに絞り込む。スナップショットアサーションの `candidate`(`klaus snapshot accept` 用に保存されているマスク済みレスポンス全体のコピー)は、run 全体を出すときは省き、`--step` を指定したときだけ含める。該当エントリが無い場合は stderr にメッセージを出して exit 1。
 
 ```
 $ klaus history show 3fa1c2e0-... --step get-me

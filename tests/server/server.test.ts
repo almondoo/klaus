@@ -2026,7 +2026,7 @@ describe("保護環境の拒否メッセージ(UI 起点のフロー実行)", ()
   });
 
   it.each(["blocked.yaml", "readonly-post.yaml"])(
-    "%s: 案内が UI 向け(--allow-protected を渡せない旨)に差し替わり、ストリームの step-result と run-result の両方に反映される",
+    "%s: core が UI 向けの案内(--allow-protected を渡せない旨)を生成し、ストリームの step-result と run-result の両方に反映される",
     async (path) => {
       const { stream, error } = await runStepError(path);
       for (const text of [stream, error ?? ""]) {
@@ -2038,10 +2038,11 @@ describe("保護環境の拒否メッセージ(UI 起点のフロー実行)", ()
     },
   );
 
-  it("履歴に記録される拒否理由は core のまま(配信する文字列だけを差し替える)", async () => {
+  it("履歴に記録される拒否理由も、利用者が実際に見た UI 向けの案内になる", async () => {
     const entries = await readAllHistoryEntries(dir);
     const recorded = entries.find((entry) => entry.step === "call" && entry.error);
-    expect(recorded?.error).toContain("--allow-protected");
+    expect(recorded?.error).toContain("klaus ui cannot override environment protection");
+    expect(recorded?.error).not.toContain("Pass --allow-protected");
   });
 });
 
