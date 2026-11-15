@@ -6,7 +6,8 @@
 import { timingSafeEqual } from "node:crypto";
 import { Hono } from "hono";
 import { getCookie, setCookie } from "hono/cookie";
-import { loadFlow, ParseError } from "../core/index.js";
+import { type GuardOptions, type HttpConfig, loadFlow, ParseError } from "../core/index.js";
+import { createHistoryWatcher, type HistoryWatcher } from "./history-watcher.js";
 import {
   handleGetEnvironmentDetail,
   handlePostEnvironmentCapture,
@@ -14,9 +15,13 @@ import {
   listEnvironments,
 } from "./routes/environments.js";
 import { listFlows, summarizeStep } from "./routes/flows.js";
-import { getHistoryPage } from "./routes/history.js";
+import { getHistoryPage, stripPageCandidates } from "./routes/history.js";
+import { handleHistoryDiff } from "./routes/history-diff.js";
+import { handleHistoryEvents } from "./routes/history-events.js";
+import { handleHistoryPromote } from "./routes/history-promote.js";
 import { handleSingleRequest } from "./routes/request.js";
 import { handleRunRequest } from "./routes/runs.js";
+import { handleSnapshotAccept, handleSnapshotMismatches } from "./routes/snapshots.js";
 import { createStaticHandler } from "./routes/static.js";
 import type { FlowDetail } from "./types.js";
 import { pathTraversalResponse, resolveWithinCwd } from "./validation.js";
@@ -36,6 +41,21 @@ export interface CreateAppOptions {
    * 受け付ける設定を選んだとみなし、Host/Origin 検証のホスト名部分を緩和する(ポート一致のみ確認、後述)。
    */
   host?: string;
+  /** 送信先ホストの許可リストなどの安全柵。POST /api/runs と POST /api/request の実行に渡す */
+  guard?: GuardOptions | undefined;
+  /**
+   * HTTP クライアント設定(klaus.config.yaml の `http`: リダイレクト追従・cookie・proxy・TLS)。
+   * POST /api/runs と POST /api/request の実行に渡す。guard と同じく起動時に一度だけ渡され、
+   * リクエストボディからは受け付けない
+   */
+  http?: HttpConfig | undefined;
+  /**
+   * OpenAPI 文書の絶対パス(klaus.config.yaml の `run.openapi`。CLI の --openapi の既定値と同じ)。
+   * POST /api/runs の実行ごとに検証器を作って渡す。起動時に一度だけ渡され、リクエストからは受け付けない
+   */
+  openapi?: readonly string[] | undefined;
+  /** 履歴変更通知(GET /api/history/events)用のウォッチャー。未指定なら createApp 内で生成する(サーバー停止時に close したい呼び出し元が渡す) */
+  historyWatcher?: HistoryWatcher | undefined;
 }
 
 /**
@@ -51,7 +71,8 @@ function timingSafeTokenEqual(a: string, b: string): boolean {
 }
 
 export function createApp(options: CreateAppOptions): Hono {
-  const { cwd, token, port, staticDir, host = "127.0.0.1" } = options;
+  const { cwd, token, port, staticDir, host = "127.0.0.1", guard, http, openapi } = options;
+  const historyWatcher = options.historyWatcher ?? createHistoryWatcher(cwd);
   const app = new Hono();
 
   const expectedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
@@ -157,9 +178,20 @@ export function createApp(options: CreateAppOptions): Hono {
     handlePostEnvironmentCapture(c, cwd, c.req.param("name")),
   );
 
-  app.post("/api/runs", (c) => handleRunRequest(c, cwd));
+  app.post("/api/runs", (c) => handleRunRequest(c, cwd, guard, http, openapi));
 
-  app.post("/api/request", (c) => handleSingleRequest(c, cwd));
+  app.post("/api/request", (c) => handleSingleRequest(c, cwd, guard, http));
+
+  // /api/history より前に登録する(順序に依存しないが、意図を明確にするため)
+  app.get("/api/history/events", (c) => handleHistoryEvents(c, historyWatcher));
+
+  app.get("/api/history/diff", (c) => handleHistoryDiff(c, cwd));
+
+  app.get("/api/snapshots/mismatches", (c) => handleSnapshotMismatches(c, cwd));
+
+  app.post("/api/snapshots/accept", (c) => handleSnapshotAccept(c, cwd));
+
+  app.post("/api/history/promote", (c) => handleHistoryPromote(c, cwd));
 
   app.get("/api/history", async (c) => {
     const flow = c.req.query("flow");
@@ -171,7 +203,8 @@ export function createApp(options: CreateAppOptions): Hono {
       limit: limit !== undefined && Number.isFinite(limit) ? limit : undefined,
       before: before || undefined,
     });
-    return c.json(page);
+    // 承認用の候補(応答全体のコピー)は一覧に含めない
+    return c.json(stripPageCandidates(page));
   });
 
   // 上記いずれにもマッチしない GET は静的配信(SPA フォールバック含む)

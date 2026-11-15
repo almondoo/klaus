@@ -1,5 +1,7 @@
 import Ajv2020 from "ajv/dist/2020";
 import { JSONPath } from "jsonpath-plus";
+import { maskCookieRequestHeader, maskSetCookieHeader } from "./cookie-jar.js";
+import { BODY_TOO_DEEP_MESSAGE, exceedsDepth, MAX_JSON_BODY_DEPTH } from "./json-diff.js";
 import type {
   AssertDef,
   BodyAssertion,
@@ -31,7 +33,7 @@ const ajv = new Ajv2020({ allErrors: true, strict: false });
  * いずれも可用性(評価のハングアップ)にのみ影響する既知のリスクとして許容している
  * (docs/guide/flow-definition.md の regex 節を参照)。
  */
-function compileUserRegex(pattern: string): RegExp {
+export function compileUserRegex(pattern: string): RegExp {
   return new RegExp(pattern);
 }
 
@@ -59,6 +61,8 @@ export interface AssertionContext {
   headers: Record<string, string>;
   body: unknown;
   bodyText: string;
+  /** body が、入れ子が深すぎてテキストのまま保持されたものか。true なら body の JSONPath・スキーマのアサーションは失敗にする */
+  bodyTooDeep?: boolean | undefined;
   durationMs: number;
   events?: SseEvent[];
   messages?: WsMessage[];
@@ -88,6 +92,51 @@ interface MatchOptions {
   contains?: string | undefined;
   regex?: string | undefined;
   exists?: boolean | undefined;
+  gt?: number | undefined;
+  gte?: number | undefined;
+  lt?: number | undefined;
+  lte?: number | undefined;
+  length?: number | { min?: number | undefined; max?: number | undefined } | undefined;
+  type?: JsonTypeName | undefined;
+  oneOf?: unknown[] | undefined;
+}
+
+type JsonTypeName = "string" | "number" | "integer" | "boolean" | "null" | "array" | "object";
+
+/** 値の JSON 型名(integer は number の部分集合として type: number にも一致させる) */
+function matchesJsonType(value: unknown, type: JsonTypeName): boolean {
+  switch (type) {
+    case "string":
+      return typeof value === "string";
+    case "number":
+      return typeof value === "number" && Number.isFinite(value);
+    case "integer":
+      return typeof value === "number" && Number.isInteger(value);
+    case "boolean":
+      return typeof value === "boolean";
+    case "null":
+      return value === null;
+    case "array":
+      return Array.isArray(value);
+    case "object":
+      return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+}
+
+/** 数値比較の対象値。header は常に文字列なので numericStrings 指定時だけ数値文字列を数値として扱う */
+function numericValue(value: unknown, numericStrings: boolean): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  // 10 進数の表記(符号・小数点つき)だけを数値とみなす。Number() が受け付ける 0x10(16 進)・0b1・
+  // 1e3(指数)・Infinity などは、ヘッダー値としては数値のつもりで書かれないため数値に含めない
+  if (
+    numericStrings &&
+    typeof value === "string" &&
+    /^[+-]?(\d+\.?\d*|\.\d+)$/.test(value.trim())
+  ) {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return undefined;
 }
 
 /** 構造的な等価比較(JSON 値用) */
@@ -133,7 +182,17 @@ function pushMatchResults(
    * 要素ループのように同一 def を何度も評価する呼び出し元だけが、ループの外でコンパイルして渡す)。
    */
   precompiledRegex?: RegExp,
+  /** header のように値が常に文字列になる対象で、gt/gte/lt/lte に数値文字列を許す */
+  numericStrings = false,
+  /**
+   * 実際の値を結果の actual / message に載せるときの表示用変換(Cookie / Set-Cookie ヘッダー用)。
+   * 比較には常に生の値を使い、保存・出力される actual と message だけを変換後の値にする
+   */
+  maskDisplay?: (value: string) => string,
 ): void {
+  // 結果に載せる値(文字列のときだけ表示用に変換する)
+  const shown = (value: unknown): unknown =>
+    maskDisplay !== undefined && typeof value === "string" ? maskDisplay(value) : value;
   if (matchers.exists !== undefined) {
     const ok = resolvedExists === matchers.exists;
     results.push({
@@ -152,48 +211,139 @@ function pushMatchResults(
       ok,
       kind: `${kindPrefix}.equals`,
       expected: matchers.equals,
-      actual: resolvedValue,
+      actual: shown(resolvedValue),
       message: ok
         ? `${subject} equals expected value`
-        : `${subject}: expected ${JSON.stringify(matchers.equals)} but got ${JSON.stringify(resolvedValue)}`,
+        : `${subject}: expected ${JSON.stringify(matchers.equals)} but got ${JSON.stringify(shown(resolvedValue))}`,
     });
   }
   if (matchers.contains !== undefined) {
     const actualStr = stringifyForMatch(resolvedValue);
+    const shownStr = stringifyForMatch(shown(resolvedValue));
     const ok = resolvedExists && actualStr.includes(matchers.contains);
     results.push({
       ok,
       kind: `${kindPrefix}.contains`,
       expected: matchers.contains,
-      actual: actualStr,
+      actual: shownStr,
       message: ok
         ? `${subject} contains "${matchers.contains}"`
-        : `${subject}: expected to contain "${matchers.contains}" but got "${actualStr}"`,
+        : `${subject}: expected to contain "${matchers.contains}" but got "${shownStr}"`,
     });
   }
   if (matchers.regex !== undefined) {
     const actualStr = stringifyForMatch(resolvedValue);
+    const shownStr = stringifyForMatch(shown(resolvedValue));
     const regex = precompiledRegex ?? compileUserRegex(matchers.regex);
     const ok = resolvedExists && regex.test(actualStr);
     results.push({
       ok,
       kind: `${kindPrefix}.regex`,
       expected: matchers.regex,
-      actual: actualStr,
+      actual: shownStr,
       message: ok
         ? `${subject} matches /${matchers.regex}/`
-        : `${subject}: expected to match /${matchers.regex}/ but got "${actualStr}"`,
+        : `${subject}: expected to match /${matchers.regex}/ but got "${shownStr}"`,
+    });
+  }
+  const comparisons = [
+    ["gt", matchers.gt, (a: number, b: number) => a > b, ">"],
+    ["gte", matchers.gte, (a: number, b: number) => a >= b, ">="],
+    ["lt", matchers.lt, (a: number, b: number) => a < b, "<"],
+    ["lte", matchers.lte, (a: number, b: number) => a <= b, "<="],
+  ] as const;
+  for (const [key, limit, compare, symbol] of comparisons) {
+    if (limit === undefined) continue;
+    const actual = numericValue(resolvedValue, numericStrings);
+    const ok = resolvedExists && actual !== undefined && compare(actual, limit);
+    results.push({
+      ok,
+      kind: `${kindPrefix}.${key}`,
+      expected: limit,
+      actual: shown(resolvedValue),
+      message: ok
+        ? `${subject} ${actual} ${symbol} ${limit}`
+        : `${subject}: expected a number ${symbol} ${limit} but got ${JSON.stringify(shown(resolvedValue))}`,
+    });
+  }
+  if (matchers.length !== undefined) {
+    const range =
+      typeof matchers.length === "number"
+        ? { min: matchers.length, max: matchers.length }
+        : matchers.length;
+    const size =
+      typeof resolvedValue === "string" || Array.isArray(resolvedValue)
+        ? resolvedValue.length
+        : undefined;
+    const ok =
+      resolvedExists &&
+      size !== undefined &&
+      (range.min === undefined || size >= range.min) &&
+      (range.max === undefined || size <= range.max);
+    const expectedText =
+      typeof matchers.length === "number" ? `${matchers.length}` : JSON.stringify(matchers.length);
+    results.push({
+      ok,
+      kind: `${kindPrefix}.length`,
+      expected: matchers.length,
+      actual: size,
+      message: ok
+        ? `${subject} length ${size} matches ${expectedText}`
+        : size === undefined
+          ? `${subject}: length applies to strings and arrays but the value is ${describeType(resolvedExists, resolvedValue)}`
+          : `${subject}: expected length ${expectedText} but got ${size}`,
+    });
+  }
+  if (matchers.type !== undefined) {
+    const ok = resolvedExists && matchesJsonType(resolvedValue, matchers.type);
+    results.push({
+      ok,
+      kind: `${kindPrefix}.type`,
+      expected: matchers.type,
+      actual: describeType(resolvedExists, resolvedValue),
+      message: ok
+        ? `${subject} is ${matchers.type}`
+        : `${subject}: expected type ${matchers.type} but got ${describeType(resolvedExists, resolvedValue)}`,
+    });
+  }
+  if (matchers.oneOf !== undefined) {
+    const ok =
+      resolvedExists && matchers.oneOf.some((candidate) => deepEqual(resolvedValue, candidate));
+    results.push({
+      ok,
+      kind: `${kindPrefix}.oneOf`,
+      expected: matchers.oneOf,
+      actual: shown(resolvedValue),
+      message: ok
+        ? `${subject} is one of the expected values`
+        : `${subject}: expected one of ${JSON.stringify(matchers.oneOf)} but got ${JSON.stringify(shown(resolvedValue))}`,
     });
   }
 }
 
+/** メッセージ用の型名(存在しない値は "missing") */
+function describeType(exists: boolean, value: unknown): string {
+  if (!exists) return "missing";
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+/** status の期待値(数値 / 数値の配列 / "2xx" 形式)に実際のステータスが合うか */
+function statusMatches(expected: number | number[] | string, actual: number): boolean {
+  if (typeof expected === "number") return actual === expected;
+  if (Array.isArray(expected)) return expected.includes(actual);
+  return Math.floor(actual / 100) === Number(expected[0]);
+}
+
 /** status アサーション */
 export function assertStatus(
-  expected: number | undefined,
+  expected: number | number[] | string | undefined,
   actualStatus: number,
 ): AssertionResult[] {
   if (expected === undefined) return [];
-  const ok = actualStatus === expected;
+  const ok = statusMatches(expected, actualStatus);
+  const expectedText = Array.isArray(expected) ? `one of [${expected.join(", ")}]` : `${expected}`;
   return [
     {
       ok,
@@ -202,9 +352,21 @@ export function assertStatus(
       actual: actualStatus,
       message: ok
         ? `status is ${actualStatus}`
-        : `expected status ${expected} but got ${actualStatus}`,
+        : `expected status ${expectedText} but got ${actualStatus}`,
     },
   ];
+}
+
+/**
+ * header アサーションの結果に載せる値を位置でマスクする関数(Cookie / Set-Cookie だけ)。
+ * 値は自由文字列として actual / message に入り、maskDeep(ヘッダーオブジェクトの構造で判定する)では
+ * 見えないため、アサーションの評価時点で変換しておく。比較そのものは生の値で行う。
+ */
+function cookieDisplayMask(headerName: string): ((value: string) => string) | undefined {
+  const lower = headerName.toLowerCase();
+  if (lower === "cookie") return maskCookieRequestHeader;
+  if (lower === "set-cookie") return maskSetCookieHeader;
+  return undefined;
 }
 
 /** header アサーション(ヘッダー名は大文字小文字を無視) */
@@ -218,7 +380,17 @@ export function assertHeaders(
   for (const def of defs) {
     const value = lowerHeaders.get(def.name.toLowerCase());
     const exists = value !== undefined;
-    pushMatchResults(results, "header", `header "${def.name}"`, def, exists, value);
+    pushMatchResults(
+      results,
+      "header",
+      `header "${def.name}"`,
+      def,
+      exists,
+      value,
+      undefined,
+      true,
+      cookieDisplayMask(def.name),
+    );
   }
   return results;
 }
@@ -401,11 +573,13 @@ export function assertMessageCount(
   return assertItemCount(def, messages, "messageCount", "message");
 }
 
+const TOO_DEEP_ITEM_NOTE = `the JSON data is nested deeper than ${MAX_JSON_BODY_DEPTH} levels and is not parsed, so the path cannot match`;
+
 /** item.data を path があれば JSON parse して jsonpath 適用、なければ生文字列を返す */
 function resolveItemValue(
   item: DataItem,
   path: string | undefined,
-): { exists: boolean; value: unknown } {
+): { exists: boolean; value: unknown; tooDeep?: true } {
   if (!path) {
     return { exists: true, value: item.data };
   }
@@ -414,6 +588,10 @@ function resolveItemValue(
     parsed = JSON.parse(item.data);
   } catch {
     return { exists: false, value: undefined };
+  }
+  // 深すぎる JSON は本文と同様に構造化しない(JSONPath は一致しない扱い)
+  if (exceedsDepth(parsed, MAX_JSON_BODY_DEPTH)) {
+    return { exists: false, value: undefined, tooDeep: true };
   }
   return safeJsonPath(path, parsed);
 }
@@ -440,8 +618,15 @@ function assertItems(
         pushMatchResults(results, kindPrefix, subject, def, false, undefined);
         continue;
       }
-      const { exists, value } = resolveItemValue(target, def.path);
-      pushMatchResults(results, kindPrefix, subject, def, exists, value);
+      const { exists, value, tooDeep } = resolveItemValue(target, def.path);
+      pushMatchResults(
+        results,
+        kindPrefix,
+        tooDeep ? `${subject} (${TOO_DEEP_ITEM_NOTE})` : subject,
+        def,
+        exists,
+        value,
+      );
       continue;
     }
 
@@ -454,8 +639,10 @@ function assertItems(
       // ループの外で1回だけコンパイルして使い回す
       const precompiledRegex = key === "regex" ? compileUserRegex(expected as string) : undefined;
       let anyOk = false;
+      let anyTooDeep = false;
       for (const item of items) {
-        const { exists, value } = resolveItemValue(item, def.path);
+        const { exists, value, tooDeep } = resolveItemValue(item, def.path);
+        if (tooDeep) anyTooDeep = true;
         const tmp: AssertionResult[] = [];
         pushMatchResults(
           tmp,
@@ -479,7 +666,7 @@ function assertItems(
         actual: anyOk ? "matched" : `no match among ${items.length} ${subjectNoun}s`,
         message: anyOk
           ? `${subject}: at least one ${subjectNoun} matches ${key}`
-          : `${subject}: no ${subjectNoun} matched ${key}=${JSON.stringify(expected)} (checked ${items.length} ${subjectNoun}s)`,
+          : `${subject}: no ${subjectNoun} matched ${key}=${JSON.stringify(expected)} (checked ${items.length} ${subjectNoun}s${anyTooDeep ? `; ${TOO_DEEP_ITEM_NOTE}` : ""})`,
       });
     }
   }
@@ -506,6 +693,26 @@ export function assertMessages(
   return assertItems(defs, messages, "message", "message");
 }
 
+/** body / bodySchema のアサーションを、深すぎてテキストのまま保持した本文のために 1 件ずつ失敗として返す */
+function assertBodyUnavailable(def: AssertDef): AssertionResult[] {
+  const results: AssertionResult[] = [];
+  for (const bodyDef of def.body ?? []) {
+    results.push({
+      ok: false,
+      kind: "body",
+      message: `body path "${bodyDef.path}": ${BODY_TOO_DEEP_MESSAGE}`,
+    });
+  }
+  if (def.bodySchema) {
+    results.push({
+      ok: false,
+      kind: "bodySchema",
+      message: `bodySchema: ${BODY_TOO_DEEP_MESSAGE}`,
+    });
+  }
+  return results;
+}
+
 /** ステップの assert 定義全体を評価する。例外は投げない */
 export function evaluateAssertions(
   def: AssertDef | undefined,
@@ -515,8 +722,11 @@ export function evaluateAssertions(
   return [
     ...assertStatus(def.status, context.status),
     ...assertHeaders(def.headers, context.headers),
-    ...assertBody(def.body, context.body),
-    ...assertBodySchema(def.bodySchema, context.body),
+    // テキストのまま保持した深い JSON に JSONPath・スキーマを当てると、文字列への添字アクセスなどで誤った結果になるため、
+    // 評価せずに明示的なメッセージで失敗させる(本文テキストへのアサーションは通常どおり評価する)
+    ...(context.bodyTooDeep === true
+      ? assertBodyUnavailable(def)
+      : [...assertBody(def.body, context.body), ...assertBodySchema(def.bodySchema, context.body)]),
     ...assertBodyText(def.bodyText, context.bodyText),
     ...assertDuration(def.duration, context.durationMs),
     ...assertEventCount(def.eventCount, context.events ?? []),

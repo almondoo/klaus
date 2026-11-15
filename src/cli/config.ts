@@ -10,12 +10,15 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { parse as parseYaml } from "yaml";
 import {
   assertTrustedAncestorSource,
   type CliConfig,
   configSchema,
+  type GuardOptions,
+  type HttpConfig,
   ParseError,
+  parseYamlQuietly,
+  resolveHttpTlsPaths,
   toParseError,
 } from "../core/index.js";
 import type { RunCommandOptions } from "./run.js";
@@ -81,11 +84,24 @@ export async function loadCliConfig(cwd: string): Promise<CliConfig | undefined>
   }
 
   try {
-    const raw: unknown = parseYaml(content);
-    return configSchema.parse(raw);
+    const raw: unknown = parseYamlQuietly(content);
+    return resolveOpenApiPaths(configSchema.parse(raw), dirname(path));
   } catch (error) {
     throw toParseError(error, path);
   }
+}
+
+/**
+ * `run.openapi` を設定ファイルのディレクトリ基準の絶対パスにする(core も run も設定ファイルの場所を知らないため、
+ * 読み込み時に解決する)。常に配列で返す。`run.openapi` が無ければ config をそのまま返す。
+ */
+function resolveOpenApiPaths(config: CliConfig, baseDir: string): CliConfig {
+  const openapi = config.run?.openapi;
+  if (openapi === undefined || config.run === undefined) return config;
+  const paths = (Array.isArray(openapi) ? openapi : [openapi]).map((entry) =>
+    resolve(baseDir, entry),
+  );
+  return { ...config, run: { ...config.run, openapi: paths } };
 }
 
 /**
@@ -97,6 +113,29 @@ export async function loadCliConfig(cwd: string): Promise<CliConfig | undefined>
  */
 export type CliOptionSource = string | undefined;
 
+/**
+ * klaus.config.yaml の `guard` を core の GuardOptions へ変換する(`guard` が無ければ undefined)。
+ * run / ui の両方が同じ設定を core へ渡す。CLI フラグによる上書きは意図的に提供しない。
+ */
+export function resolveGuardOptions(config: CliConfig | undefined): GuardOptions | undefined {
+  const allowedHosts = config?.guard?.allowedHosts;
+  return allowedHosts !== undefined ? { allowedHosts } : undefined;
+}
+
+/**
+ * klaus.config.yaml の `http` を core の HttpConfig へ変換する(`http` が無ければ undefined)。
+ * tls の ca / cert / key は設定ファイルのディレクトリ基準の絶対パスにする(core は設定ファイルの場所を知らないため)。
+ * index.ts を介さず run / req / ui が同じ既定値を得られるよう、設定ファイルの探索から行う。
+ * 設定ファイルの構文・検証エラーは loadCliConfig と同じく ParseError を投げる。
+ */
+export async function loadHttpOptions(cwd: string): Promise<HttpConfig | undefined> {
+  const config = await loadCliConfig(cwd);
+  if (config?.http === undefined) return undefined;
+  // loadCliConfig が成功した時点で設定ファイルは存在する
+  const path = resolveConfigPath(cwd) as string;
+  return resolveHttpTlsPaths(config.http, dirname(path));
+}
+
 export interface RunOptionSources {
   env?: CliOptionSource;
   report?: CliOptionSource;
@@ -104,6 +143,7 @@ export interface RunOptionSources {
   history?: CliOptionSource;
   mask?: CliOptionSource;
   jobs?: CliOptionSource;
+  openapi?: CliOptionSource;
 }
 
 /**
@@ -111,7 +151,7 @@ export interface RunOptionSources {
  * 「CLI 明示(source === "cli") > config > 組み込み既定(options のまま)」の優先順位。
  * `--no-history` / `--no-mask` の負論理も source 判定で自然に扱える(未指定=default のときだけ
  * config の値で上書きし、明示指定(source "cli")なら常に CLI 側を優先する)。
- * `--allow-protected` / `--record` / `--replay` / `--json` / `--text` / `--var` / `--env-file` / `--data` /
+ * `--allow-protected` / `--record` / `--replay` / `--dry-run` / `--json` / `--text` / `--var` / `--env-file` / `--data` /
  * `--tags` / `--exclude-tags` は対象外(configSchema に定義がないため、options はそのまま素通りする。
  * `--var` / `--env-file` / `--data` はその場限り・呼び出しごとの指定であることが本質のため、恒久的な既定値を
  * 持つ config には馴染まない。`--tags` / `--exclude-tags` も同様に、その回の実行で何を対象にするかという
@@ -148,6 +188,10 @@ export function applyConfigToRunOptions(
       : {}),
     ...(runConfig.mask !== undefined && sources.mask !== "cli" ? { mask: runConfig.mask } : {}),
     ...(runConfig.jobs !== undefined && sources.jobs !== "cli" ? { jobs: runConfig.jobs } : {}),
+    // --openapi を指定したときは設定ファイルの値を置き換える(足さない)。設定ファイルの値は読み込み時に絶対パスにしてある
+    ...(runConfig.openapi !== undefined && sources.openapi !== "cli"
+      ? { openapi: Array.isArray(runConfig.openapi) ? runConfig.openapi : [runConfig.openapi] }
+      : {}),
   };
 }
 

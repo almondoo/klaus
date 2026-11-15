@@ -17,6 +17,10 @@ export const getEnvironmentDetail = impl.getEnvironmentDetail;
 export const updateEnvironment = impl.updateEnvironment;
 export const captureToEnvironment = impl.captureToEnvironment;
 export const getHistory = impl.getHistory;
+export const getHistoryDiff = impl.getHistoryDiff;
+export const promoteHistory = impl.promoteHistory;
+export const getSnapshotMismatches = impl.getSnapshotMismatches;
+export const acceptSnapshot = impl.acceptSnapshot;
 export const runFlow = impl.runFlow;
 export const runSingleRequest = impl.runSingleRequest;
 
@@ -24,7 +28,11 @@ export { ApiError } from "./http";
 export type { RunStreamCallbacks } from "./sse";
 export { getToken, onUnauthorized } from "./token";
 export type {
+  AcceptSnapshotRequestBody,
+  AcceptSnapshotResult,
   AssertionResult,
+  BodyDiff,
+  DifferenceList,
   EnvironmentCaptureRequestBody,
   EnvironmentDetail,
   EnvironmentListEntry,
@@ -32,13 +40,24 @@ export type {
   FlowDetail,
   FlowListEntry,
   FlowResult,
+  GetHistoryDiffParams,
   GetHistoryParams,
+  HeaderDiff,
   HistoryEntry,
   HistoryPage,
+  JsonDifference,
+  OpenApiRunSummary,
+  PromoteRequestBody,
+  PromoteResponse,
+  RunDiff,
   RunRequestBody,
   RunResultPayload,
+  RunSummary,
   SingleRequestRequestBody,
   SingleRequestResultPayload,
+  SnapshotMismatch,
+  SnapshotMismatchesPayload,
+  StepDiff,
   StepResult,
   StepResultPayload,
   StepStartPayload,

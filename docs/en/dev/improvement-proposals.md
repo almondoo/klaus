@@ -82,11 +82,13 @@ This also implies a design change: `HistoryEntry` has no `status` field today (s
 
 **Verdict: deferred** — fixing this properly needs a focus trap plus focus restoration, which means deciding between hand-rolling it or switching to Radix's Dialog/Sheet (cost: 2-3 hours). On the other hand, this drawer **only appears below 768px**, and the affected audience — "someone operating a local dev tool by keyboard on a narrow screen" — is a rare combination. Escape-to-close already works, so there's a minimal way out. Will revisit with a switch to Radix Sheet if mobile-width usage actually shows up.
 
-### A-7. Parallel execution of multiple flows — Deferred (for now)
+### A-7. Parallel execution of multiple flows — Implemented (v0.13.0, `klaus run --jobs <n>`)
 
 **Basis**: `runFlows` runs sequentially. With many independent flows, total time grows linearly.
 
-**Verdict: deferred** — at the current expected scale (a handful of local API flows), there's no perceptible difference. Parallelizing would require care around output ordering, history ordering, and rate limits — the added complexity outweighs the benefit. Revisit once flow counts grow and this shows up as a measured problem.
+**Original verdict: deferred** — at the current expected scale (a handful of local API flows), there's no perceptible difference. Parallelizing would require care around output ordering, history ordering, and rate limits — the added complexity outweighs the benefit.
+
+**Since then**: v0.13.0 added `klaus run --jobs <n>` (default 1, at most 32). The parallel unit is an execution unit (a flow file, or flow x data row with `--data`); steps within one flow stay sequential. Text output is put back into input order, and it cannot be combined with `--record`.
 
 ---
 
@@ -144,4 +146,4 @@ The `env` path-traversal issue found in `POST /api/runs` during the security rev
 | 4 | A-4 secret masking | Before moving to a shared-history workflow |
 | 5 | A-3 / A-6 | After seeing actual usage patterns |
 
-A-7 (parallel execution) is recommended to **not** be done at this time.
+A-7 (parallel execution) was first judged not worth doing, but is now implemented as `--jobs` (v0.13.0).

@@ -198,6 +198,23 @@ describe("groupHistoryByRun", () => {
     const groups = groupHistoryByRun(entries);
     expect(groups[0]?.status).toBe("skipped");
   });
+
+  it("labels a group as error when a step was refused by a guardrail (status error) and none failed", () => {
+    const entries: HistoryEntry[] = [
+      entry({
+        runId: "run-1",
+        step: "a",
+        startedAt: "2026-08-07T00:00:00.000Z",
+        status: "error",
+        response: undefined,
+        assertions: [],
+        error: "host is not in guard.allowedHosts",
+      }),
+    ];
+    const groups = groupHistoryByRun(entries);
+    expect(groups[0]?.status).toBe("error");
+    expect(resolveStepStatus(entries[0] as HistoryEntry)).toBe("error");
+  });
 });
 
 describe("resolveStepStatus", () => {

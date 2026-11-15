@@ -14,7 +14,7 @@ A CLI tool that lets both Claude Code (an AI agent) and humans verify a local HT
 ## Out of scope (must not be implemented)
 
 1. **No GUI app or VS Code extension**. The only future UI is "a localhost web UI served by the CLI" (out of scope for this phase, but the core separation should leave room for it)
-2. **Do not reimplement the HTTP layer**. Retries, TLS, and redirects are delegated to undici
+2. **Do not reimplement low-level HTTP**. Connections, the TLS handshake, and proxy tunnels use undici's facilities. The per-run HTTP client (per-hop guard checks on redirects, cookie jar, auth helpers) lives in core
 3. **Do not create a custom DSL**. Request definitions are plain YAML
 4. Cloud sync and account mechanisms will never be built (local-first)
 
@@ -93,7 +93,7 @@ steps:
 
 ### Optional (not implemented for now)
 
-- gRPC, mock server, load testing
+- gRPC, load testing (the mock server is implemented as `klaus mock`)
 
 ## Constraints for the future localhost UI (to be honored in the current phase)
 

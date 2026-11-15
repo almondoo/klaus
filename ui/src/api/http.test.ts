@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, apiFetch, apiFetchJson } from "./http";
+import { ApiError, apiFetch, apiFetchJson, parseErrorBody } from "./http";
 import { onUnauthorized, resetTokenCache } from "./token";
 
 describe("apiFetch", () => {
@@ -63,5 +63,31 @@ describe("apiFetch", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(apiFetchJson("/api/flows")).rejects.toMatchObject({ status: 500 });
+  });
+});
+
+describe("parseErrorBody / apiFetchJson のエラー本文", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("JSON エラーはメッセージと code を取り出し、text 応答や error の無い JSON は本文のまま", () => {
+    expect(parseErrorBody('{"error":"bad","code":"x"}')).toEqual({ message: "bad", code: "x" });
+    expect(parseErrorBody('{"error":"bad"}')).toEqual({ message: "bad" });
+    expect(parseErrorBody("Forbidden: nope")).toEqual({ message: "Forbidden: nope" });
+    expect(parseErrorBody('{"other":1}')).toEqual({ message: '{"other":1}' });
+  });
+
+  it("apiFetchJson は JSON エラーの error を message に、code を ApiError.code に入れる", async () => {
+    const fetchMock = vi.fn(
+      async () => new Response('{"error":"already exists","code":"c"}', { status: 409 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(apiFetchJson("/api/history/promote")).rejects.toMatchObject({
+      status: 409,
+      message: "already exists",
+      code: "c",
+    });
   });
 });

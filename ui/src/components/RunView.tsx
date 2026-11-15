@@ -4,6 +4,7 @@ import { Progress } from "@/components/ui/progress";
 import type { UseRunResult } from "@/hooks/useRun";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/utils/format";
+import { RunNotices } from "./ResultDetails";
 import { StepRow } from "./StepRow";
 
 export interface RunViewProps {
@@ -60,6 +61,10 @@ export function RunView({ flowDetail, flowDetailLoading, flowDetailError, run }:
           <StepRow key={step.name} step={step} />
         ))}
       </ul>
+
+      {run.runResult && (
+        <RunNotices warnings={run.warnings} steps={run.runResult.steps} openapi={run.openapi} />
+      )}
 
       {run.runResult && (
         <output

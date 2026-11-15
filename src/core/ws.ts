@@ -1,4 +1,4 @@
-import { WebSocket } from "undici";
+import { type Dispatcher, WebSocket } from "undici";
 import { RuntimeError } from "./errors.js";
 import type { WsMessage } from "./types.js";
 
@@ -10,6 +10,8 @@ export interface WsConnectOptions {
   send?: unknown[];
   maxMessages?: number;
   maxDurationMs?: number;
+  /** 実行単位の HTTP クライアント(proxy / TLS)。未指定なら undici の既定 dispatcher を使う */
+  dispatcher?: Dispatcher;
 }
 
 export interface WsConnectResult {
@@ -24,18 +26,21 @@ const DEFAULT_MAX_DURATION_MS = 10000;
  * WebSocket に接続し、send を順次送信したのち受信メッセージを蓄積する。
  * maxMessages / maxDurationMs のいずれかに達したら close() して正常終了する(エラーにしない)。
  * 接続失敗・(打ち切りによらない)異常切断は RuntimeError にする。
- * HTTP レイヤーの再実装を避けるため undici の WebSocket 実装をそのまま使う。
+ * undici の WebSocket 実装をそのまま使い、proxy / TLS は dispatcher で渡す。
  */
 export async function connectWebSocket(options: WsConnectOptions): Promise<WsConnectResult> {
   const maxMessages = options.maxMessages ?? DEFAULT_MAX_MESSAGES;
   const maxDurationMs = options.maxDurationMs ?? DEFAULT_MAX_DURATION_MS;
   const startedAt = performance.now();
 
-  // undici の WebSocketInit.headers は undefined を受け付けないため、
-  // headers が無い場合は init 自体を渡さない(exactOptionalPropertyTypes 対応)
-  const socket = options.headers
-    ? new WebSocket(options.url, { headers: options.headers })
-    : new WebSocket(options.url);
+  // undici の WebSocketInit は undefined のキーを受け付けないため、
+  // 指定があるものだけを init に入れ、何も無ければ init 自体を渡さない(exactOptionalPropertyTypes 対応)
+  const init = {
+    ...(options.headers ? { headers: options.headers } : {}),
+    ...(options.dispatcher ? { dispatcher: options.dispatcher } : {}),
+  };
+  const socket =
+    Object.keys(init).length > 0 ? new WebSocket(options.url, init) : new WebSocket(options.url);
   const messages: WsMessage[] = [];
 
   return await new Promise<WsConnectResult>((resolve, reject) => {

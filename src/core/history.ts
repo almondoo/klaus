@@ -1,4 +1,5 @@
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { maskCookieHeaders } from "./cookie-jar.js";
 import { mapDeepStrings } from "./deep-map.js";
 import { appendPrivateLine } from "./private-file.js";
 import type { AssertionResult, RequestSnapshot, ResponseSnapshot, SseEvent } from "./types.js";
@@ -25,7 +26,7 @@ export interface HistoryEntry {
    * 既存の(このフィールド追加前に書かれた)行には無いため、読み出し側は
    * 省略時に assertions から従来通り導出するフォールバックを持つこと。
    */
-  status?: "passed" | "failed" | "skipped";
+  status?: "passed" | "failed" | "skipped" | "error";
   /** skipped ステップでは省略する */
   request?: RequestSnapshot;
   /** skipped ステップでは省略する */
@@ -37,6 +38,67 @@ export interface HistoryEntry {
   source?: "single";
   /** step.retry を設定した場合のみ設定。実際に実行された試行回数(1 以上) */
   attempts?: number;
+  /** リダイレクトを追った場合のみ設定する、経由 URL の一覧(追加のみの後方互換な変更のため v は 1 のまま) */
+  redirects?: string[];
+  /** 別オリジンへのリダイレクトで落としたヘッダー名(ホップ番号つき。値は含まない)。落としたときのみ設定する */
+  droppedHeaders?: { hop: number; headers: string[] }[];
+  /**
+   * status が "error" のエントリのみ設定する、ステップを error にした理由(安全柵による送信拒否)。
+   * 接続不能・タイムアウトなど他の実行時エラーは履歴に書かれないため、現状は安全柵の拒否でのみ記録される。
+   * 追加のみの後方互換な変更のため v は 1 のまま
+   */
+  error?: string;
+  /** error と同じく status が "error" のエントリのみ。StepResult.errorCode と同じ値(追加のみの後方互換な変更のため v は 1 のまま) */
+  errorCode?: string;
+  /**
+   * 監査項目(以下 4 つはすべて省略可能。追加のみの後方互換な変更のため v は 1 のまま)。
+   * 実行した環境名(--env-file 指定時はそのファイル名)。環境を使わない実行では省略する
+   */
+  env?: string;
+  /**
+   * このエントリを書いたとき、読み込んだ環境が保護されていた($protected: true なら "protected"、"readonly" なら "readonly")ことの記録。
+   * 環境を名前で選んだ場合も --env-file で選んだ場合も(拒否のエントリも含め)、すべての呼び出し元で core が付ける。
+   * 保護されていない・環境を使わない実行、およびこの項目が無かった頃の旧エントリでは省略する(旧エントリは保護の有無が分からない)。
+   * 事実を書き込み時に残すので、後から環境ファイルを探し直さなくても(別の場所の --env-file でも)保護された実行だったと分かる
+   */
+  envProtection?: "protected" | "readonly";
+  /**
+   * 環境が --env-file のパスから読み込まれたこと("file")の記録。環境を名前(environments/<name>.yaml)で選んだ場合は省略する。
+   * env にはファイルのベース名が入り、拡張子の無いファイル(secrets/ro)や名前に使える文字だけのファイルでは、同名の名前付き環境と
+   * 見分けがつかない。読む側(klaus mcp)が env を名前として解決して別のファイルの値で隠してしまわないよう、書き込み時に出どころを残す。
+   * environments/ro.yaml のように名前付き環境と同じファイルを --env-file で指した場合も "file" とする(env は "ro.yaml")。旧エントリには無い
+   */
+  envSource?: "file";
+  /** フロー定義ファイルの cwd からの相対パス(POSIX 区切り)。絶対パスは入れない。単発実行では省略する */
+  file?: string;
+  /** 実行主体。core は計算せず、呼び出し元(CLI・server)が RunFlowOptions.actor 等で渡した値を記録する */
+  actor?: HistoryActor;
+  /** 実行時点の git の状態。呼び出し元(CLI)が取得できた場合のみ記録する */
+  git?: HistoryGit;
+}
+
+/** 履歴に記録する実行主体 */
+export interface HistoryActor {
+  kind: "human" | "agent" | "ci";
+  name?: string;
+}
+
+/** 履歴に記録する実行時点の git の状態 */
+export interface HistoryGit {
+  commit: string;
+  /** 追跡対象ファイルに未コミットの変更があるか */
+  dirty: boolean;
+}
+
+/**
+ * フロー定義ファイルのパスを、履歴の file フィールド用に cwd からの相対パス(POSIX 区切り)へ変換する。
+ * 相対化できない場合(別ドライブ等で絶対パスのままになる)や cwd 自身を指す場合は undefined を返し、
+ * 絶対パスを履歴に残さない。
+ */
+export function toHistoryFilePath(cwd: string, filePath: string): string | undefined {
+  const rel = relative(resolve(cwd), resolve(cwd, filePath));
+  if (rel === "" || isAbsolute(rel)) return undefined;
+  return rel.split(sep).join("/");
 }
 
 /**
@@ -106,7 +168,29 @@ export function expandSecretVariants(secrets: readonly string[]): string[] {
  * formatJson でシリアライズする前に RunResult 全体をマスクする用途でも使うため公開する。
  */
 export function maskDeep<T>(value: T, secrets: readonly string[]): T {
-  return mapDeepStrings(value, (s) => maskString(s, secrets));
+  return mapDeepStrings(maskCookieHeadersDeep(value), (s) => maskString(s, secrets));
+}
+
+/**
+ * `headers` オブジェクトの Cookie / Set-Cookie の値を位置で *** にする(秘密値の登録に依存しない構造的なマスク)。
+ * 値の中身を探さないので、短い cookie 値でも他の出力を壊さない。元の value は変異させない。
+ */
+export function maskCookieHeadersDeep<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => maskCookieHeadersDeep(item)) as unknown as T;
+  }
+  if (value !== null && typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, v] of Object.entries(value)) {
+      const isHeaders =
+        key === "headers" && v !== null && typeof v === "object" && !Array.isArray(v);
+      result[key] = isHeaders
+        ? maskCookieHeaders(maskCookieHeadersDeep(v) as Record<string, string>)
+        : maskCookieHeadersDeep(v);
+    }
+    return result as unknown as T;
+  }
+  return value;
 }
 
 function maskHeaders(
@@ -142,6 +226,10 @@ function maskAssertions(
     expected: maskDeep(assertion.expected, secrets),
     actual: maskDeep(assertion.actual, secrets),
     message: maskString(assertion.message, secrets),
+    // スナップショットの差分・候補は応答由来の値を含むため、他のフィールドと同じ規則でマスクする
+    ...(assertion.snapshot !== undefined
+      ? { snapshot: maskDeep(assertion.snapshot, secrets) }
+      : {}),
   }));
 }
 
@@ -151,7 +239,24 @@ function maskAssertions(
  * expected・actual・message を対象に "***" へ置換する。
  * secrets が空の場合は何もせず entry をそのまま返す(不要なコピーを避ける)。
  */
-export function maskHistoryEntry(entry: HistoryEntry, secrets: readonly string[]): HistoryEntry {
+export function maskHistoryEntry(rawEntry: HistoryEntry, secrets: readonly string[]): HistoryEntry {
+  // Cookie / Set-Cookie ヘッダーの値は、秘密値の登録に関わらず常に位置でマスクする(変化が無ければ entry をそのまま使う)
+  const requestHeaders = rawEntry.request ? maskCookieHeaders(rawEntry.request.headers) : undefined;
+  const responseHeaders = rawEntry.response
+    ? maskCookieHeaders(rawEntry.response.headers)
+    : undefined;
+  const entry: HistoryEntry =
+    requestHeaders === rawEntry.request?.headers && responseHeaders === rawEntry.response?.headers
+      ? rawEntry
+      : {
+          ...rawEntry,
+          ...(rawEntry.request && requestHeaders
+            ? { request: { ...rawEntry.request, headers: requestHeaders } }
+            : {}),
+          ...(rawEntry.response && responseHeaders
+            ? { response: { ...rawEntry.response, headers: responseHeaders } }
+            : {}),
+        };
   if (secrets.length === 0) return entry;
 
   // url・headers・body・events・assertions のすべてに同じ展開済みリストを使う
@@ -183,13 +288,22 @@ export function maskHistoryEntry(entry: HistoryEntry, secrets: readonly string[]
   }));
 
   const assertions = maskAssertions(entry.assertions, variants);
+  const redirects = entry.redirects?.map((url) => maskString(url, variants));
 
+  // 監査項目に秘密情報は入らない想定だが、他のフィールドと同じ規則で一貫してマスクする
+  // (env 名・ファイルパス・--actor の任意文字列に秘密値が混入した場合に備える)
   return {
     ...entry,
     assertions,
+    ...(entry.error !== undefined ? { error: maskString(entry.error, variants) } : {}),
+    ...(entry.env !== undefined ? { env: maskString(entry.env, variants) } : {}),
+    ...(entry.file !== undefined ? { file: maskString(entry.file, variants) } : {}),
+    ...(entry.actor ? { actor: maskDeep(entry.actor, variants) } : {}),
+    ...(entry.git ? { git: maskDeep(entry.git, variants) } : {}),
     ...(request ? { request } : {}),
     ...(response ? { response } : {}),
     ...(events ? { events } : {}),
+    ...(redirects ? { redirects } : {}),
   };
 }
 

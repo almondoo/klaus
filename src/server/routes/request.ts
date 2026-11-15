@@ -5,14 +5,25 @@
  * (ここでは再実装しない)。runs.ts と異なり同期 JSON レスポンスで返す(SSE は使わない)。
  */
 import type { Context } from "hono";
-import { executeSingleRequest, formatZodError } from "../../core/index.js";
+import {
+  executeSingleRequest,
+  formatZodError,
+  type GuardOptions,
+  type HttpConfig,
+  maskCookieHeadersDeep,
+} from "../../core/index.js";
 import { requestSchema } from "../../core/schema.js";
 import { parseJsonBody } from "../json-body.js";
 import type { SingleRequestRequestBody, SingleRequestResultPayload } from "../types.js";
 import { invalidOptionalEnvResponse } from "../validation.js";
 
 /** POST /api/request: 単一のリクエスト定義を実行し、同期 JSON で { result } を返す */
-export async function handleSingleRequest(c: Context, cwd: string): Promise<Response> {
+export async function handleSingleRequest(
+  c: Context,
+  cwd: string,
+  guard?: GuardOptions,
+  http?: HttpConfig,
+): Promise<Response> {
   const body = await parseJsonBody<SingleRequestRequestBody>(c);
   if (body === undefined) {
     return c.json({ error: "invalid JSON body" }, 400);
@@ -36,8 +47,13 @@ export async function handleSingleRequest(c: Context, cwd: string): Promise<Resp
     cwd,
     envName: body.env,
     history: true,
+    guard,
+    http,
+    // UI 起点の実行は人間の操作として履歴に記録する
+    actor: { kind: "human" },
   });
 
-  const payload: SingleRequestResultPayload = { result };
+  // 実行時の結果は生の Set-Cookie / Cookie を持つため、返す前に履歴と同じく位置でマスクする
+  const payload: SingleRequestResultPayload = { result: maskCookieHeadersDeep(result) };
   return c.json(payload);
 }

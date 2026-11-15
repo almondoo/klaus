@@ -11,6 +11,18 @@ import { isPathWithinDir, isRealPathWithinDir } from "../core/index.js";
 // (URL パラメータ・リクエストボディ由来の untrusted 入力。environments.ts / runs.ts / request.ts で共有する)
 export const ENV_NAME_PATTERN = /^[A-Za-z0-9_-]+$/;
 
+// run ID は履歴の照合にだけ使う(既定は UUID。ライブラリ経由の任意 ID も許容する)。形式の緩い入力を弾く衛生的な検証
+export const RUN_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+/** 制御文字(改行・NUL 等を含む)を 1 文字でも含むか */
+export function hasControlCharacter(value: string): boolean {
+  for (const char of value) {
+    const code = char.codePointAt(0) as number;
+    if (code < 0x20 || code === 0x7f) return true;
+  }
+  return false;
+}
+
 /**
  * 与えられた相対パスを cwd 基準で正規化解決する。
  * 解決結果が cwd の外を指す場合(path traversal・絶対パス注入)は null を返す。
@@ -39,6 +51,18 @@ export function invalidEnvironmentNameResponse(c: Context, name: string): Respon
 export function invalidOptionalEnvResponse(c: Context, env: string | undefined): Response | null {
   if (env === undefined || ENV_NAME_PATTERN.test(env)) return null;
   return c.text("Forbidden: invalid env name", 403);
+}
+
+/**
+ * 保護環境($protected: true / "readonly")を API 経由で書き換えようとした場合の拒否レスポンス(403)。
+ * 保護環境の値はファイルを直接編集する運用とし、UI(エージェントが操作し得る経路)からは変更させない。
+ * 他の 403 と同じく text 形式で返す。
+ */
+export function protectedEnvironmentResponse(c: Context, name: string): Response {
+  return c.text(
+    `Forbidden: environment "${name}" is protected and cannot be edited via this API (edit the file directly)`,
+    403,
+  );
 }
 
 /** 予約キー($protected)を API 経由で編集しようとした場合の拒否レスポンス(400) */

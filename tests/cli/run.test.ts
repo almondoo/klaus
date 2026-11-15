@@ -1,8 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { type RunCommandOptions, runCommand } from "../../src/cli/run.js";
+import { isCiEnvironment, type RunCommandOptions, runCommand } from "../../src/cli/run.js";
 import { historyFilePath } from "../../src/core/history.js";
 import { readAllHistoryEntries } from "../../src/core/history-query.js";
 import { closeServer, listenEphemeral, reserveClosedPort } from "../support/net.js";
@@ -34,9 +35,17 @@ steps:
       url: "https://example.com"
 `;
 
+/** /snap が返す本文(スナップショットのテストが差し替える) */
+let snapBody: unknown = { id: 1, name: "alice", at: "t1" };
+
 /** 成功/失敗を再現するための最小限のローカル HTTP サーバー(tests/cli/integration.test.ts の方式を参考に、このファイル専用に複製) */
 async function startFixtureServer() {
   const server = createServer((req, res) => {
+    if (req.url === "/snap") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(snapBody));
+      return;
+    }
     if (req.url === "/ok" && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
@@ -445,6 +454,162 @@ describe("runCommand", () => {
     const tap = await readFile(tapPath, "utf-8");
     expect(tap).toContain("TAP version 13");
     expect(tap).toContain("ok 1 - success flow > ok");
+  });
+
+  describe("--report html / github", () => {
+    const FAILING_FLOW = (baseUrl: string) =>
+      `name: ng flow\nsteps:\n  - name: bad, step:x\n    request:\n      method: GET\n      url: "${baseUrl}/ok"\n    assert:\n      status: 201\n`;
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it("--report html,junit は --report-file の順にペアで書き出され、HTML は自己完結で失敗詳細を含む", async () => {
+      const flowPath = join(workDir, "ng.yaml");
+      await writeFile(flowPath, FAILING_FLOW(fixture.baseUrl), "utf-8");
+      const htmlPath = join(workDir, "r.html");
+      const xmlPath = join(workDir, "r.xml");
+
+      const exitCode = await runCommand(
+        [flowPath],
+        baseOptions({ report: "html,junit", reportFile: [htmlPath, xmlPath] }),
+      );
+
+      expect(exitCode).toBe(4);
+      const html = await readFile(htmlPath, "utf-8");
+      expect(html).toContain("<!DOCTYPE html>");
+      expect(html).toContain("bad, step:x");
+      expect(html).toContain("Failed assertions");
+      expect(await readFile(xmlPath, "utf-8")).toContain("<testsuite");
+    });
+
+    it("登録済みシークレットが無くても、Cookie ヘッダーの値は stdout の JSON と html / github レポートで *** になる", async () => {
+      vi.stubEnv("GITHUB_ACTIONS", "");
+      const flowPath = join(workDir, "cookie.yaml");
+      await writeFile(
+        flowPath,
+        `name: f\nsteps:\n  - name: s\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n      headers: { Cookie: "session=raw-cookie-abc" }\n    assert:\n      status: 201\n`,
+        "utf-8",
+      );
+      const htmlPath = join(workDir, "cookie.html");
+      const mdPath = join(workDir, "cookie.md");
+      const xmlPath = join(workDir, "cookie.xml");
+
+      await runCommand(
+        [flowPath],
+        baseOptions({ report: "html,github,junit", reportFile: [htmlPath, mdPath, xmlPath] }),
+      );
+
+      expect(stdoutSpy.join("")).not.toContain("raw-cookie-abc");
+      expect(stdoutSpy.join("")).toContain("session=***");
+      for (const path of [htmlPath, mdPath, xmlPath]) {
+        expect(await readFile(path, "utf-8")).not.toContain("raw-cookie-abc");
+      }
+
+      // --no-mask は stdout だけを生のままにする(レポートファイルは従来どおりマスク)
+      stdoutSpy.length = 0;
+      await runCommand([flowPath], baseOptions({ mask: false }));
+      expect(stdoutSpy.join("")).toContain("raw-cookie-abc");
+    });
+
+    it("--report html: {{env.X}} のシークレットは HTML に生値で現れない", async () => {
+      vi.stubEnv("KLAUS_TEST_HTML_SECRET", "html-secret-value-789");
+      const flowPath = join(workDir, "html-secret.yaml");
+      await writeFile(
+        flowPath,
+        `name: f\nsteps:\n  - name: s\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      bodyText:\n        contains: "{{env.KLAUS_TEST_HTML_SECRET}}"\n`,
+        "utf-8",
+      );
+      const htmlPath = join(workDir, "secret.html");
+
+      await runCommand([flowPath], baseOptions({ report: "html", reportFile: [htmlPath] }));
+
+      const html = await readFile(htmlPath, "utf-8");
+      expect(html).not.toContain("html-secret-value-789");
+      expect(html).toContain("***");
+    });
+
+    it("--no-mask(mask: false)でも html / github レポートはマスクされる", async () => {
+      vi.stubEnv("KLAUS_TEST_NOMASK_SECRET", "nomask-secret-value-321");
+      vi.stubEnv("GITHUB_ACTIONS", "true");
+      const flowPath = join(workDir, "nomask.yaml");
+      await writeFile(
+        flowPath,
+        `name: f\nsteps:\n  - name: s\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      bodyText:\n        contains: "{{env.KLAUS_TEST_NOMASK_SECRET}}"\n`,
+        "utf-8",
+      );
+      const htmlPath = join(workDir, "nm.html");
+      const mdPath = join(workDir, "nm.md");
+
+      await runCommand(
+        [flowPath],
+        baseOptions({ report: "html,github", reportFile: [htmlPath, mdPath], mask: false }),
+      );
+
+      expect(await readFile(htmlPath, "utf-8")).not.toContain("nomask-secret-value-321");
+      expect(await readFile(mdPath, "utf-8")).not.toContain("nomask-secret-value-321");
+      // アノテーション(stderr)もマスクされる
+      expect(stderrSpy.join("")).toContain("::error");
+      expect(stderrSpy.join("")).not.toContain("nomask-secret-value-321");
+    });
+
+    it("--report github: GITHUB_STEP_SUMMARY があり --report-file 未指定ならそのファイルへ追記し、stdout には書かない", async () => {
+      const flowPath = join(workDir, "ng.yaml");
+      await writeFile(flowPath, FAILING_FLOW(fixture.baseUrl), "utf-8");
+      const summaryPath = join(workDir, "summary.md");
+      await writeFile(summaryPath, "existing\n", "utf-8");
+      vi.stubEnv("GITHUB_STEP_SUMMARY", summaryPath);
+      vi.stubEnv("GITHUB_ACTIONS", "");
+
+      const exitCode = await runCommand(
+        [flowPath],
+        baseOptions({ report: "github", reportFile: [] }),
+      );
+
+      expect(exitCode).toBe(4);
+      const md = await readFile(summaryPath, "utf-8");
+      expect(md.startsWith("existing\n")).toBe(true);
+      expect(md).toContain("## klaus run: FAILED");
+      // GITHUB_ACTIONS が true でなければアノテーションは出さず、stdout は JSON のまま
+      expect(stdoutSpy.join("")).not.toContain("::error");
+      expect(readJson().status).toBe("failed");
+    });
+
+    it("--report github: --report-file を明示すると GITHUB_STEP_SUMMARY より優先してそのパスへ書く", async () => {
+      const flowPath = join(workDir, "ng.yaml");
+      await writeFile(flowPath, FAILING_FLOW(fixture.baseUrl), "utf-8");
+      const summaryPath = join(workDir, "summary.md");
+      const explicitPath = join(workDir, "explicit.md");
+      vi.stubEnv("GITHUB_STEP_SUMMARY", summaryPath);
+
+      await runCommand([flowPath], baseOptions({ report: "github", reportFile: [explicitPath] }));
+
+      expect(await readFile(explicitPath, "utf-8")).toContain("### Failed steps");
+      await expect(access(summaryPath)).rejects.toThrow();
+    });
+
+    it("--report github: GITHUB_ACTIONS=true のアノテーションは JSON モードでは stderr、text モードでは stdout へ出る", async () => {
+      const flowPath = join(workDir, "ng.yaml");
+      await writeFile(flowPath, FAILING_FLOW(fixture.baseUrl), "utf-8");
+      vi.stubEnv("GITHUB_ACTIONS", "true");
+
+      await runCommand(
+        [flowPath],
+        baseOptions({ report: "github", reportFile: [join(workDir, "a.md")] }),
+      );
+      expect(readJson().status).toBe("failed");
+      expect(stderrSpy.join("")).toContain("::error file=");
+      expect(stderrSpy.join("")).toContain("title=ng flow / bad%2C step%3Ax::");
+
+      stdoutSpy.length = 0;
+      stderrSpy.length = 0;
+      await runCommand(
+        [flowPath],
+        baseOptions({ report: "github", reportFile: [join(workDir, "b.md")], text: true }),
+      );
+      expect(stdoutSpy.join("")).toContain("::error file=");
+      expect(stderrSpy.join("")).not.toContain("::error");
+    });
   });
 
   it("--report にフォーマット数と異なる回数の --report-file を渡すと exit 1 で何も書き出さない", async () => {
@@ -1421,5 +1586,286 @@ describe("runCommand", () => {
       expect(report.flows[0]?.iteration).toBe(1);
       expect(report.flows[1]?.iteration).toBe(2);
     });
+  });
+
+  describe("安全柵(guard)と履歴の監査項目", () => {
+    async function writeOkFlow(name: string) {
+      const flowPath = join(workDir, name);
+      await writeFile(
+        flowPath,
+        `name: audit flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+        "utf-8",
+      );
+      return flowPath;
+    }
+
+    it("options.guard.allowedHosts に無いホストへの送信は戻り値 3 で拒否される", async () => {
+      const flowPath = await writeOkFlow("guarded.yaml");
+
+      const exitCode = await runCommand(
+        [flowPath],
+        baseOptions({ guard: { allowedHosts: ["api.example.com"] } }),
+      );
+
+      expect(exitCode).toBe(3);
+      expect(stdoutSpy.join("")).toContain("guard.allowedHosts");
+    });
+
+    it("options.guard.allowedHosts に一致するホストなら通常どおり戻り値 0 で実行される", async () => {
+      const flowPath = await writeOkFlow("guarded-ok.yaml");
+
+      const exitCode = await runCommand(
+        [flowPath],
+        baseOptions({ guard: { allowedHosts: [new URL(fixture.baseUrl).host] } }),
+      );
+
+      expect(exitCode).toBe(0);
+    });
+
+    it("許可リスト拒否のメッセージにホスト内の秘密値が漏れない(JSON 出力と履歴の両方で、大文字小文字を変えた形も含む)", async () => {
+      const KEY = "KLAUS_TEST_TENANT_X";
+      process.env[KEY] = "TenantSecretXYZ";
+      const cwdSpy = process.cwd;
+      process.cwd = () => workDir;
+      try {
+        const flowPath = join(workDir, "tenant.yaml");
+        await writeFile(
+          flowPath,
+          `name: tenant flow\nsteps:\n  - name: call\n    request:\n      method: GET\n      url: "https://{{env.${KEY}}}.internal.example/x"\n`,
+          "utf-8",
+        );
+
+        const exitCode = await runCommand(
+          [flowPath],
+          baseOptions({ history: true, guard: { allowedHosts: ["api.example.com"] } }),
+        );
+
+        expect(exitCode).toBe(3);
+        const stdout = stdoutSpy.join("");
+        expect(stdout).toContain("guard.allowedHosts");
+        expect(stdout).toContain("***");
+        expect(stdout.toLowerCase()).not.toContain("tenantsecretxyz");
+        const history = JSON.stringify(await readAllHistoryEntries(workDir));
+        expect(history).toContain("guard.allowedHosts");
+        expect(history.toLowerCase()).not.toContain("tenantsecretxyz");
+      } finally {
+        process.cwd = cwdSpy;
+        delete process.env[KEY];
+      }
+    });
+
+    it("履歴に actor(--actor の名前 + 推定した kind)・file・env・git が記録される", async () => {
+      vi.stubEnv("CLAUDECODE", "");
+      vi.stubEnv("AI_AGENT", "");
+      vi.stubEnv("CI", "");
+      const cwdSpy = process.cwd;
+      process.cwd = () => workDir;
+      try {
+        // git の状態を決定的にするため、workDir を一時リポジトリにしてコミットを作る
+        const gitArgs = ["-c", "user.name=t", "-c", "user.email=t@example.com"];
+        execFileSync("git", ["init", "-q"], { cwd: workDir });
+        await writeFile(join(workDir, "seed.txt"), "seed\n", "utf-8");
+        execFileSync("git", [...gitArgs, "add", "seed.txt"], { cwd: workDir });
+        execFileSync(
+          "git",
+          [...gitArgs, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "seed"],
+          {
+            cwd: workDir,
+          },
+        );
+        await mkdir(join(workDir, "environments"), { recursive: true });
+        await writeFile(join(workDir, "environments", "local.yaml"), "baseUrl: x\n", "utf-8");
+        await mkdir(join(workDir, "flows"), { recursive: true });
+        const flowPath = await writeOkFlow(join("flows", "audit.yaml"));
+
+        const exitCode = await runCommand(
+          [flowPath],
+          baseOptions({ history: true, env: "local", actor: "my-bot" }),
+        );
+
+        expect(exitCode).toBe(0);
+        const [entry] = await readAllHistoryEntries(workDir);
+        expect(entry?.actor).toEqual({ kind: "human", name: "my-bot" });
+        expect(entry?.file).toBe("flows/audit.yaml");
+        expect(entry?.env).toBe("local");
+        expect(entry?.git?.commit).toMatch(/^[0-9a-f]{40}$/);
+        expect(entry?.git?.dirty).toBe(false);
+      } finally {
+        process.cwd = cwdSpy;
+        vi.unstubAllEnvs();
+      }
+    });
+  });
+});
+
+describe("run --update-snapshots / --ci", () => {
+  let fixture: Awaited<ReturnType<typeof startFixtureServer>>;
+  let workDir: string;
+  let out: string[];
+  let err: string[];
+  let stdoutWrite: typeof process.stdout.write;
+  let stderrWrite: typeof process.stderr.write;
+  let isTty: boolean | undefined;
+
+  beforeAll(async () => {
+    fixture = await startFixtureServer();
+  });
+  afterAll(async () => {
+    await closeServer(fixture.server);
+  });
+  beforeEach(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+    workDir = await mkdtemp(join(tmpRoot, "klaus-run-snap-"));
+    out = [];
+    err = [];
+    stdoutWrite = process.stdout.write;
+    stderrWrite = process.stderr.write;
+    process.stdout.write = ((chunk: string) => {
+      out.push(chunk.toString());
+      return true;
+    }) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: string) => {
+      err.push(chunk.toString());
+      return true;
+    }) as typeof process.stderr.write;
+    isTty = process.stdout.isTTY;
+    process.stdout.isTTY = undefined as unknown as true;
+    snapBody = { id: 1, name: "alice", at: "t1" };
+  });
+  afterEach(async () => {
+    process.stdout.write = stdoutWrite;
+    process.stderr.write = stderrWrite;
+    process.stdout.isTTY = isTty as true;
+    await rm(workDir, { recursive: true, force: true });
+  });
+
+  const options = (overrides: Partial<RunCommandOptions> = {}): RunCommandOptions => ({
+    history: false,
+    mask: true,
+    reportFile: join(workDir, "klaus-report.xml"),
+    ci: false,
+    ...overrides,
+  });
+  const lastJson = () => JSON.parse(out.join(""));
+
+  async function writeSnapFlow(name = "snap.yaml") {
+    const flowPath = join(workDir, name);
+    await writeFile(
+      flowPath,
+      `name: snap\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/snap"\n    assert:\n      snapshot:\n        ignore: ["$.at"]\n`,
+      "utf-8",
+    );
+    return flowPath;
+  }
+
+  it("isCiEnvironment: CI が設定され、空・0・false 以外なら真", () => {
+    expect(isCiEnvironment({ CI: "true" })).toBe(true);
+    expect(isCiEnvironment({ CI: "1" })).toBe(true);
+    expect(isCiEnvironment({ CI: "yes" })).toBe(true);
+    for (const value of [undefined, "", "0", "false", "FALSE", " "]) {
+      expect(isCiEnvironment(value === undefined ? {} : { CI: value }), String(value)).toBe(false);
+    }
+  });
+
+  it("書き込み → 一致 → 不一致(exit 4、JSON に差分があり候補は含まれない)→ -u で更新", async () => {
+    const flowPath = await writeSnapFlow();
+    const snapFile = join(workDir, "__snapshots__", "snap.yaml.snap.json");
+
+    expect(await runCommand([flowPath], options())).toBe(0);
+    const first = lastJson();
+    expect(first.snapshots).toMatchObject({ written: 1, matched: 0, mismatched: 0 });
+    expect(first.snapshots.files).toHaveLength(1);
+    expect(JSON.parse(await readFile(snapFile, "utf-8")).get.status).toBe(200);
+
+    out.length = 0;
+    snapBody = { id: 1, name: "alice", at: "t2" };
+    expect(await runCommand([flowPath], options())).toBe(0);
+    expect(lastJson().snapshots).toMatchObject({ matched: 1, written: 0 });
+
+    out.length = 0;
+    snapBody = { id: 1, name: "bob", at: "t3" };
+    expect(await runCommand([flowPath], options())).toBe(4);
+    const failed = lastJson();
+    expect(failed.snapshots).toMatchObject({ mismatched: 1, files: [] });
+    const assertion = failed.flows[0].steps[0].assertions[0];
+    expect(assertion).toMatchObject({
+      ok: false,
+      kind: "snapshot",
+      state: "mismatch",
+      snapshotKey: "get",
+      differenceCount: 1,
+      differences: [{ path: "$.body.name", kind: "changed", before: "alice", after: "bob" }],
+    });
+    expect(Object.hasOwn(assertion, "candidate")).toBe(false);
+    expect(Object.hasOwn(assertion, "snapshot")).toBe(false);
+
+    out.length = 0;
+    expect(await runCommand([flowPath], options({ updateSnapshots: true }))).toBe(0);
+    expect(lastJson().snapshots).toMatchObject({ updated: 1 });
+    expect(JSON.parse(await readFile(snapFile, "utf-8")).get.body.name).toBe("bob");
+  });
+
+  it("基準が無いとき、--ci と環境変数 CI では失敗し、ci: false なら環境変数を無視して書き込む", async () => {
+    const flowPath = await writeSnapFlow();
+    const snapFile = join(workDir, "__snapshots__", "snap.yaml.snap.json");
+    const previous = process.env.CI;
+    try {
+      process.env.CI = "true";
+      // ci を指定しない → 環境変数 CI に従う
+      expect(await runCommand([flowPath], options({ ci: undefined }))).toBe(4);
+      expect(lastJson().snapshots).toMatchObject({ missing: 1, written: 0 });
+      await expect(readFile(snapFile, "utf-8")).rejects.toThrow();
+
+      out.length = 0;
+      expect(await runCommand([flowPath], options({ ci: false }))).toBe(0);
+      expect(lastJson().snapshots).toMatchObject({ written: 1 });
+    } finally {
+      if (previous === undefined) delete process.env.CI;
+      else process.env.CI = previous;
+    }
+  });
+
+  it("--update-snapshots は --dry-run・--replay・--ci と併用できず exit 1(何も実行しない)", async () => {
+    const flowPath = await writeSnapFlow();
+    for (const [extra, message] of [
+      [{ dryRun: true }, "--dry-run cannot be combined with --update-snapshots"],
+      [{ replay: workDir }, "--update-snapshots cannot be combined with --replay"],
+      [{ ci: true }, "--update-snapshots cannot be combined with --ci"],
+    ] as const) {
+      err.length = 0;
+      out.length = 0;
+      expect(await runCommand([flowPath], options({ updateSnapshots: true, ...extra }))).toBe(1);
+      expect(err.join("")).toContain(message);
+      expect(out.join("")).toBe("");
+    }
+  });
+
+  it("壊れたスナップショットファイルは exit 2 で、何も実行しない", async () => {
+    const flowPath = await writeSnapFlow();
+    await mkdir(join(workDir, "__snapshots__"), { recursive: true });
+    await writeFile(join(workDir, "__snapshots__", "snap.yaml.snap.json"), "{broken", "utf-8");
+
+    expect(await runCommand([flowPath], options())).toBe(2);
+    expect(err.join("")).toContain("is corrupt");
+    expect(out.join("")).toBe("");
+  });
+
+  it("text 出力: 書き込んだ PASS 行・不一致の差分行・集計行とコミット対象のファイルを出す", async () => {
+    const flowPath = await writeSnapFlow();
+    expect(await runCommand([flowPath], options({ text: true }))).toBe(0);
+    const written = out.join("");
+    expect(written).toContain("[snapshot written]");
+    expect(written).toContain("snapshots: 0 matched, 1 written");
+    expect(written).toContain("snapshot file written:");
+
+    out.length = 0;
+    snapBody = { id: 1, name: "bob", at: "t1" };
+    expect(await runCommand([flowPath], options({ text: true }))).toBe(4);
+    const failed = out.join("");
+    expect(failed).toContain("FAIL get");
+    // 差分はメッセージに繰り返さず、1 件ずつ別の行に出す
+    expect(failed.match(/\$\.body\.name "alice" -> "bob"/g)).toHaveLength(1);
+    expect(failed).toContain('snapshot "get" differs from the baseline (1 difference)');
+    expect(failed).toContain("snapshots: 0 matched, 1 mismatched");
   });
 });

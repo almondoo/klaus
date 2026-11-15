@@ -1,0 +1,22 @@
+{
+  "list-users": {
+    "body": {
+      "users": [
+        {
+          "email": "alice@example.com",
+          "id": "[ignored]",
+          "name": "Alice"
+        },
+        {
+          "email": "bob@example.com",
+          "id": "[ignored]",
+          "name": "Bob"
+        }
+      ]
+    },
+    "headers": {
+      "content-type": "application/json"
+    },
+    "status": 200
+  }
+}

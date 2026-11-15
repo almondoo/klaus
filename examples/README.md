@@ -17,10 +17,13 @@ examples/
 │   ├── users-check.yaml        # 単発チェック: query / headers / body(JSONPath) / bodySchema の一通りの書き方
 │   ├── graphql-check.yaml      # 単発チェック: request.graphql(GraphQL クエリ + variables)
 │   ├── sse-events-check.yaml   # 単発チェック: sse:(Server-Sent Events の受信・eventCount/events)
-│   └── ws-echo-check.yaml      # 単発チェック: ws:(WebSocket の送受信・messageCount/messages)
+│   ├── ws-echo-check.yaml      # 単発チェック: ws:(WebSocket の送受信・messageCount/messages)
+│   ├── users-snapshot.yaml     # 単発チェック: assert.snapshot(応答を基準と比較。基準は api/__snapshots__/ にコミット済み)
+│   └── __snapshots__/          # スナップショットの基準ファイル(上の users-snapshot.yaml.snap.json)
 ├── flows/
 │   ├── auth-flow.yaml          # シナリオフロー: login → token キャプチャ → 認証付きリクエスト
-│   └── users-crud-flow.yaml    # シナリオフロー: ユーザー作成 → 取得 → 削除(POST/GET/DELETE + capture)
+│   ├── users-crud-flow.yaml    # シナリオフロー: ユーザー作成 → 取得 → 削除(POST/GET/DELETE + capture)
+│   └── users-openapi-flow.yaml # シナリオフロー: 一覧 → 作成 → 取得 → 削除 → 404。openapi/users-api.yaml で応答を検証し、カバレッジを出す
 ├── environments/
 │   ├── local.yaml              # testEmail: test@example.com / wsUrl: ws://127.0.0.1:3000
 │   ├── development.yaml        # testEmail: dev@example.com / wsUrl: ws://127.0.0.1:3000
@@ -111,6 +114,25 @@ klaus run flows/users-crud-flow.yaml   # POST → GET → DELETE の3ステッ�
 - `api/ws-echo-check.yaml` は `request` の代わりに `ws:` を指定する(`use:` との併用は不可)。URL は
   `environments/*.yaml` の `wsUrl`(`{{wsUrl}}/ws`)を参照する。`assert.messageCount` / `assert.messages` は
   SSE の `eventCount` / `events` とセマンティクスが同じ。
+
+## OpenAPI による応答の検証(`--openapi`)
+
+`flows/users-openapi-flow.yaml` は、同じ `openapi/users-api.yaml` に照らして応答を検証する見本。フロー自体に
+仕様の記述はなく、実行時に `--openapi` で文書を渡す。
+
+```bash
+cd examples
+klaus run flows/users-openapi-flow.yaml --openapi openapi/users-api.yaml
+klaus run flows/users-openapi-flow.yaml --openapi openapi/users-api.yaml --openapi-coverage-min 60
+```
+
+- 全ステップの応答のステータス・content-type・必須ヘッダー・本文のスキーマが検証され、違反するとそのステップが
+  失敗する(exit 4)。出力の末尾に、呼んだオペレーションの割合(カバレッジ)と未カバーのオペレーションが出る。
+  このフローは `/login` と `/me` を呼ばないため、6 オペレーション中 4 つ(66.7%)になる。
+- 仕様の `servers` は `http://127.0.0.1:3000`。`mock-server.mjs` を別のポートで起動したときは、
+  `--openapi-base-url http://127.0.0.1:<port>` を足すと照合できる。
+- 毎回 `--openapi` を渡したくなければ、`klaus.config.yaml` の `run.openapi` に書く(このディレクトリの
+  `klaus.config.yaml` は変更していない)。
 
 ## OpenAPI からの生成(`klaus generate`)
 

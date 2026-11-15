@@ -1,13 +1,16 @@
-import { writeFile } from "node:fs/promises";
+import { appendFile, writeFile } from "node:fs/promises";
 import {
   type DataRow,
   expandSecretVariants,
   type Flow,
+  type GuardOptions,
+  type HttpConfig,
   type LoadedFlowEntry,
   loadDataFile,
   loadFlow,
   maskDeep,
   maskString,
+  OpenApiValidator,
   ParseError,
   parseReportFormatList,
   REPORT_FORMATS,
@@ -18,22 +21,46 @@ import {
   type StepCompleteContext,
   type StepStartContext,
 } from "../core/index.js";
+import { detectActor, resolveGitState } from "./audit.js";
+import { loadHttpOptions } from "./config.js";
+import { executeDryRun } from "./dry-run.js";
 import { determineExitCode } from "./exit-code.js";
+import { formatGithubAnnotations, formatGithubSummary } from "./reporters/github.js";
+import { formatHtml } from "./reporters/html.js";
 import { formatJson } from "./reporters/json.js";
 import { formatJUnit } from "./reporters/junit.js";
 import { formatTap } from "./reporters/tap.js";
 import { createTextReporter, resolveUseColor, type TextReporter } from "./reporters/text.js";
 
+/** 環境変数 CI が真か(設定されていて、空・"0"・"false" のいずれでもない) */
+export function isCiEnvironment(env: NodeJS.ProcessEnv): boolean {
+  const value = env.CI?.trim().toLowerCase();
+  return value !== undefined && value !== "" && value !== "0" && value !== "false";
+}
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 /** --report のフォーマットごとの既定ファイル名(--report-file を1回も指定しなかった場合に使う) */
 const DEFAULT_REPORT_FILENAMES: Record<ReportFormat, string> = {
   junit: "klaus-report.xml",
   tap: "klaus-report.tap",
+  html: "klaus-report.html",
+  github: "klaus-report.md",
 };
 
 /** 1 フォーマット分の (フォーマット, 出力先パス) の組 */
 interface ReportTarget {
   format: ReportFormat;
   filePath: string;
+  /** --report-file で明示された出力先か(github 形式は未指定時に GITHUB_STEP_SUMMARY を優先するため区別する) */
+  explicit: boolean;
 }
 
 type ResolveReportTargetsResult =
@@ -97,6 +124,7 @@ function resolveReportTargets(
   const targets = formats.map((format, index) => ({
     format,
     filePath: files[index] ?? DEFAULT_REPORT_FILENAMES[format],
+    explicit: files[index] !== undefined,
   }));
 
   const filePaths = targets.map((target) => target.filePath);
@@ -109,6 +137,34 @@ function resolveReportTargets(
   }
 
   return { ok: true, targets };
+}
+
+/**
+ * --report github の出力。
+ * - Markdown サマリーの出力先: --report-file 明示 → そのパスへ上書き / 未指定で GITHUB_STEP_SUMMARY あり → そのファイルへ追記 /
+ *   どちらも無い → 既定の klaus-report.md へ上書き。stdout へは書かない(--json の機械可読出力を壊さないため)。
+ * - アノテーション(::error ...): GITHUB_ACTIONS=true のときだけ出力する。通常は stdout、
+ *   stdout が JSON を運んでいる場合(useJson)は stderr へ出す(GitHub はどちらからも workflow command を解釈する)。
+ */
+async function writeGithubReport(
+  target: ReportTarget,
+  runResult: RunResult,
+  secrets: readonly string[],
+  useJson: boolean,
+): Promise<void> {
+  const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+  const markdown = formatGithubSummary(runResult, { secrets });
+  if (!target.explicit && summaryPath) {
+    await appendFile(summaryPath, `${markdown}\n`, "utf-8");
+  } else {
+    await writeFile(target.filePath, markdown, "utf-8");
+  }
+  if (process.env.GITHUB_ACTIONS === "true") {
+    const lines = formatGithubAnnotations(runResult, { secrets });
+    if (lines.length > 0) {
+      (useJson ? process.stderr : process.stdout).write(`${lines.join("\n")}\n`);
+    }
+  }
 }
 
 /** run コマンドのオプション(commander から渡される値を正規化した形) */
@@ -174,6 +230,48 @@ export interface RunCommandOptions {
    * (下記 runCommand の 0. 検査を参照)
    */
   jobs?: number;
+  /**
+   * --actor <name> 指定時の実行主体の名前。履歴の actor.name に記録する(actor.kind は環境変数から推定した値のまま)
+   */
+  actor?: string;
+  /**
+   * --dry-run 指定時、リクエストを送らず、各ステップの展開後リクエストと安全柵の判定結果だけを出力する
+   * (履歴・カセットには書かない。--record / --replay / --report とは併用できない)。
+   * 呼び出しごとに明示させるため、klaus.config.yaml からは設定できない(--record と同じ扱い)
+   */
+  dryRun?: boolean;
+  /**
+   * --update-snapshots / -u 指定時、assert.snapshot の不一致・未記録の基準を書き換え、古いエントリを取り除く
+   * (明示的な承認の操作)。呼び出しごとに明示させるため、klaus.config.yaml からは設定できない。
+   * --dry-run・--replay・--ci とは併用できない
+   */
+  updateSnapshots?: boolean;
+  /**
+   * --ci 指定時、assert.snapshot の基準が無いときに書き込まず失敗にする。未指定(undefined)なら環境変数 CI が
+   * 真(空・"0"・"false" 以外)かどうかで決める。明示的に false を渡せば環境変数を無視する(テスト用)
+   */
+  ci?: boolean | undefined;
+  /**
+   * --openapi <path>(複数指定可。klaus.config.yaml の run.openapi が既定値)。OpenAPI 3.0 / 3.1 の仕様(YAML / JSON)に
+   * 照らして HTTP ステップの応答を検証し、カバレッジを報告する。--dry-run では検証せず、カバレッジを「計画」として報告する
+   */
+  openapi?: string[];
+  /** --openapi-base-url <url>: 仕様の servers に加えて、リクエスト URL の接頭辞として照合する(--openapi が必要) */
+  openapiBaseUrl?: string;
+  /** --openapi-strict: 照合できないリクエスト・仕様にない応答・検証できない応答を失敗にする(--openapi が必要。--dry-run とは併用不可) */
+  openapiStrict?: boolean;
+  /** --openapi-coverage-min <percent>: オペレーションのカバレッジがこれ未満なら失敗にする(exit 4。--openapi が必要。--dry-run とは併用不可) */
+  openapiCoverageMin?: number;
+  /**
+   * klaus.config.yaml の `guard`(送信先ホストの許可リスト等)。CLI フラグは設けない
+   * (エージェントが引数で安全柵を外せないようにするため)。index.ts が config から設定して渡す
+   */
+  guard?: GuardOptions;
+  /**
+   * klaus.config.yaml の `http`(リダイレクト・proxy・TLS・cookie jar の既定値)。未指定なら runCommand が
+   * 設定ファイルから読む。フローの `http` が上書きする。CLI フラグは設けない
+   */
+  http?: HttpConfig;
 }
 
 /**
@@ -299,7 +397,7 @@ function createOrderedTextFlusher(
 /**
  * run コマンド本体。
  * 0. --record と --replay、--record と --jobs>1、--json と --text、--report/--report-file の組み合わせを検査
- *    (いずれも stderr + exit 1、何も実行しない)
+ *    (いずれも stderr + exit 1、何も実行しない)。--dry-run と --record/--replay/--report の組み合わせは exit 1
  * 1. 全ファイルを loadFlow でパース検証(--data 指定時は loadDataFile も並行して読み込む。
  *    いずれか1件でも ParseError なら exit 2、何も実行しない)
  * 2. --tags / --exclude-tags でフローを絞り込む(filterFlowsByTags。--data によるイテレーション展開より前、
@@ -314,6 +412,70 @@ function createOrderedTextFlusher(
  * ParseError 以外の例外はそのまま呼び出し元へ投げる(呼び出し元で exit 1 に変換する契約)。
  */
 export async function runCommand(files: string[], options: RunCommandOptions): Promise<number> {
+  // --dry-run は何も送信・記録しないため、record/replay・レポートファイル出力とは意味が衝突する。
+  // 引数の誤りとして、他の引数の組み合わせエラー(--record と --replay 等)と同じ exit 1(何も実行しない)にする
+  if (options.dryRun === true) {
+    if (options.record !== undefined || options.replay !== undefined) {
+      process.stderr.write("klaus: --dry-run cannot be combined with --record or --replay\n");
+      return 1;
+    }
+    if (options.report !== undefined) {
+      process.stderr.write("klaus: --dry-run cannot be combined with --report\n");
+      return 1;
+    }
+    if (options.updateSnapshots === true) {
+      process.stderr.write("klaus: --dry-run cannot be combined with --update-snapshots\n");
+      return 1;
+    }
+  }
+
+  // OpenAPI のオプションの整合性。--openapi が無いのに関連オプションだけを渡した場合は、黙って無視せず引数の誤りにする
+  const usesOpenApi = options.openapi !== undefined && options.openapi.length > 0;
+  if (!usesOpenApi) {
+    for (const [flag, given] of [
+      ["--openapi-base-url", options.openapiBaseUrl !== undefined],
+      ["--openapi-strict", options.openapiStrict === true],
+      ["--openapi-coverage-min", options.openapiCoverageMin !== undefined],
+    ] as const) {
+      if (given) {
+        process.stderr.write(`klaus: ${flag} requires --openapi\n`);
+        return 1;
+      }
+    }
+  }
+  if (options.dryRun === true && usesOpenApi) {
+    for (const [flag, given] of [
+      ["--openapi-strict", options.openapiStrict === true],
+      ["--openapi-coverage-min", options.openapiCoverageMin !== undefined],
+    ] as const) {
+      if (given) {
+        process.stderr.write(`klaus: --dry-run cannot be combined with ${flag}\n`);
+        return 1;
+      }
+    }
+  }
+  if (options.openapiBaseUrl !== undefined && !isHttpUrl(options.openapiBaseUrl)) {
+    process.stderr.write(
+      `klaus: --openapi-base-url must be an absolute http(s) URL (got "${options.openapiBaseUrl}")\n`,
+    );
+    return 1;
+  }
+
+  // スナップショットの書き換えは、実際に送った応答に対してだけ意味がある(replay の応答は基準にしない)。
+  // --ci は「書き込まない」、--update-snapshots は「書き込む」で意味が衝突する
+  if (options.updateSnapshots === true) {
+    if (options.replay !== undefined) {
+      process.stderr.write(
+        "klaus: --update-snapshots cannot be combined with --replay (snapshots are never written from replayed responses)\n",
+      );
+      return 1;
+    }
+    if (options.ci === true) {
+      process.stderr.write("klaus: --update-snapshots cannot be combined with --ci\n");
+      return 1;
+    }
+  }
+
   // --record と --replay は同時指定不可(record-replay モードは片方のみ有効にする契約)
   if (options.record !== undefined && options.replay !== undefined) {
     process.stderr.write("klaus: --record and --replay cannot be used together\n");
@@ -420,6 +582,40 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     return 1;
   }
 
+  // OpenAPI の仕様の読み込み(実行前。読めない・壊れた仕様は exit 2 で、何も実行しない)。
+  // 仕様の警告(未対応のキーワードなど)は、実行前に stderr へ出す
+  // --tags / --exclude-tags で一部のフローだけを実行する場合、カバレッジは全体の一部になる
+  const partial = filteredFlows.length < loadedFlows.length;
+  let openapi: OpenApiValidator | undefined;
+  const printedOpenApiWarnings = new Set<string>();
+  const printOpenApiWarnings = (validator: OpenApiValidator): void => {
+    for (const warning of validator.warnings) {
+      if (printedOpenApiWarnings.has(warning)) continue;
+      printedOpenApiWarnings.add(warning);
+      process.stderr.write(`klaus: warning: ${warning}\n`);
+    }
+  };
+  if (usesOpenApi) {
+    try {
+      openapi = await OpenApiValidator.load(options.openapi as string[], {
+        baseUrl: options.openapiBaseUrl,
+        strict: options.openapiStrict === true,
+      });
+    } catch (error) {
+      if (error instanceof ParseError) {
+        process.stderr.write(`klaus: parse error: ${error.message}\n`);
+        return 2;
+      }
+      throw error;
+    }
+    printOpenApiWarnings(openapi);
+  }
+
+  // --dry-run: ここまで(読み込み・検証・絞り込み)は通常の実行と同じで、以降は送信せずに展開・判定だけを行う
+  if (options.dryRun === true) {
+    return executeDryRun(filteredFlows, dataRows, options, useJson, openapi, partial);
+  }
+
   // 3. 実行(テキストモードは onStepStart/onStepComplete で逐次出力する)
   // stdout(text/JSON いずれも)とレポートファイル出力(JUnit/TAP)の両方で使う secrets({{env.X}} 等で解決した値)。
   // --no-mask 指定時は options.mask が false になり、stdout 側のマスキングのみ無効化する(レポートファイルは従来どおり)。
@@ -452,16 +648,49 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     textReporter && jobs > 1
       ? createOrderedTextFlusher(textReporter, buildUnitStepCounts(filteredFlows, dataRows))
       : textReporter;
+  // 履歴の監査項目。git は履歴を書く場合のみ取得する(--no-history 時に git を起動しない)
+  const git = options.history ? await resolveGitState(process.cwd()) : undefined;
+  // klaus.config.yaml の http(未指定の場合のみ設定ファイルから読む)
+  let http: HttpConfig | undefined;
+  try {
+    http = options.http ?? (await loadHttpOptions(process.cwd()));
+  } catch (error) {
+    if (error instanceof ParseError) {
+      process.stderr.write(`klaus: parse error: ${error.message}\n`);
+      return 2;
+    }
+    throw error;
+  }
   const runOptions: RunFlowOptions = {
+    guard: options.guard,
+    http,
+    actor: detectActor(process.env, options.actor),
+    git,
     envNameOverride: options.env,
     envFilePath: options.envFile,
     variables: options.var,
     allowProtected: options.allowProtected,
     history: options.history,
+    snapshots: {
+      update: options.updateSnapshots === true,
+      ci: options.ci ?? isCiEnvironment(process.env),
+    },
+    openapi,
     dataRows,
     jobs,
     onStepStart: stepHandler ? (context) => stepHandler.onStepStart(context) : undefined,
-    onStepComplete: stepHandler ? (context) => stepHandler.onStepComplete(context) : undefined,
+    // テキスト出力もステップ結果を構造的にマスクしてから整形する(Cookie ヘッダー値は登録済みシークレットに依存せず ***)
+    onStepComplete: stepHandler
+      ? (context) =>
+          stepHandler.onStepComplete(
+            options.mask
+              ? {
+                  ...context,
+                  result: maskDeep(context.result, expandSecretVariants(collectedSecrets)),
+                }
+              : context,
+          )
+      : undefined,
     // 履歴書き込み失敗などステップの成否に影響しない警告を stderr に出力する
     onWarning: (message) => {
       process.stderr.write(`klaus: warning: ${message}\n`);
@@ -484,12 +713,40 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
   try {
     runResult = await runLoadedFlows(filteredFlows, runOptions);
   } catch (error) {
+    openapi?.close();
     // environments/*.yaml のパース・検証失敗など、loadFlow 以外から来る ParseError もここで exit 2 に丸める
     if (error instanceof ParseError) {
       process.stderr.write(`klaus: parse error: ${error.message}\n`);
       return 2;
     }
     throw error;
+  }
+
+  // 検証用のワーカーは、実行が終わったら止める
+  openapi?.close();
+
+  // OpenAPI: カバレッジを結果に載せる。実行中に増えた警告(遅延コンパイルなど)も含める。
+  // --openapi-coverage-min を下回ったら、実行全体を failed にする(通ったステップがあっても exit 4)
+  if (openapi !== undefined) {
+    printOpenApiWarnings(openapi);
+    const summary = openapi.summarize({
+      partial,
+      planned: false,
+      coverageMin: options.openapiCoverageMin,
+    });
+    const warnings = [...new Set([...(runResult.warnings ?? []), ...openapi.warnings])];
+    const belowMin = summary.coverageMin !== undefined && !summary.coverageMin.met;
+    if (belowMin) {
+      process.stderr.write(
+        `klaus: OpenAPI coverage ${summary.operations.percent}% is below --openapi-coverage-min ${summary.coverageMin?.percent}%\n`,
+      );
+    }
+    runResult = {
+      ...runResult,
+      openapi: summary,
+      ...(warnings.length > 0 ? { warnings } : {}),
+      ...(belowMin && runResult.status === "passed" ? { status: "failed" as const } : {}),
+    };
   }
 
   // 4. 出力
@@ -500,7 +757,8 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
     // (maskDeep は新しいオブジェクトを返すため、元の runResult は変異しない。
     // 直後の determineExitCode はマスク前の runResult を使う)。
     const variants = options.mask ? expandSecretVariants(collectedSecrets) : [];
-    const maskedResult = variants.length > 0 ? maskDeep(runResult, variants) : runResult;
+    // 登録済みシークレットが無くても Cookie ヘッダーの構造的マスクは常に掛ける(--no-mask のときだけ生のまま)
+    const maskedResult = options.mask ? maskDeep(runResult, variants) : runResult;
     const json = formatJson(maskedResult, { historyEnabled: options.history });
     process.stdout.write(`${json}\n`);
   } else {
@@ -510,12 +768,24 @@ export async function runCommand(files: string[], options: RunCommandOptions): P
 
   // stdout(text/JSON)とは別経路で、レポートファイルにのみ secrets をマスクする。
   // 複数フォーマット指定時は独立した書き込みのため並行して書き出す。
+  const reportMeta = {
+    env: options.env,
+    actor: runOptions.actor?.name
+      ? `${runOptions.actor.name} (${runOptions.actor.kind})`
+      : runOptions.actor?.kind,
+    commit: git?.commit,
+  };
   await Promise.all(
     reportResolution.targets.map((target) => {
+      if (target.format === "github") {
+        return writeGithubReport(target, runResult, collectedSecrets, useJson);
+      }
       const formatted =
         target.format === "junit"
           ? formatJUnit(runResult, { secrets: collectedSecrets })
-          : formatTap(runResult, { secrets: collectedSecrets });
+          : target.format === "html"
+            ? formatHtml(runResult, { secrets: collectedSecrets, meta: reportMeta })
+            : formatTap(runResult, { secrets: collectedSecrets });
       return writeFile(target.filePath, formatted, "utf-8");
     }),
   );

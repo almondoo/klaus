@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { parseAllowedHostEntry } from "./guard.js";
+import { parseJsonPathPattern } from "./json-diff.js";
 
 /**
  * フロー定義 YAML / 環境ファイル YAML の zod スキーマ。
@@ -8,6 +10,41 @@ import { z } from "zod";
  * ただし z.record によるフィールド(headers/query/capture/variables/environmentSchema)はキーが
  * ユーザー定義の自由な文字列であるため strict 化の対象外(record 自体がキー集合を制限しない)。
  */
+
+/** ヘッダー・body の値に対する比較系マッチャー(gt/gte/lt/lte/length/type/oneOf)。header と body のアサーションで共有する */
+const comparisonMatcherFields = {
+  gt: z.number().optional().describe("Passes if the resolved value is a number greater than this."),
+  gte: z
+    .number()
+    .optional()
+    .describe("Passes if the resolved value is a number greater than or equal to this."),
+  lt: z.number().optional().describe("Passes if the resolved value is a number less than this."),
+  lte: z
+    .number()
+    .optional()
+    .describe("Passes if the resolved value is a number less than or equal to this."),
+  length: z
+    .union([
+      z.number(),
+      z.strictObject({
+        min: z.number().optional().describe("Minimum length (inclusive)."),
+        max: z.number().optional().describe("Maximum length (inclusive)."),
+      }),
+    ])
+    .optional()
+    .describe(
+      "Length of a string or array. A number means exactly that length; {min, max} is an inclusive range.",
+    ),
+  type: z
+    .enum(["string", "number", "integer", "boolean", "null", "array", "object"])
+    .optional()
+    .describe("Passes if the resolved value has this JSON type."),
+  oneOf: z
+    .array(z.unknown())
+    .min(1)
+    .optional()
+    .describe("Passes if the resolved value equals any of these values."),
+};
 
 /** ヘッダーアサーション(1件) */
 export const headerAssertionSchema = z.strictObject({
@@ -22,6 +59,7 @@ export const headerAssertionSchema = z.strictObject({
     .boolean()
     .optional()
     .describe("If true, passes when the header is present; if false, when it is absent."),
+  ...comparisonMatcherFields,
 });
 export type HeaderAssertion = z.infer<typeof headerAssertionSchema>;
 
@@ -46,6 +84,7 @@ export const bodyAssertionSchema = z.strictObject({
     .string()
     .optional()
     .describe("Passes if the resolved value (stringified) matches this regular expression."),
+  ...comparisonMatcherFields,
 });
 export type BodyAssertion = z.infer<typeof bodyAssertionSchema>;
 
@@ -164,12 +203,99 @@ export const messageAssertionSchema = z.strictObject({
 });
 export type MessageAssertion = z.infer<typeof messageAssertionSchema>;
 
+/** capture の1件。文字列は従来どおり JSONPath、オブジェクトは header / cookie / regex / status のいずれか1つ */
+export const captureSchema = z.union([
+  z.string(),
+  z.strictObject({
+    header: z.string().describe("Response header name (case-insensitive) to capture."),
+  }),
+  z.strictObject({
+    cookie: z
+      .string()
+      .describe("Name of a cookie in the run's cookie jar (requires http.cookies) to capture."),
+  }),
+  z.strictObject({
+    regex: z.string().describe("Regular expression applied to the response body text."),
+    group: z
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .describe("Capture group to extract (default 1 when the pattern has groups, else 0)."),
+  }),
+  z.strictObject({
+    status: z.literal(true).describe("Capture the HTTP response status code (a number)."),
+  }),
+]);
+export type CaptureDef = z.infer<typeof captureSchema>;
+
+/**
+ * スナップショットアサーション。`true` は既定(status と body を比較)、オブジェクトで比較対象・除外・名前を指定する。
+ * ignore の文法は `klaus diff --ignore-path` と同じ JSONPath の一部(`$` `.name` `['name']` `[0]` `.*` `[*]` `..name`)。
+ */
+export const SNAPSHOT_INCLUDE_VALUES = ["status", "headers", "body"] as const;
+export const snapshotAssertionSchema = z.union([
+  z.literal(true),
+  z
+    .strictObject({
+      ignore: z
+        .array(
+          z.string().refine((pattern) => parseJsonPathPattern(pattern) !== undefined, {
+            message:
+              "must be a JSONPath pattern: `$`, `.name`, `['name']`, `[0]`, `.*`, `[*]`, `..name` (at most 2 `..`, 256 characters)",
+          }),
+        )
+        .optional()
+        .describe(
+          'JSONPath patterns (same grammar as `klaus diff --ignore-path`, relative to the response body) for volatile values such as ids and timestamps. Matching values are stored as the placeholder "[ignored]" and are not compared.',
+        ),
+      include: z
+        .array(z.enum(SNAPSHOT_INCLUDE_VALUES))
+        .min(1)
+        .optional()
+        .describe(
+          'Parts of the response to snapshot: "status", "headers", "body". Defaults to ["status", "body"].',
+        ),
+      headers: z
+        .array(z.string().min(1))
+        .min(1)
+        .optional()
+        .describe(
+          'Response header names (case-insensitive) to store and compare when `include` contains "headers". Defaults to ["content-type"]. Requires "headers" in `include`.',
+        ),
+      name: z
+        .string()
+        .min(1)
+        .max(200)
+        .optional()
+        .describe(
+          "Extra label appended to the snapshot key (the key is the step name, plus the --data iteration, plus this name).",
+        ),
+    })
+    .superRefine((snapshot, ctx) => {
+      if (snapshot.headers !== undefined && !(snapshot.include ?? []).includes("headers")) {
+        ctx.addIssue({
+          code: "custom",
+          message: 'snapshot.headers requires "headers" in snapshot.include',
+          path: ["headers"],
+        });
+      }
+    }),
+]);
+export type SnapshotAssertionDef = z.infer<typeof snapshotAssertionSchema>;
+
 /** ステップのアサーション定義全体 */
 export const assertSchema = z.strictObject({
   status: z
-    .number()
+    .union([
+      z.number(),
+      z.array(z.number()).min(1),
+      z.string().regex(/^[1-5]xx$/i, 'status class must look like "2xx"'),
+    ])
     .optional()
-    .describe("Passes if the HTTP response status code equals this value."),
+    .describe(
+      'Passes if the HTTP response status matches: a number (exact), an array of numbers (any of them), or a class such as "2xx".',
+    ),
   headers: z
     .array(headerAssertionSchema)
     .optional()
@@ -204,8 +330,66 @@ export const assertSchema = z.strictObject({
     .describe(
       "JSON Schema (draft 2020-12) object to validate the JSON-parsed response body against. Each violation is reported as a separate assertion result.",
     ),
+  snapshot: snapshotAssertionSchema
+    .optional()
+    .describe(
+      "Snapshot (baseline) assertion for HTTP steps: `true`, or an object with `ignore` / `include` / `headers` / `name`. The masked response is compared with a baseline stored in `__snapshots__/<flow file>.snap.json` next to the flow file. A missing baseline is written (and the step passes) except in CI or with --ci, where it fails; a changed response fails with a structural diff; `klaus run --update-snapshots` (-u) rewrites baselines explicitly. Not supported for SSE / WebSocket steps.",
+    ),
 });
 export type AssertDef = z.infer<typeof assertSchema>;
+
+/** OAuth2 client credentials(RFC 6749 4.4)の設定。トークン取得リクエストにも安全柵が適用される */
+export const oauth2AuthSchema = z.strictObject({
+  grant: z
+    .literal("client_credentials")
+    .describe("OAuth2 grant type. Only `client_credentials` is supported."),
+  tokenUrl: z.string().describe("Token endpoint URL. Template placeholders are expanded."),
+  clientId: z.string().describe("Client ID. Template placeholders are expanded."),
+  clientSecret: z
+    .string()
+    .describe(
+      "Client secret, sent in the token request body. Template placeholders are expanded. Treated as a secret and masked.",
+    ),
+  scope: z.string().optional().describe("Space-separated scopes to request."),
+  audience: z
+    .string()
+    .optional()
+    .describe("Audience parameter (used by some providers, e.g. Auth0)."),
+});
+
+/**
+ * 認証ヘルパー。`none`(継承した http.auth の無効化)か、basic / bearer / oauth2 のいずれか 1 つ。
+ * 文字列値はテンプレート展開の対象で、パスワード・トークン・クライアントシークレットは秘密値として
+ * マスクされる。AWS SigV4 は扱わない。
+ */
+export const authSchema = z
+  .union([
+    z.literal("none"),
+    z.strictObject({
+      basic: z.strictObject({
+        username: z.string().describe("User name. Template placeholders are expanded."),
+        password: z
+          .string()
+          .describe(
+            "Password. Template placeholders are expanded. Treated as a secret and masked.",
+          ),
+      }),
+    }),
+    z.strictObject({
+      bearer: z.strictObject({
+        token: z
+          .string()
+          .describe(
+            "Bearer token. Template placeholders are expanded. Treated as a secret and masked.",
+          ),
+      }),
+    }),
+    z.strictObject({ oauth2: oauth2AuthSchema }),
+  ])
+  .describe(
+    'Authentication helper: "none", `{ basic: { username, password } }`, `{ bearer: { token } }`, or `{ oauth2: { grant: client_credentials, tokenUrl, clientId, clientSecret, scope?, audience? } }`. Sets the Authorization header (a step that also sets its own Authorization header is an error).',
+  );
+export type AuthDef = z.infer<typeof authSchema>;
 
 /** GraphQL リクエスト定義。query / variables の文字列値はテンプレート展開対象 */
 export const graphqlRequestSchema = z.strictObject({
@@ -248,10 +432,57 @@ export const requestSchema = z
       .describe(
         "Query string parameters merged into the URL. Values are template-expanded. Overrides any same-named key already present in `url`.",
       ),
-    body: z.unknown().optional().describe("Request body. Mutually exclusive with `graphql`."),
+    body: z
+      .unknown()
+      .optional()
+      .describe(
+        "Request body. Mutually exclusive with `graphql`, `form`, `multipart`, and `bodyFile`.",
+      ),
     graphql: graphqlRequestSchema
       .optional()
-      .describe("GraphQL request definition. Mutually exclusive with `body`."),
+      .describe(
+        "GraphQL request definition. Mutually exclusive with `body`, `form`, `multipart`, and `bodyFile`.",
+      ),
+    form: z
+      .record(z.string(), z.string())
+      .optional()
+      .describe(
+        "Form fields sent as application/x-www-form-urlencoded (Content-Type is added unless you set one). Values are template-expanded. Mutually exclusive with `body`, `graphql`, `multipart`, and `bodyFile`.",
+      ),
+    multipart: z
+      .record(
+        z.string(),
+        z.union([
+          z.string(),
+          z.strictObject({
+            file: z
+              .string()
+              .describe(
+                "Path of the file to upload, relative to the current directory. Must resolve inside the cwd (symbolic links included).",
+              ),
+            filename: z
+              .string()
+              .optional()
+              .describe("File name sent in the part. Defaults to the file's base name."),
+            contentType: z.string().optional().describe("Content-Type of the part."),
+          }),
+        ]),
+      )
+      .optional()
+      .describe(
+        "Parts sent as multipart/form-data. A string value is a text field; an object with `file` uploads a file. The Content-Type header (with its boundary) is set automatically. Mutually exclusive with `body`, `graphql`, `form`, and `bodyFile`.",
+      ),
+    bodyFile: z
+      .string()
+      .optional()
+      .describe(
+        "Path of a file whose bytes are sent as the request body, relative to the current directory. Must resolve inside the cwd (symbolic links included). History records only the file name and size. Mutually exclusive with `body`, `graphql`, `form`, and `multipart`.",
+      ),
+    auth: authSchema
+      .optional()
+      .describe(
+        'Authentication helper for this step. Overrides the flow-level `http.auth`; "none" disables an inherited one.',
+      ),
     timeoutMs: z
       .number()
       .positive()
@@ -267,6 +498,20 @@ export const requestSchema = z
         path: ["graphql"],
       });
     }
+    // body と graphql の組は上の専用メッセージで報告済み。それ以外を含む組み合わせをここで報告する
+    const bodyForms = (["body", "graphql", "form", "multipart", "bodyFile"] as const).filter(
+      (key) => request[key] !== undefined,
+    );
+    if (
+      bodyForms.length > 1 &&
+      !(bodyForms.length === 2 && bodyForms[0] === "body" && bodyForms[1] === "graphql")
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: `request.${bodyForms.join(", request.")} are mutually exclusive (set only one of body, graphql, form, multipart, bodyFile)`,
+        path: [bodyForms[1] as string],
+      });
+    }
     if (request.method === undefined && request.graphql === undefined) {
       ctx.addIssue({
         code: "custom",
@@ -276,6 +521,114 @@ export const requestSchema = z
     }
   });
 export type RequestDef = z.infer<typeof requestSchema>;
+
+/**
+ * TLS 設定。klaus.config.yaml の `http.tls` でのみ指定できる(フローには書けない)。
+ * ca / cert / key はファイルパスで、設定ファイルのディレクトリからの相対パスとして解決する
+ * (cwd 配下の制限は受けない。送信内容ではなくローカルの認証情報のため)。
+ */
+export const httpTlsSchema = z
+  .strictObject({
+    ca: z
+      .string()
+      .optional()
+      .describe(
+        "Path to a PEM file with additional CA certificate(s) to trust. Resolved relative to klaus.config.yaml.",
+      ),
+    cert: z
+      .string()
+      .optional()
+      .describe(
+        "Path to a PEM client certificate (mutual TLS). Must be set together with `key`. Resolved relative to klaus.config.yaml.",
+      ),
+    key: z
+      .string()
+      .optional()
+      .describe(
+        "Path to the PEM private key for `cert`. Must be set together with `cert`. Resolved relative to klaus.config.yaml. Never printed or recorded.",
+      ),
+    insecure: z
+      .boolean()
+      .optional()
+      .describe(
+        "If true, certificate verification is disabled and a warning is shown in the run output. Use only against throwaway environments.",
+      ),
+  })
+  .superRefine((tls, ctx) => {
+    if ((tls.cert === undefined) !== (tls.key === undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        message: "tls.cert and tls.key must be set together",
+        path: [tls.cert === undefined ? "cert" : "key"],
+      });
+    }
+  });
+export type HttpTlsConfig = z.infer<typeof httpTlsSchema>;
+
+/** フローの動作に関わる HTTP クライアント設定(フローと klaus.config.yaml の両方に書ける項目) */
+const httpFlowFields = {
+  followRedirects: z
+    .boolean()
+    .optional()
+    .describe(
+      "Follow 3xx redirects one hop at a time, re-checking guard.allowedHosts and $protected on every hop. Defaults to false.",
+    ),
+  maxRedirects: z
+    .number()
+    .int()
+    .min(0)
+    .max(100)
+    .optional()
+    .describe("Maximum number of redirect hops to follow. Defaults to 10."),
+  cookies: z
+    .boolean()
+    .optional()
+    .describe(
+      "Keep Set-Cookie values received during the run in memory and send them on later matching requests. Never persisted across runs. Defaults to false.",
+    ),
+  maxResponseBytes: z
+    .number()
+    .int()
+    .positive()
+    .optional()
+    .describe(
+      "Maximum size in bytes of a response body (or SSE stream) read into memory; larger responses make the step an error. Defaults to 104857600 (100 MiB).",
+    ),
+  auth: authSchema
+    .optional()
+    .describe(
+      'Default authentication helper for every HTTP and SSE step of the run. A step\'s own `request.auth` takes precedence; "none" disables it for a step.',
+    ),
+};
+
+/**
+ * フローのトップレベル `http:`。通信の行き先・信頼先を変える `proxy` と `tls` は、エージェントが書き得る
+ * フローには置けない(guard.allowedHosts の迂回や通信の傍受に使えるため)。klaus.config.yaml にのみ書ける。
+ */
+export const flowHttpSchema = z.strictObject(httpFlowFields, {
+  error: (issue) =>
+    issue.code === "unrecognized_keys" && issue.keys.some((key) => key === "proxy" || key === "tls")
+      ? "http.proxy and http.tls can only be set in klaus.config.yaml, not in a flow file (they decide where traffic goes and whom it trusts)"
+      : undefined,
+});
+export type FlowHttpConfig = z.infer<typeof flowHttpSchema>;
+
+/**
+ * klaus.config.yaml の `http:`(実行単位の HTTP クライアントの既定値)。フロー側の `http:` の項目に加えて、
+ * 通信の行き先・信頼先を決める `proxy` と `tls` を持つ。これらは所有者チェック済みの設定ファイルにだけ置ける。
+ * すべて未指定なら従来どおり(リダイレクトを追わない、cookie を保持しない、proxy なし)。
+ */
+export const httpConfigSchema = z.strictObject({
+  ...httpFlowFields,
+  proxy: z
+    .string()
+    .optional()
+    .describe(
+      "HTTP(S) proxy URL (e.g. http://user:pass@proxy:3128). Only {{env.X}} (OS environment variables) may be used as a template; the userinfo is masked in all output. HTTP_PROXY and similar variables are never read automatically. guard.allowedHosts is checked against the final destination of every request, not against the proxy host.",
+    ),
+  tls: httpTlsSchema.optional().describe("TLS settings (custom CA, client certificate, insecure)."),
+});
+export type HttpConfig = z.infer<typeof httpConfigSchema>;
 
 /** SSE 受信オプション */
 export const sseOptionsSchema = z.strictObject({
@@ -405,10 +758,10 @@ export const stepSchema = z
           "step's assert.",
       ),
     capture: z
-      .record(z.string(), z.string())
+      .record(z.string(), captureSchema)
       .optional()
       .describe(
-        "Map of variable name to JSONPath expression, extracted from the step's response body and made available as `{{name}}` in later steps.",
+        "Map of variable name to what to extract, made available as `{{name}}` in later steps. A string is a JSONPath expression over the response body; objects select a response header ({header}), a cookie ({cookie}), a regex over the body text ({regex, group}) or the status code ({status: true}).",
       ),
     assert: assertSchema.optional().describe("Assertions to evaluate against the step's result."),
     retry: retrySchema
@@ -461,6 +814,11 @@ export const flowSchema = z
       .array(stepSchema)
       .min(1)
       .describe("Ordered list of steps to execute. Must contain at least one step."),
+    http: flowHttpSchema
+      .optional()
+      .describe(
+        "HTTP client settings for this flow's run (redirects, cookie jar). Overrides the same keys in klaus.config.yaml `http`. `proxy` and `tls` are not accepted here; set them in klaus.config.yaml.",
+      ),
     tags: z
       .array(z.string().min(1))
       .optional()
@@ -490,21 +848,22 @@ export type Flow = z.infer<typeof flowSchema>;
  * 環境ファイル(environments/<name>.yaml)。値はテンプレート可の文字列。
  * `$protected` は予約キーで、true の場合はこの環境への run をデフォルトで拒否する
  * (--allow-protected を明示した場合のみ実行可能。src/core/runner.ts 参照)。
+ * "readonly" の場合は GET / HEAD / OPTIONS のみ --allow-protected なしで送信できる。
  * テンプレート変数展開の対象からは除外する(src/core/env.ts の toTemplateVariables)。
  */
 export const environmentSchema = z
   .object({
     $protected: z
-      .boolean()
+      .union([z.boolean(), z.literal("readonly")])
       .optional()
       .describe(
-        "Reserved key. When true, running against this environment is refused unless --allow-protected is passed.",
+        'Reserved key. When true, running against this environment is refused unless --allow-protected is passed. When "readonly", only GET, HEAD, and OPTIONS requests are allowed without --allow-protected (other methods and WebSocket steps are refused).',
       ),
   })
   .catchall(z.string())
   .describe(
     "Environment variables map (variable name to string value). Values may themselves be templates. " +
-      "The reserved key $protected (boolean) marks the environment as protected.",
+      'The reserved key $protected (true or "readonly") marks the environment as protected.',
   );
 export type Environment = z.infer<typeof environmentSchema>;
 
@@ -514,7 +873,7 @@ export type Environment = z.infer<typeof environmentSchema>;
  * CLI 側(src/cli/run.ts の resolveReportTargets)もこの一覧・パース関数を再利用し、
  * サポートするフォーマットが増減したときの更新箇所を一つに保つ。
  */
-export const REPORT_FORMATS = ["junit", "tap"] as const;
+export const REPORT_FORMATS = ["junit", "tap", "html", "github"] as const;
 export type ReportFormat = (typeof REPORT_FORMATS)[number];
 
 function isReportFormat(value: string): value is ReportFormat {
@@ -534,9 +893,10 @@ export function parseReportFormatList(value: string): ReportFormat[] | undefined
 /**
  * klaus.config.yaml(CLI オプションの既定値ファイル)のスキーマ。
  * `run` / `ui` サブコマンドのオプションのうち、既定値として設定してよいものだけを列挙する。
+ * `guard` は既定値ではなく安全柵(送信先ホストの許可リスト)で、CLI フラグでは上書きできない。
  * 意図的に含めないオプション:
  * - `--allow-protected`(config で既定 true にするとガードレールが形骸化するため)
- * - `--record` / `--replay`(実行モードは呼び出しごとに明示させる)
+ * - `--record` / `--replay` / `--dry-run`(実行モードは呼び出しごとに明示させる)
  * - `--json` / `--text`(出力モードも呼び出しごとに明示させる)
  * 除外理由の詳細は docs/guide/config.md を参照。
  */
@@ -578,6 +938,12 @@ export const configSchema = z.strictObject({
         .max(32)
         .optional()
         .describe("Default value for `klaus run --jobs <n>` (1-32)."),
+      openapi: z
+        .union([z.string(), z.array(z.string()).min(1)])
+        .optional()
+        .describe(
+          "Default value for `klaus run --openapi <path>`: an OpenAPI 3.0/3.1 document (YAML or JSON), or a list of them. Paths are relative to this file. Passing --openapi on the command line replaces this value.",
+        ),
     })
     .optional()
     .describe("Default values for `klaus run` options."),
@@ -600,5 +966,29 @@ export const configSchema = z.strictObject({
     })
     .optional()
     .describe("Default values for `klaus ui` options."),
+  http: httpConfigSchema
+    .optional()
+    .describe(
+      "Default HTTP client settings (redirects, cookie jar, proxy, TLS) for `klaus run`, `klaus req`, and `klaus ui`. A flow's own `http` overrides the redirect and cookie keys per key; proxy and tls can only be set here. tls file paths are resolved relative to this file.",
+    ),
+  guard: z
+    .strictObject({
+      allowedHosts: z
+        .array(
+          z.string().refine((entry) => parseAllowedHostEntry(entry) !== undefined, {
+            message:
+              'must be a hostname ("api.example.com"), a leading wildcard ("*.example.com"), or an IPv6 literal in brackets, each with an optional ":port"',
+          }),
+        )
+        .min(1, { message: "must not be empty (omit the key to disable the restriction)" })
+        .optional()
+        .describe(
+          'Hosts that requests may be sent to (HTTP, SSE, WebSocket, and single requests; not checked in --replay mode). Entries: exact hostname ("api.example.com"), leading wildcard ("*.example.com", subdomains only, not the apex), optional port ("localhost:3000"; without a port, any port matches). Case-insensitive. When omitted, there is no restriction. There is intentionally no CLI flag to override this.',
+        ),
+    })
+    .optional()
+    .describe(
+      "Safety fences applied to every request sent by `klaus run`, `klaus req`, and `klaus ui`.",
+    ),
 });
 export type CliConfig = z.infer<typeof configSchema>;

@@ -16,7 +16,12 @@ The API used by the UI. All endpoints require an `X-Klaus-Token` header.
 | `POST /api/environments/:name/capture` | body: `{ key, path, json }` | Extracts a single value from `json` (e.g. the most recent response body) via JSONPath (`path`) and merges it into the specified environment under `key` (leaving other keys unchanged). Returns the updated contents as `{ name, values }`. 400 if there is no matching extraction result or the result is a non-primitive value (object/array/null); 404 if the environment doesn't exist |
 | `POST /api/runs` | body: `{ path, env? }` | Runs a flow. The response is an SSE stream (see below) |
 | `POST /api/request` | body: `{ request, env? }` | Synchronously executes a single request definition (`request` conforms to requestSchema) without going through a flow definition, returning `{ result: StepResult }`. If `env` is given, `{{var}}` is expanded against that environment. 400 on `request` validation errors; 403 if the `env` name is invalid |
-| `GET /api/history` | `flow` / `limit` (default 50) / `before` (ISO datetime cursor) | Returns history paginated newest-first. Rows with an unknown `v` are skipped |
+| `GET /api/history` | `flow` / `limit` (default 50) / `before` (ISO datetime cursor) | Returns history paginated newest-first. Rows with an unknown `v` are skipped. The candidate used to accept a snapshot assertion (`candidate`, a copy of the whole response) is not returned |
+| `GET /api/history/events` | — | SSE that notifies about changes to the history directory (`.klaus/history/`). A notification carries only a sequence number and the changed dates; the client then re-reads `GET /api/history`. At most 16 concurrent subscribers |
+| `GET /api/history/diff` | `a` / `b` (run IDs; `latest` / `previous` are accepted when `flow` is given) / `flow` (optional) / `ignorePath` (JSONPath, repeatable, at most 20) | The difference between two runs (the core `diffRuns` result: `klaus diff --json` without `version`). 400 for a malformed run ID, an unparsable or too many `ignorePath` values; 404 for a run that is not in history. History is compared as stored (masked) |
+| `POST /api/history/promote` | body: `{ runIds, flow?, assert?, baseUrlVar?, chain?, name?, out?, dryRun? }` | Generates a **new** flow from history runs (the equivalent of `klaus promote`; there is no `--force` or `--allow-template-literals`, and unknown keys give 400). `dryRun: true` returns only the YAML and the summary and writes nothing. The destination must be under api/ or flows/, or in a directory that already contains flow files; 403 for outside cwd, hidden segments, a wrong extension, a configuration file name, or backslashes; 409 for an existing file (never overwritten); 404 for a run not in history; 422 for a refusal such as a recorded literal `{{` (`code: "template-literal"`) |
+| `GET /api/snapshots/mismatches` | `runId` | The run's pending snapshots (core `listSnapshotMismatches`) as `{ runId, mismatches, acceptRefusal? }`. `acceptRefusal` carries the reason for, for example, a run against a protected environment. 400 for a malformed run ID, 404 for a run not in history |
+| `POST /api/snapshots/accept` | body: `{ runId, snapshotFile, key }` | Writes one pending snapshot as the baseline (core `acceptSnapshot`). `(snapshotFile, key)` must be a pair from the list above (404 otherwise; 403 for a path outside cwd or with backslashes). 403 for a run against a protected (or unverifiable) environment and for core's `unsafe`; 422 for a corrupt existing file (or a malformed candidate); 409 when the step's other assertions failed (`failed-step`) |
 
 ### SSE events for POST /api/runs
 
@@ -24,7 +29,27 @@ The API used by the UI. All endpoints require an `X-Klaus-Token` header.
 |---|---|---|
 | `step-start` | `{ flow, file, step }` | When a step starts |
 | `step-result` | `{ flow, file, result: StepResult }` | When a step completes (including skipped) |
-| `run-result` | `{ flow: FlowResult }` | When the flow completes (once, at the end) |
+| `run-result` | `{ flow: FlowResult, warnings?, openapi? }` | When the flow completes (once, at the end). `warnings` are notices that do not change the result; `openapi` is the coverage summary when the server has `run.openapi` |
+
+### errorCode on StepResult
+
+A step result with `status: "error"` carries a free-text English `error` and, when the cause is one of those below, a stable `errorCode?: string`. It is passed through unchanged in `result` of `step-result`, in `flow.steps[]` of `run-result`, in `result` of `POST /api/request`, and in `entries[]` of `GET /api/history` (the UI uses it to show a Japanese explanation and keeps the original `error` as the detail). It is omitted for errors without a code (there is no catch-all code).
+
+| `errorCode` | Cause |
+|---|---|
+| `guard.allowed-hosts` | The target host is not in `guard.allowedHosts` |
+| `guard.protected` | Refused by the environment's `$protected: true` |
+| `guard.readonly` | `$protected: readonly` refused a non-read method |
+| `guard.method-override` | `$protected: readonly` refused a method-override header |
+| `guard.host-header` | The Host header differs from the URL, or is invalid |
+| `guard.proxy-header` | A hop-by-hop or other forbidden header while a proxy is in use |
+| `guard.path` | A file outside the cwd (sent file, snapshot) was referenced |
+| `guard.redirect` | A redirect hop was refused by a guard with no code of its own (if the hop's own refusal has one of the codes above, that one is kept) |
+| `response-too-large` | `http.maxResponseBytes` exceeded (response or SSE) |
+
+History records guard refusals and steps that failed after receiving a response (a failed capture, for example, which has no `errorCode`), so only `guard.*` codes appear in `GET /api/history`. A step that failed after a response has `status: "error"` with `request` and `response` both present (a JSON body nested deeper than 200 levels is a string `body` with `bodyTooDeep: true` on the response); the UI shows its HTTP status and the error message. The values are a fixed public contract. The `GET /api/history` query has no status filter (only the CLI's `klaus history --status` does).
+
+The `entries[]` of `GET /api/history` carry an optional `envProtection: "protected" | "readonly"` on entries written while a protected environment (`$protected: true` / `readonly`) was loaded (whether chosen by name or with `--env-file`, from any entry point, including guard-refusal entries; absent for unprotected environments, runs without an environment, and entries written before the field existed). Entries whose environment was loaded with `--env-file` also carry `envSource: "file"` (absent for named environments and older entries). The UI does not use these fields, so their presence does not change behavior. `klaus mcp` reads it to refuse `klaus_promote` and to narrow what its history tools return.
 
 **Behavior on client disconnect**: closing or reloading the browser does **not** stop the in-flight flow — it runs to completion and the full history is written for every step. Only the SSE delivery is cut off; the server keeps responding normally to subsequent requests.
 

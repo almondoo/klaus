@@ -80,6 +80,62 @@ environment "production" is protected ($protected: true) and refuses execution b
 
 **対処**: この環境への実行が意図したものであれば、`klaus run` に `--allow-protected` を指定する。`klaus ui` / server API はこのフラグを一切受け付けないため、保護環境は常に拒否され、回避手段はない。[ファイル構造](flow-definition.md#ファイル構造) を参照。
 
+`$protected: readonly` の環境では、フラグなしで許可されるのは `GET` / `HEAD` / `OPTIONS` のみ。それ以外のメソッドは次のメッセージで拒否される。
+
+```
+environment "production" is protected ($protected: readonly) and only allows GET, HEAD, and OPTIONS by default; refusing POST. Pass --allow-protected to run against this environment intentionally.
+```
+
+メソッド上書きヘッダー(`X-HTTP-Method-Override`・`X-HTTP-Method`・`X-Method-Override`)を付けた `GET` は次のメッセージで拒否される。
+
+```
+environment "production" is protected ($protected: readonly) and refuses requests carrying the x-http-method-override header, which can turn a read into a write. Pass --allow-protected to run against this environment intentionally.
+```
+
+対処は同じ(`--allow-protected`)か、ステップを安全なメソッドに変える。GraphQL ステップは既定で `POST` のため、これも拒否される。[保護環境](cli.md#保護環境-protected)を参照。
+
+`klaus req` と `klaus ui` の単発リクエストには `--allow-protected` オプションがないため、拒否メッセージの末尾は `Pass --allow-protected ...` の代わりに次の案内になる。
+
+```
+Single requests (klaus req, klaus ui) cannot override environment protection; run a flow with `klaus run --allow-protected` instead.
+```
+
+### 「host "X" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request.」
+
+**症状**
+
+```
+host "api.other.com" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request.
+```
+
+**原因**: `klaus.config.yaml` に `guard.allowedHosts` が設定されており、ステップの URL(テンプレート展開後)のホストがどのエントリにも一致しない。`*.example.com` は `example.com` 自身には一致せず、ポート付きのエントリはそのポートのみに一致する点に注意。
+
+**対処**: そのホストが意図したものなら、`klaus.config.yaml` の `guard.allowedHosts` に追加する(`klaus ui` を起動中なら再起動する)。そうでなければ URL を直す。判定を回避する CLI フラグはない。[送信先ホストの許可リスト](config.md#送信先ホストの許可リスト-guard-allowedhosts)を参照。
+
+### 「redirect hop N (after STATUS) refused: ...」
+
+**症状**
+
+```
+redirect hop 1 (after 302) refused: host "other.example.com" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request.
+```
+
+**原因**: `http.followRedirects` が有効で、リダイレクト先が安全柵に拒否されるホストを指している。各ホップは通常のリクエストと同じ判定を通るため、リダイレクトで `guard.allowedHosts` の外へは出られない。
+
+**対処**: 宛先が意図したものなら `guard.allowedHosts` に追加する。そうでなければサーバー側か URL を直す。[HTTP クライアント](config.md#http-クライアント-http)を参照。
+
+### 「http.proxy and http.tls can only be set in klaus.config.yaml, not in a flow file ...」
+
+**症状**
+
+```
+http.proxy and http.tls can only be set in klaus.config.yaml, not in a flow file (they decide where traffic goes and whom it trusts)
+```
+
+**原因**: フローファイルに `http.proxy` または `http.tls` がある。これらは通信の行き先と信頼先を決めるため、(エージェントが書き得る)フローからは設定できない。
+
+**対処**: 設定を `klaus.config.yaml` の `http` セクションへ移す。[HTTP クライアント](config.md#http-クライアント-http)を参照。
+
 ## `--record` / `--replay` のエラー(exit code 3)
 
 ### 「no recorded response for "METHOD url" in replay mode. ...」/「failed to read cassette file ... for replay mode: ...」
@@ -110,7 +166,111 @@ step "subscribe": SSE/WS steps are not supported in record/replay mode (HTTP onl
 
 **対処**: このフローは `--record`/`--replay` なしで実行するか、SSE/WS ステップを別のフローファイルに分けて通常どおり実行する。[SSE / WebSocket ステップは非対応](record-replay.md#sse-websocket-ステップは非対応) を参照。
 
+## `klaus req` のエラー
+
+### 「klaus: --body file resolves outside the current directory: "X"」
+
+**症状**
+
+```
+klaus: --body file resolves outside the current directory: "../payload.json"
+```
+
+exit code 2 で終了し、何も送信しない。
+
+**原因**: `--body @<file>` はカレントディレクトリの内側(シンボリックリンクを解決した後も)にあるファイルしか読まない。エージェントが任意のファイルを送信先ホストへ流せないようにするため。
+
+**対処**: ファイルをカレントディレクトリへコピーする(またはそのファイルを含むディレクトリから `klaus req` を実行する)か、`--body '<json>'` でボディを直接渡す。[klaus req](cli.md#リクエストボディ-body)を参照。
+
+## スナップショットアサーション(`assert.snapshot`)
+
+### 「snapshot "X" differs from the baseline (N differences): ...」
+
+**症状**(ステップが失敗し、exit code 4)
+
+```
+snapshot "get-user" differs from the baseline (1 difference): $.body.name "alice" -> "bob"
+```
+
+**原因**: レスポンスが、`__snapshots__/<フローファイル名>.snap.json` に保存された基準と一致しなくなった。パスは `$.status`、`$.headers`、`$.body` のいずれかで始まる。JSON 出力では `differences` に最大 20 件が載る。
+
+**対処**: 変更が不具合なら API を直す。意図した変更なら、`klaus run <file> --update-snapshots` または `klaus snapshot accept <runId>` で受け入れ、スナップショットファイルの `git diff` を確認する。差が出る値が揮発するもの(id・タイムスタンプ)なら、そのパスを `snapshot.ignore` に加える。[snapshot](flow-definition.md#snapshot-基準との比較)を参照。
+
+### 「snapshot "X" has no baseline, and a baseline is not recorded in CI ...」
+
+**症状**(ステップが失敗し、exit code 4)
+
+```
+snapshot "get-user" has no baseline, and a baseline is not recorded in CI (run it locally and commit "flows/__snapshots__/a.yaml.snap.json", or pass --update-snapshots)
+```
+
+**原因**: 実行に `--ci` が付いている、または環境変数 `CI` が設定されていて、そのステップの基準がフローに無い。`$protected` な環境に対する実行や `--replay` でも、基準を暗黙には記録しないため同じ結果(メッセージの理由は異なる)になる。
+
+**対処**: ローカルで一度実行し、内容を確認してスナップショットファイルをコミットする。保護環境から意図して記録するなら `--update-snapshots` を付ける。リポジトリに残したくない本番のデータから記録したスナップショットはコミットしないこと。[スナップショット](cli.md#スナップショット-update-snapshots-ci)を参照。
+
+### 「snapshot file "X" is corrupt: ...」
+
+**症状**(exit code 2、何も実行しない)
+
+```
+klaus: parse error: snapshot file "flows/__snapshots__/a.yaml.snap.json" is corrupt: the file is not valid JSON. Fix it, delete it, or run with --update-snapshots to recreate it
+```
+
+**原因**: スナップショットファイルが、`{ status?, headers?, body }` のエントリを持つ JSON オブジェクトになっていない(例: マージコンフリクトが解消されていない)。このメッセージにファイルの内容は出さない。
+
+**対処**: コンフリクトを解消するかファイルを削除してから再実行する(ファイルが無いのは、基準が無いというだけのこと)。または `--update-snapshots` で作り直す。
+
+## OpenAPI の検証(`--openapi`)
+
+### 「OpenAPI: METHOD /path -> STATUS violates the specification: ...」
+
+**症状**(ステップが失敗し、exit code 4)
+
+```
+OpenAPI: GET /users/{id} -> 200 violates the specification: body /id: must be integer; body: must have required property 'name'
+```
+
+**原因**: レスポンスが、そのオペレーションとステータスについて OpenAPI 文書に書かれた内容と一致しない。本文がスキーマに違反している(`body /id` は問題の値を指す JSON Pointer で、`body` だけならルート)、content-type が宣言されていない、必須のレスポンスヘッダーが無い、のいずれか。JSON 出力では `openapi.violations` に最大 20 件が載る。
+
+**対処**: API が間違っているなら API を直す。文書が古いなら文書を更新する。スキーマが API に必要以上に厳しいなら緩める。検証する内容は [OpenAPI の検証](cli.md#openapi-の検証-openapi)を参照。
+
+### 「klaus: parse error: ... remote $ref is not supported ...」/「... $ref "X" cannot be resolved」
+
+**症状**(exit code 2、何も実行しない)
+
+```
+klaus: parse error: remote $ref is not supported (only local files can be referenced): https://example.com/schemas.json#/User
+```
+
+**原因**: `--openapi` が読むのはローカルファイルだけ。URL スキームで始まる `$ref` は拒否し、ローカルファイルへの `$ref` は `.yaml` / `.yml` / `.json` のファイルを指す必要があり、すべての `$ref` は実行前に解決できる必要がある。
+
+**対処**: 参照先のファイルを文書の隣にダウンロードして相対パスで参照するか、先に文書を 1 ファイルにバンドルする。
+
+### 「klaus: OpenAPI coverage N% is below --openapi-coverage-min M%」
+
+**症状**(全ステップが成功していても exit code 4)
+
+```
+klaus: OpenAPI coverage 33.3% is below --openapi-coverage-min 50%
+```
+
+**原因**: リクエストに照合されたオペレーションが、しきい値より少ない。`openapi.uncovered` の一覧(text 出力では `openapi: uncovered:` の行)が、どのリクエストも呼ばなかったオペレーションを示す。`openapi.unmatched` は、どのオペレーションにも照合できなかったリクエストの一覧で、たとえばベース URL が文書の `servers` と違う場合に出る。
+
+**対処**: 未カバーのオペレーションのステップを足す。リクエストの宛先が文書の servers と違うホストなら、`--openapi-base-url` を渡す。`--tags` を使った場合、カバレッジは選んだフローだけのもの(`partial`)になる。
+
 ## `klaus ui` のエラー
+
+### 「Forbidden: environment "X" is protected and cannot be edited via this API (edit the file directly)」
+
+**症状**: 環境エディタの保存、または「抽出した値を環境へ保存」が HTTP 403 と次のメッセージで失敗する。
+
+```
+Forbidden: environment "production" is protected and cannot be edited via this API (edit the file directly)
+```
+
+**原因**: 環境ファイルに `$protected: true` または `$protected: readonly` が設定されている。UI はエージェントが操作し得る経路のため、保護環境には書き込めない。
+
+**対処**: `environments/<name>.yaml` をエディタで直接編集する。[ファイル構造](flow-definition.md#ファイル構造)を参照。
 
 ### 「... EADDRINUSE ... (port \<n\> is already in use; specify a different port with --port)」
 

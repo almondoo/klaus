@@ -187,6 +187,65 @@ describe("formatStepLine", () => {
   });
 });
 
+describe("formatStepLine: リダイレクト情報", () => {
+  const redirected = {
+    redirects: ["http://x/b", "http://other/c"],
+    droppedHeaders: [{ hop: 2, headers: ["authorization", "cookie"] }],
+  };
+
+  it("FAIL / ERROR のとき、リダイレクトの経路と落としたヘッダー名を詳細行に出す", () => {
+    for (const status of ["failed", "error"] as const) {
+      const lines = formatStepLine(
+        buildStep({ name: "s", status, error: "boom", ...redirected }),
+        false,
+      ).split("\n");
+      expect(lines).toContain("    redirects: http://x/b -> http://other/c");
+      expect(lines).toContain("    dropped headers on redirect: hop 2: authorization, cookie");
+    }
+  });
+
+  it("PASS の1行要約には出さない", () => {
+    const line = formatStepLine(buildStep({ name: "s", status: "passed", ...redirected }), false);
+    expect(line).not.toContain("redirects");
+  });
+
+  it("経路に含まれる制御文字は可視エスケープする", () => {
+    const line = formatStepLine(
+      buildStep({ name: "s", status: "error", error: "x", redirects: ["http://x/\x1b[31m"] }),
+      false,
+    );
+    expect(line).not.toContain("\x1b");
+  });
+});
+
+describe("createTextReporter: 警告", () => {
+  function summaryOf(warnings: string[] | undefined): string {
+    let out = "";
+    const reporter = createTextReporter(false, (text) => {
+      out += text;
+    });
+    reporter.printSummary({
+      runId: "r",
+      startedAt: "2026-08-08T00:00:00.000Z",
+      durationMs: 1,
+      flows: [],
+      status: "passed",
+      ...(warnings ? { warnings } : {}),
+    });
+    return out;
+  }
+
+  it("warnings があればサマリーの前に warning: 行として出す", () => {
+    const out = summaryOf(["tls.insecure is enabled"]);
+    expect(out.indexOf("warning: tls.insecure is enabled")).toBeGreaterThanOrEqual(0);
+    expect(out.indexOf("warning:")).toBeLessThan(out.indexOf("0 flows"));
+  });
+
+  it("warnings が無ければ warning 行を出さない", () => {
+    expect(summaryOf(undefined)).not.toContain("warning");
+  });
+});
+
 describe("formatStepLine: 制御文字のサニタイズ", () => {
   it("FAIL: assertion.message に ANSI エスケープや制御文字(改行含む)が含まれても、生の制御バイトのまま出力せず可視エスケープに変換する", () => {
     const line = formatStepLine(

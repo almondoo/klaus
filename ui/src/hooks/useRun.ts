@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { FlowDetail, FlowResult, StepResult } from "../api/client";
+import type { FlowDetail, FlowResult, OpenApiRunSummary, StepResult } from "../api/client";
 import { runFlow } from "../api/client";
 
 export type RunStepStatus = "pending" | "running" | StepResult["status"];
@@ -14,6 +14,10 @@ export interface RunStepView {
 export interface UseRunResult {
   steps: RunStepView[];
   runResult: FlowResult | null;
+  /** 実行全体の警告(tls.insecure の使用など)。無ければ空 */
+  warnings: string[];
+  /** OpenAPI の検証・カバレッジ(サーバーに run.openapi を設定したときだけ) */
+  openapi: OpenApiRunSummary | null;
   running: boolean;
   error: string | null;
   /** 完了ステップ数(全体進捗 "Step n / m" の n) */
@@ -27,6 +31,8 @@ export interface UseRunResult {
 export function useRun(flowDetail: FlowDetail | null): UseRunResult {
   const [steps, setSteps] = useState<RunStepView[]>([]);
   const [runResult, setRunResult] = useState<FlowResult | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const [openapi, setOpenapi] = useState<OpenApiRunSummary | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
@@ -38,6 +44,8 @@ export function useRun(flowDetail: FlowDetail | null): UseRunResult {
       controllerRef.current = controller;
 
       setRunResult(null);
+      setWarnings([]);
+      setOpenapi(null);
       setError(null);
       setRunning(true);
       setSteps(
@@ -63,6 +71,8 @@ export function useRun(flowDetail: FlowDetail | null): UseRunResult {
           },
           onRunResult: (payload) => {
             setRunResult(payload.flow);
+            setWarnings(payload.warnings ?? []);
+            setOpenapi(payload.openapi ?? null);
           },
         },
         controller.signal,
@@ -95,6 +105,8 @@ export function useRun(flowDetail: FlowDetail | null): UseRunResult {
   return {
     steps,
     runResult,
+    warnings,
+    openapi,
     running,
     error,
     completedCount,

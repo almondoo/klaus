@@ -11,14 +11,14 @@ import {
   validateFlowYaml,
 } from "../src/core/loader.js";
 
-// yaml の parse を差し替えられるようにモック化する(toParseError の
+// YAML のパース関数(yaml-quiet)を差し替えられるようにモック化する(toParseError の
 // 「YAMLParseError/ZodError 以外」フォールバック分岐は通常の YAML/スキーマ検証では
-// 到達できないため、parse 自体が想定外のエラーを投げるケースを再現する)
-vi.mock("yaml", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("yaml")>();
-  return { ...actual, parse: vi.fn(actual.parse) };
+// 到達できないため、パース自体が想定外のエラーを投げるケースを再現する)
+vi.mock("../src/core/yaml-quiet.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/core/yaml-quiet.js")>();
+  return { ...actual, parseYamlQuietly: vi.fn(actual.parseYamlQuietly) };
 });
-const { parse: mockedParseYaml } = await import("yaml");
+const { parseYamlQuietly: mockedParseYaml } = await import("../src/core/yaml-quiet.js");
 
 describe("parseFlowYaml", () => {
   it("正しい YAML を Flow に変換する", () => {
@@ -54,6 +54,21 @@ name: sample
 steps: []
 `;
     expect(() => parseFlowYaml(yaml, "invalid-schema.yaml")).toThrow(ParseError);
+  });
+});
+
+describe("YAML の警告", () => {
+  it("未知のタグがあっても警告(ソースの行を含む)を出さずに読み込む", () => {
+    const emit = vi.spyOn(process, "emitWarning").mockImplementation(() => {});
+    try {
+      const flow = parseFlowYaml(
+        "name: !vault SECRET-LINE\nsteps:\n  - name: a\n    request: {method: GET, url: 'http://x'}\n",
+      );
+      expect(flow.name).toBe("SECRET-LINE");
+      expect(emit).not.toHaveBeenCalled();
+    } finally {
+      emit.mockRestore();
+    }
   });
 });
 

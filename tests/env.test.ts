@@ -3,8 +3,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   EnvironmentNotFoundError,
+  getProtectedMode,
   isProtectedEnvironment,
   loadEnvironment,
+  protectedEnvironmentSecretValues,
   resolveEnvironmentPath,
   saveEnvironment,
   toTemplateVariables,
@@ -327,6 +329,15 @@ describe("isProtectedEnvironment / toTemplateVariables", () => {
     expect(isProtectedEnvironment(environment)).toBe(true);
   });
 
+  it('$protected: "readonly" の環境は保護対象で、モードは "readonly"、true は true になる', () => {
+    const readonly = environmentSchema.parse({ $protected: "readonly", baseUrl: "http://x" });
+    expect(isProtectedEnvironment(readonly)).toBe(true);
+    expect(getProtectedMode(readonly)).toBe("readonly");
+    expect(getProtectedMode(environmentSchema.parse({ $protected: true }))).toBe(true);
+    expect(getProtectedMode(environmentSchema.parse({ $protected: false }))).toBe(false);
+    expect(Object.hasOwn(toTemplateVariables(readonly), "$protected")).toBe(false);
+  });
+
   it("$protected が無い/false の環境は保護対象と判定しない", () => {
     expect(
       isProtectedEnvironment(environmentSchema.parse({ baseUrl: "http://localhost:3000" })),
@@ -411,5 +422,70 @@ describe("saveEnvironment", () => {
     expect(content).toContain("$protected: true");
     expect(content).toContain("baseUrl: http://localhost:4000");
     expect(content).not.toContain("apiKey");
+  });
+});
+
+describe("protectedEnvironmentSecretValues", () => {
+  const environment = (value: Record<string, unknown>) => value as never;
+
+  it("保護されていない環境では空を返す", () => {
+    expect(protectedEnvironmentSecretValues(environment({ a: "secret-value" }))).toEqual([]);
+    expect(protectedEnvironmentSecretValues(environment({ $protected: false, a: "x" }))).toEqual(
+      [],
+    );
+  });
+
+  it("保護された環境(true / readonly)の値すべてを返し、$protected 自身・キー・真偽値・null は含めない", () => {
+    for (const mode of [true, "readonly"]) {
+      const values = protectedEnvironmentSecretValues(
+        environment({
+          $protected: mode,
+          host: "db.internal",
+          port: 5432,
+          debug: true,
+          none: null,
+        }),
+      );
+      expect([...values].sort()).toEqual(["5432", "db.internal"]);
+    }
+  });
+
+  it("絶対 URL の値は、host・hostname・origin も返す(URL でない値・ホストを持たない値には足さない)", () => {
+    const values = protectedEnvironmentSecretValues(
+      environment({
+        $protected: true,
+        baseUrl: "https://api.prod.example.com:8443/v1",
+        plainHost: "db.internal:5432",
+        mail: "mailto:ops@example.com",
+      }),
+    );
+
+    expect([...values].sort()).toEqual(
+      [
+        "https://api.prod.example.com:8443/v1",
+        "https://api.prod.example.com:8443",
+        "api.prod.example.com:8443",
+        "api.prod.example.com",
+        "db.internal:5432",
+        "mailto:ops@example.com",
+      ].sort(),
+    );
+  });
+
+  it("入れ子のオブジェクト・配列に含まれる文字列と数値も、深さに関わらず(スタックを使わずに)すべて拾う", () => {
+    let deep: unknown = "deepest-value";
+    for (let i = 0; i < 5000; i++) deep = { child: [deep] };
+
+    const values = protectedEnvironmentSecretValues(
+      environment({
+        $protected: true,
+        nested: { inner: ["first-value", { more: "second-value", n: 7 }] },
+        deep,
+      }),
+    );
+
+    expect([...values].sort()).toEqual(
+      ["7", "deepest-value", "first-value", "second-value"].sort(),
+    );
   });
 });

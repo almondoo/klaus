@@ -33,23 +33,88 @@ ui:
   port: 4884
   host: 127.0.0.1
   open: true
+guard:
+  allowedHosts:
+    - api.example.com
+    - "*.example.com"
+    - localhost:3000
+http:
+  followRedirects: true
+  cookies: true
+  proxy: "{{env.KLAUS_PROXY}}"
+  tls:
+    ca: certs/internal-ca.pem
 ```
 
 | Key | Corresponding CLI option | Type |
 |---|---|---|
 | `run.env` | `klaus run --env <name>` | string |
-| `run.report` | `klaus run --report <list>` | comma-separated list of `"junit"` / `"tap"` (e.g. `"junit,tap"`) |
+| `run.report` | `klaus run --report <list>` | comma-separated list of `"junit"` / `"tap"` / `"html"` / `"github"` (e.g. `"junit,html"`) |
 | `run.reportFile` | `klaus run --report-file <path>` | string |
 | `run.history` | `klaus run --no-history` (equivalent to disabling with `false`) | boolean |
 | `run.mask` | `klaus run --no-mask` (equivalent to disabling with `false`) | boolean |
 | `run.jobs` | `klaus run --jobs <n>` | number (1-32) |
+| `run.openapi` | `klaus run --openapi <path>` | string, or a list of strings (see below) |
 | `ui.port` | `klaus ui --port <n>` | number (1-65535) |
 | `ui.host` | `klaus ui --host <host>` | string |
 | `ui.open` | `klaus ui --no-open` (equivalent to disabling with `false`) | boolean |
+| `guard.allowedHosts` | none (config only; see [Host allowlist](#host-allowlist-guard-allowedhosts)) | array of strings |
+| `http.followRedirects` / `http.maxRedirects` / `http.cookies` / `http.auth` / `http.maxResponseBytes` | none (a flow's top-level `http:` overrides them; see [HTTP client](#http-client-http)) | boolean / number (0-100) / boolean / auth helper / positive integer |
+| `http.proxy` | none (config only) | string (proxy URL) |
+| `http.tls.ca` / `http.tls.cert` / `http.tls.key` / `http.tls.insecure` | none (config only) | file paths / boolean |
 
-All keys are optional. Unknown keys cause a schema validation error (see [Error handling](#error-handling) below).
+The `run.*` keys apply to `klaus run` only; `klaus req` reads only the `guard` and `http` sections of this file. All keys are optional. Unknown keys cause a schema validation error (see [Error handling](#error-handling) below).
+
+`run.openapi` takes one OpenAPI document or a list of them (`klaus run --openapi`, see [OpenAPI validation](cli.md#openapi-validation-openapi)). Relative paths are resolved from the directory of `klaus.config.yaml`, not from the current directory, and a `--openapi` on the command line replaces the configured list instead of adding to it. The other OpenAPI options (`--openapi-base-url`, `--openapi-strict`, `--openapi-coverage-min`) are not configurable: they change what makes a run fail, so they are chosen per invocation.
 
 `run.reportFile` only supports a single value (unlike the CLI's repeatable `--report-file`). If `run.report` lists more than one format (e.g. `junit,tap`) and `run.reportFile` is also set, that counts as one `--report-file` for N formats — the same count-mismatch error as passing too few `--report-file` flags on the CLI (see [CLI Reference](cli.md#klaus-run)). To set per-format paths for a multi-format `run.report`, pass `--report-file` on the command line instead (CLI values always take precedence over `klaus.config.yaml`, per the priority rule above).
+
+## Host allowlist (guard.allowedHosts)
+
+`guard.allowedHosts` restricts which hosts requests may be sent to. It is a guardrail against a flow (or a single request from `klaus req` or `klaus ui`) hitting an unintended server.
+
+```yaml
+guard:
+  allowedHosts:
+    - api.example.com
+    - "*.example.com"
+    - localhost:3000
+    - "[::1]:3000"
+```
+
+| Entry form | Matches |
+|---|---|
+| `api.example.com` | exactly that host |
+| `*.example.com` | subdomains at any depth (`a.example.com`, `a.b.example.com`), never the apex `example.com` |
+| `localhost:3000` / `[::1]:3000` | that host on that port only. An entry without a port matches any port. IPv6 literals are written in brackets |
+
+- Matching is case-insensitive.
+- Entries are validated strictly. Rejected (validation error, exit code 2): `*.` followed by fewer than two labels (`*.com`, `*.localhost`), empty labels (`a..b`, a trailing dot), percent-encoded hosts, and numeric hosts other than plain dotted-quad IPv4 (`0`, `2130706433`, `0x7f.1`, octal forms). Plain IPv4 such as `127.0.0.1`, bracketed IPv6, `localhost`, and single-label internal names such as `backend` are valid. Request URLs are compared after URL normalization, so `http://2130706433/` is treated as `127.0.0.1`.
+- If `guard.allowedHosts` is unset, there is no restriction. An empty array or a malformed entry is a validation error (exit code 2, see [Error handling](#error-handling)).
+- The check runs right before sending, on the template-resolved URL, for HTTP, SSE, and WebSocket steps and for single requests from `klaus req` and `klaus ui`. It is not applied with `--replay` (nothing is sent), and is applied with `--record`.
+- A refused step ends as `error` and the run exits with code 3. See [Troubleshooting](troubleshooting.md#host-x-is-not-in-guard-allowedhosts-klaus-config-yaml-refusing-to-send-the-request).
+- There is deliberately no CLI flag to override it. `klaus ui` reads the config at startup, so restart it after changing the list.
+
+## HTTP client (http)
+
+`http` configures the per-run HTTP client shared by every step of a run (and by a single `klaus req` / `klaus ui` request). With nothing set, behavior is unchanged: redirects are not followed, no cookies are kept, and no proxy is used.
+
+| Key | Meaning |
+|---|---|
+| `followRedirects` | Follow `301` / `302` / `303` / `307` / `308` one hop at a time (default `false`). Every hop goes through the same `guard.allowedHosts` and `$protected` checks as a normal request, and a refused hop ends the step as `error`. `301` / `302` on `POST` and `303` become a body-less `GET`; `307` / `308` keep the method and body. Moving to another origin (scheme, host, or port differs, including an https to http downgrade) forwards only `Accept`, `Accept-Language`, `Accept-Encoding`, `User-Agent` (and `Content-Type` / `Content-Language` when the body is kept) and drops every other header you supplied, including `Authorization`, `Cookie`, `Proxy-Authorization`, and custom headers carrying captured tokens. A `Location` containing credentials is refused. The visited URLs and the dropped header names (names only) are recorded in the result and history as `redirects` and `droppedHeaders` |
+| `maxRedirects` | Maximum hops (default `10`); exceeding it is an `error` |
+| `cookies` | Keep `Set-Cookie` values in memory for the run and send them on later matching requests (default `false`). Never persisted. The value part of `Cookie` / `Set-Cookie` headers is masked by position (`***`) in history and output, regardless of the value; a cookie value of 16 or more characters is also registered as a secret, so it is masked wherever it appears (for example echoed in a response body), while a shorter value is masked only inside `Cookie` / `Set-Cookie` headers (so a value such as `json` cannot corrupt unrelated output). `Secure` cookies are never sent over `http://`. A cookie set on `http://host` is not sent after a redirect to `https://host`, because the effective port differs (80 vs 443). Cookies are always stored for the exact host and port that set them: a `Domain` attribute naming the request host or one of its parents is accepted but does not widen the scope, so cookies are never shared with other subdomains or with other ports of the same host (there is no public suffix list) |
+| `maxResponseBytes` | Maximum response body (or SSE stream) size read into memory, in bytes (default `104857600`, 100 MiB). A larger response ends the step as `error`; a flow's `http.maxResponseBytes` overrides it |
+| `auth` | Default [authentication helper](flow-definition.md#auth-authentication-helpers) for every HTTP and SSE step; a flow's `http.auth` or a step's `request.auth` overrides it. Use <code v-pre>{{env.X}}</code> for secrets |
+| `proxy` | HTTP(S) proxy URL. The password is a secret and masked; the username is shown. While a proxy is set, a `Host` header that differs from the request URL and the hop-by-hop headers `Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, `Transfer-Encoding` are refused as a guard refusal. `HTTP_PROXY` and similar environment variables are never read |
+| `tls.ca` / `tls.cert` / `tls.key` | PEM file paths, resolved relative to this file. `cert` and `key` must be set together. Their contents are never printed |
+| `tls.insecure` | `true` disables certificate verification and reports a warning for every run (stderr, and the `warnings` of the JSON, text, HTML, and GitHub reports) |
+
+`proxy` and `tls` decide where traffic goes and whom it trusts, so they can only be set here. A flow file that contains `http.proxy` or `http.tls` fails validation (exit code 2). Likewise there is no CLI flag, `klaus req` option, or UI parameter for them. A flow's top-level `http:` may set only `followRedirects`, `maxRedirects`, `cookies`, `maxResponseBytes`, and `auth`, and overrides this section per key (see [Flow Definition Reference](flow-definition.md#http-http-client-settings)).
+
+- The proxy URL may use <code v-pre>{{env.X}}</code> (OS environment variables) as a template, but not flow variables or captures.
+- The proxy host itself is trusted configuration and is not checked against `guard.allowedHosts`. The final destination of every request (and every redirect hop) is still checked, both for plain HTTP through the proxy and for `CONNECT` tunnels, and a refused request never reaches the proxy.
+- The `tls.insecure` warning is written to stderr as a `klaus: warning:` line and is also carried in the top-level `warnings` array of the [JSON output](cli.md#json-output-for-machines), so machine-readable output does not depend on stderr being captured.
 
 ## Intentionally unconfigurable keys
 
@@ -58,6 +123,9 @@ The following options cannot be set in `klaus.config.yaml` (the schema has no fi
 | Option | Reason |
 |---|---|
 | `--allow-protected` | Setting this to `true` by default via config would erode the guardrail that refuses execution against `$protected: true` environments |
+| `--allow-hosts` (no such option exists) | `guard.allowedHosts` can only be changed by editing `klaus.config.yaml`; a per-invocation flag would let an agent lift the restriction it is meant to enforce |
+| `--dry-run` | Printing the expanded requests instead of sending them changes what a run does as much as `--record` / `--replay` do, so it must be made explicit on every invocation |
+| `--update-snapshots` / `-u` | Rewriting snapshot baselines is the explicit act of accepting a changed response; a persistent default would make every run accept whatever the API returns |
 | `--record` / `--replay` | These record/replay modes change the execution side effects (whether real network access happens) significantly, so they must be made explicit on every invocation |
 | `--json` / `--text` | The output mode depends on the caller (a human reading it vs. an agent or script parsing it), so it should be made explicit on every command-line invocation |
 | `--var` / `--env-file` / `--data` | All three are ad-hoc, per-invocation overrides by nature (a one-off variable, a one-off environment file path, or a one-off data file for a data-driven run); giving them a persistent default in config would defeat that purpose |

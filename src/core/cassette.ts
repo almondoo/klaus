@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { RuntimeError } from "./errors.js";
-import { expandSecretVariants, maskDeep } from "./history.js";
+import { expandSecretVariants, maskDeep, maskString } from "./history.js";
 import type { HttpResponse } from "./http.js";
-import { parseJsonBody } from "./http.js";
+import { parseJsonBodyChecked } from "./http.js";
 import { appendPrivateLine } from "./private-file.js";
 
 /**
@@ -34,15 +34,35 @@ function buildCassetteKey(method: string, url: string): string {
 }
 
 /**
+ * replay・mock の動作が値そのものに依存する構造的なレスポンスヘッダー(小文字)。
+ * `ct=application/json` のような cookie 値が秘密値として登録されると content-type が *** になり、
+ * replay で本文を JSON として読めなくなるため、cookie 由来の秘密値ではマスクせず、記録した値のままカセットへ書く。
+ * ただし env・認証トークンなど cookie 由来ではない秘密値を含む値は、他のヘッダーと同じくマスクのままにする
+ * (buildCassetteEntry の structuralSecrets)。location は秘密値を運び得るので含めない。
+ */
+const STRUCTURAL_HEADERS = new Set([
+  "content-type",
+  "content-encoding",
+  "content-length",
+  "transfer-encoding",
+]);
+
+/**
  * HTTP レスポンスから CassetteEntry を組み立て、secrets でマスクする。
  * 履歴 JSONL(maskHistoryEntry)と同じ方式(expandSecretVariants + maskDeep)を使い、
  * URL・ヘッダー・bodyText に含まれる {{env.X}} 解決値を "***" に置換してからカセットへ渡す。
+ * Cookie / Set-Cookie ヘッダーの値は、secrets が空でも maskDeep が位置で *** にする
+ * (実行時のレスポンスは生の Set-Cookie を持つため、カセットに残す前に必ずマスクする)。
+ * structuralSecrets は secrets のうち cookie 由来ではないもの。構造的ヘッダー(STRUCTURAL_HEADERS)は、
+ * これでマスクしても値が変わらない(cookie 由来の秘密値とだけ一致している)場合に限り、元の値へ戻す。
+ * 省略時は secrets の全件を対象にする(構造的ヘッダーも通常どおりマスクされる安全側の既定)。
  */
 export function buildCassetteEntry(
   method: string,
   url: string,
   response: Pick<HttpResponse, "status" | "headers" | "bodyText">,
   secrets: readonly string[],
+  structuralSecrets: readonly string[] = secrets,
 ): CassetteEntry {
   const entry: CassetteEntry = {
     v: 1,
@@ -52,9 +72,19 @@ export function buildCassetteEntry(
     headers: response.headers,
     bodyText: response.bodyText,
   };
-  if (secrets.length === 0) return entry;
-  const variants = expandSecretVariants(secrets);
-  return maskDeep(entry, variants);
+  const masked = maskDeep(entry, expandSecretVariants(secrets));
+  // 構造的ヘッダーは、cookie 由来ではない秘密値を含まない場合に限り、部分一致マスクの前の値に戻す
+  // (Cookie / Set-Cookie は構造的ヘッダーではないのでマスクのまま)
+  const structuralVariants = expandSecretVariants(structuralSecrets);
+  for (const [name, value] of Object.entries(entry.headers)) {
+    if (
+      STRUCTURAL_HEADERS.has(name.toLowerCase()) &&
+      maskString(value, structuralVariants) === value
+    ) {
+      masked.headers[name] = value;
+    }
+  }
+  return masked;
 }
 
 /**
@@ -94,6 +124,58 @@ export async function loadCassetteIndex(dir: string): Promise<Map<string, Casset
 }
 
 /**
+ * カセットファイルの全エントリを記録順のまま読み込む(mock サーバー用)。
+ * loadCassetteIndex と異なり同一キーの重複行も残す(--sequence で記録順に返すため)。
+ * ファイルが読めない・JSON として壊れている・エントリとして不正な行がある場合は RuntimeError にする。
+ */
+export async function loadCassetteEntries(dir: string): Promise<CassetteEntry[]> {
+  const filePath = cassetteFilePath(dir);
+  let raw: string;
+  try {
+    raw = await readFile(filePath, "utf-8");
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new RuntimeError(
+      `failed to read cassette file "${filePath}": ${detail}. Record a cassette first with --record.`,
+    );
+  }
+
+  const entries: CassetteEntry[] = [];
+  const lines = raw.split("\n");
+  for (const [i, line] of lines.entries()) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      throw new RuntimeError(`invalid cassette "${filePath}": line ${i + 1} is not valid JSON`);
+    }
+    if (!isCassetteEntry(parsed)) {
+      throw new RuntimeError(
+        `invalid cassette "${filePath}": line ${i + 1} is not a cassette entry (method, url, status, headers, bodyText)`,
+      );
+    }
+    entries.push(parsed);
+  }
+  return entries;
+}
+
+/** 1行分の JSON が CassetteEntry の形をしているか(mock が参照するフィールドのみ)を判定する */
+function isCassetteEntry(value: unknown): value is CassetteEntry {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.method === "string" &&
+    typeof v.url === "string" &&
+    typeof v.status === "number" &&
+    typeof v.headers === "object" &&
+    v.headers !== null &&
+    typeof v.bodyText === "string"
+  );
+}
+
+/**
  * replay モードで、method + URL(現時点で判明している secrets でマスクしたもの)からカセットのエントリを探す。
  * 記録側の URL は record 時点でマスク済みで保存されているため、再生側もレンダリング済み URL に
  * 同じマスキングを適用してからキー比較する(secrets が同じ env から解決される前提)。
@@ -125,11 +207,13 @@ export function findCassetteEntry(
  * durationMs はネットワークに出ないため常に 0 にする。
  */
 export function cassetteEntryToHttpResponse(entry: CassetteEntry): HttpResponse {
+  const { body, tooDeep } = parseJsonBodyChecked(entry.headers["content-type"], entry.bodyText);
   return {
     status: entry.status,
     headers: entry.headers,
-    body: parseJsonBody(entry.headers["content-type"], entry.bodyText),
+    body,
     bodyText: entry.bodyText,
+    ...(tooDeep ? { bodyTooDeep: true as const } : {}),
     durationMs: 0,
   };
 }

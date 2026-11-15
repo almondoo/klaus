@@ -8,7 +8,9 @@ import { createServer as createNodeServer } from "node:http";
 import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { GuardOptions, HttpConfig } from "../core/index.js";
 import { createApp } from "./app.js";
+import { createHistoryWatcher } from "./history-watcher.js";
 import { bridgeHonoApp } from "./node-bridge.js";
 
 export interface StartServerOptions {
@@ -20,6 +22,21 @@ export interface StartServerOptions {
   // 呼び出し元(CLI の --host 未指定時など)から明示的に undefined が渡ることがあるため許容する
   /** バインド先ホスト。未指定なら "127.0.0.1"(既定、これまでと同じ挙動)。"0.0.0.0" 等を指定するとコンテナ外など他ホストからの接続も受け付けられる */
   host?: string | undefined;
+  /**
+   * 送信先ホストの許可リストなどの安全柵。`klaus ui` が klaus.config.yaml の `guard` を読んで渡す
+   * (UI からのフロー実行・単発リクエストの両方に適用する)。設定は起動時に一度だけ読むため、変更後は再起動が必要
+   */
+  guard?: GuardOptions | undefined;
+  /**
+   * HTTP クライアント設定(klaus.config.yaml の `http`)。`klaus ui` が読んで渡す(UI からのフロー実行・単発リクエストの
+   * 両方に適用する)。guard と同じく起動時に一度だけ読むため変更後は再起動が必要で、リクエストからは指定できない
+   */
+  http?: HttpConfig | undefined;
+  /**
+   * OpenAPI 文書の絶対パス(klaus.config.yaml の `run.openapi`)。`klaus ui` が読んで渡し、UI からのフロー実行の応答を仕様に照らして検証する。
+   * 起動時に一度だけ読むため変更後は再起動が必要で、リクエストからは指定できない
+   */
+  openapi?: readonly string[] | undefined;
 }
 
 export interface StartServerResult {
@@ -75,7 +92,18 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
   }
   const port = address.port;
 
-  const app = createApp({ cwd, token, port, staticDir, host: bindHost });
+  const historyWatcher = createHistoryWatcher(cwd);
+  const app = createApp({
+    cwd,
+    token,
+    port,
+    staticDir,
+    host: bindHost,
+    guard: options.guard,
+    http: options.http,
+    openapi: options.openapi,
+    historyWatcher,
+  });
   currentHandler = bridgeHonoApp(app, `127.0.0.1:${port}`);
 
   // 表示・接続用 URL は 127.0.0.1 を使う("0.0.0.0" はワイルドカードバインドであり、
@@ -84,6 +112,8 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sta
   const url = `http://${displayHost}:${port}/?token=${token}`;
 
   const close = async (): Promise<void> => {
+    // 履歴変更通知の SSE を先に終わらせ、fs.watch・タイマーを解放する
+    historyWatcher.close();
     for (const socket of sockets) socket.destroy();
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));

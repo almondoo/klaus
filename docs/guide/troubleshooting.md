@@ -80,6 +80,62 @@ environment "production" is protected ($protected: true) and refuses execution b
 
 **Fix**: if running against this environment is intentional, pass `--allow-protected` to `klaus run`. Note that `klaus ui` / the server API never accept this flag — protected environments are always refused there, with no override. See [File Structure](flow-definition.md#file-structure).
 
+For `$protected: readonly` environments, only `GET` / `HEAD` / `OPTIONS` are allowed without the flag. Any other method is refused with:
+
+```
+environment "production" is protected ($protected: readonly) and only allows GET, HEAD, and OPTIONS by default; refusing POST. Pass --allow-protected to run against this environment intentionally.
+```
+
+A `GET` carrying a method-override header (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`) is refused with:
+
+```
+environment "production" is protected ($protected: readonly) and refuses requests carrying the x-http-method-override header, which can turn a read into a write. Pass --allow-protected to run against this environment intentionally.
+```
+
+The fix is the same (`--allow-protected`), or switch the step to a safe method. GraphQL steps default to `POST`, so they are refused too. See [Protected environments](cli.md#protected-environments-protected).
+
+`klaus req` and single requests from `klaus ui` have no `--allow-protected` option, so their refusals end with a different hint instead of the `Pass --allow-protected ...` sentence:
+
+```
+Single requests (klaus req, klaus ui) cannot override environment protection; run a flow with `klaus run --allow-protected` instead.
+```
+
+### "host \"X\" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request."
+
+**Symptom**
+
+```
+host "api.other.com" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request.
+```
+
+**Cause**: `klaus.config.yaml` sets `guard.allowedHosts`, and the step's URL (after template expansion) points to a host that matches none of the entries. Note that `*.example.com` does not match `example.com` itself, and an entry with a port matches only that port.
+
+**Fix**: if the host is intended, add it to `guard.allowedHosts` in `klaus.config.yaml` (restart `klaus ui` if it is running); otherwise fix the URL. There is no CLI flag to bypass the check. See [Host allowlist](config.md#host-allowlist-guard-allowedhosts).
+
+### "redirect hop N (after STATUS) refused: ..."
+
+**Symptom**
+
+```
+redirect hop 1 (after 302) refused: host "other.example.com" is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request.
+```
+
+**Cause**: `http.followRedirects` is on, and a redirect points to a host that the guards refuse. Every hop is checked like a normal request, so a redirect cannot leave `guard.allowedHosts`.
+
+**Fix**: if the target is intended, add it to `guard.allowedHosts`; otherwise fix the server or the URL. See [HTTP client](config.md#http-client-http).
+
+### "http.proxy and http.tls can only be set in klaus.config.yaml, not in a flow file ..."
+
+**Symptom**
+
+```
+http.proxy and http.tls can only be set in klaus.config.yaml, not in a flow file (they decide where traffic goes and whom it trusts)
+```
+
+**Cause**: a flow file has `http.proxy` or `http.tls`. These keys decide where traffic goes and whom it trusts, so a flow (which an agent may have written) cannot set them.
+
+**Fix**: move the setting into the `http` section of `klaus.config.yaml`. See [HTTP client](config.md#http-client-http).
+
 ## `--record` / `--replay` errors (exit code 3)
 
 ### "no recorded response for \"METHOD url\" in replay mode. ..." / "failed to read cassette file ... for replay mode: ..."
@@ -110,7 +166,111 @@ step "subscribe": SSE/WS steps are not supported in record/replay mode (HTTP onl
 
 **Fix**: run this flow without `--record`/`--replay`, or split the SSE/WS step out into a separate flow file that's run normally. See [SSE / WebSocket steps are not supported](record-replay.md#sse-websocket-steps-are-not-supported).
 
+## `klaus req` errors
+
+### "klaus: --body file resolves outside the current directory: \"X\""
+
+**Symptom**
+
+```
+klaus: --body file resolves outside the current directory: "../payload.json"
+```
+
+The command exits with code 2 and sends nothing.
+
+**Cause**: `--body @<file>` only reads files inside the current working directory, symbolic links included, so that an agent cannot send arbitrary files to the target host.
+
+**Fix**: copy the file into the working directory (or run `klaus req` from a directory that contains it), or pass the body inline with `--body '<json>'`. See [klaus req](cli.md#request-body-body).
+
+## Snapshot assertions (`assert.snapshot`)
+
+### "snapshot \"X\" differs from the baseline (N differences): ..."
+
+**Symptom** (the step fails, exit code 4)
+
+```
+snapshot "get-user" differs from the baseline (1 difference): $.body.name "alice" -> "bob"
+```
+
+**Cause**: the response no longer equals the baseline stored in `__snapshots__/<flow file>.snap.json`. The paths start with `$.status`, `$.headers`, or `$.body`; the JSON output lists up to 20 of them under `differences`.
+
+**Fix**: if the change is a bug, fix the API. If it is expected, accept it with `klaus run <file> --update-snapshots` or `klaus snapshot accept <runId>` and review the `git diff` of the snapshot file. If the differing value is volatile (an id, a timestamp), add its path to `snapshot.ignore`. See [snapshot](flow-definition.md#snapshot-baseline-comparison).
+
+### "snapshot \"X\" has no baseline, and a baseline is not recorded in CI ..."
+
+**Symptom** (the step fails, exit code 4)
+
+```
+snapshot "get-user" has no baseline, and a baseline is not recorded in CI (run it locally and commit "flows/__snapshots__/a.yaml.snap.json", or pass --update-snapshots)
+```
+
+**Cause**: the run has `--ci`, or the `CI` environment variable is set, and the flow has no baseline for this step. The same result (with a different reason in the message) happens when the run targets a `$protected` environment or uses `--replay`, because a baseline is not recorded implicitly there.
+
+**Fix**: run the flow once locally, review, and commit the snapshot file. To record from a protected environment on purpose, pass `--update-snapshots`. Do not commit a snapshot that was recorded from production data you do not want in the repository. See [Snapshots](cli.md#snapshots-update-snapshots-ci).
+
+### "snapshot file \"X\" is corrupt: ..."
+
+**Symptom** (exit code 2, nothing is run)
+
+```
+klaus: parse error: snapshot file "flows/__snapshots__/a.yaml.snap.json" is corrupt: the file is not valid JSON. Fix it, delete it, or run with --update-snapshots to recreate it
+```
+
+**Cause**: the snapshot file is not a JSON object of `{ status?, headers?, body }` entries, for example after an unresolved merge conflict. klaus never prints the file's content in this message.
+
+**Fix**: resolve the conflict or delete the file, then run again (a missing file is simply a missing baseline), or run with `--update-snapshots` to recreate it.
+
+## OpenAPI validation (`--openapi`)
+
+### "OpenAPI: METHOD /path -> STATUS violates the specification: ..."
+
+**Symptom** (the step fails, exit code 4)
+
+```
+OpenAPI: GET /users/{id} -> 200 violates the specification: body /id: must be integer; body: must have required property 'name'
+```
+
+**Cause**: the response does not match what the OpenAPI document describes for that operation and status: the body breaks the schema (`body /id` is a JSON Pointer to the offending value; a bare `body` is the root), the content type is not declared, or a required response header is missing. The JSON output lists up to 20 violations under `openapi.violations`.
+
+**Fix**: if the API is wrong, fix the API. If the document is out of date, update it. If the schema is stricter than the API really needs to be, loosen it. See [OpenAPI validation](cli.md#openapi-validation-openapi) for what is checked.
+
+### "klaus: parse error: ... remote $ref is not supported ..." / "... $ref \"X\" cannot be resolved"
+
+**Symptom** (exit code 2, nothing is run)
+
+```
+klaus: parse error: remote $ref is not supported (only local files can be referenced): https://example.com/schemas.json#/User
+```
+
+**Cause**: `--openapi` reads local files only. A `$ref` that starts with a URL scheme is refused, a `$ref` to a local file must point to a `.yaml`, `.yml`, or `.json` file, and every `$ref` must resolve before anything runs.
+
+**Fix**: download the referenced file next to the document and reference it by relative path, or bundle the document into one file first.
+
+### "klaus: OpenAPI coverage N% is below --openapi-coverage-min M%"
+
+**Symptom** (exit code 4, even though every step passed)
+
+```
+klaus: OpenAPI coverage 33.3% is below --openapi-coverage-min 50%
+```
+
+**Cause**: fewer operations were matched by a request than the threshold asks for. The `openapi.uncovered` list (and the `openapi: uncovered:` line in text output) names the operations nothing called; `openapi.unmatched` lists requests that matched no operation, for example because the base URL differs from the document's `servers`.
+
+**Fix**: add steps for the uncovered operations, or, if requests are going to a different host than the document's servers, pass `--openapi-base-url`. With `--tags` the coverage covers only the selected flows (`partial`).
+
 ## `klaus ui` errors
+
+### "Forbidden: environment \"X\" is protected and cannot be edited via this API (edit the file directly)"
+
+**Symptom**: saving the environment editor, or the "save captured value to environment" action, fails with HTTP 403 and this message:
+
+```
+Forbidden: environment "production" is protected and cannot be edited via this API (edit the file directly)
+```
+
+**Cause**: the environment file has `$protected: true` or `$protected: readonly`. The UI is a route an agent may drive, so it cannot write to protected environments.
+
+**Fix**: edit `environments/<name>.yaml` directly in your editor. See [File Structure](flow-definition.md#file-structure).
 
 ### "... EADDRINUSE ... (port \<n\> is already in use; specify a different port with --port)"
 

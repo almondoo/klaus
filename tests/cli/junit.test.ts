@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatJUnit } from "../../src/cli/reporters/junit.js";
+import { assertHeaders } from "../../src/core/index.js";
 import { buildFlow, buildRunResult, buildStep } from "./reporters-fixtures.js";
 
 describe("formatJUnit", () => {
@@ -185,5 +186,18 @@ describe("formatJUnit", () => {
     expect(xml).toContain('<testcase name="login" classname="認証フロー" time="0.045" />');
     expect(xml).toContain('<testcase name="get-me" classname="認証フロー" time="0.030">');
     expect(xml).toContain("expected status 200 but got 401");
+  });
+
+  it("Set-Cookie のヘッダーアサーションが失敗しても、秘密値が未登録で cookie の値が出力に残らない", () => {
+    const assertions = assertHeaders([{ name: "set-cookie", regex: "^nomatch" }], {
+      "set-cookie": "sid=SESSION-RAW-VALUE; Path=/",
+    });
+    const flow = buildFlow({
+      steps: [buildStep({ name: "login", status: "failed", assertions })],
+    });
+    const output = formatJUnit(buildRunResult([flow]));
+
+    expect(output).not.toContain("SESSION-RAW-VALUE");
+    expect(output).toContain("sid=***; Path=/");
   });
 });

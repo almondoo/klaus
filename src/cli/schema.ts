@@ -6,7 +6,9 @@
  */
 import { z } from "zod";
 import { configSchema, flowSchema } from "../core/index.js";
+import { dryRunReportSchema } from "./reporters/dry-run.js";
 import { jsonReportSchema } from "./reporters/json.js";
+import { reqReportSchema } from "./reporters/req.js";
 
 /**
  * superRefine による制約(JSON Schema には変換されない)の注記先。
@@ -25,9 +27,9 @@ const CONSTRAINT_ANNOTATIONS: ReadonlyArray<{ path: readonly string[]; note: str
     note: "Exactly one of `request`, `ws`, or `use` must be set. `sse` is a modifier that attaches to a `request` step.",
   },
   {
-    // requestSchema: body / graphql は排他。graphql 指定時のみ method 省略可
+    // requestSchema: body / graphql / form / multipart / bodyFile は排他。graphql 指定時のみ method 省略可
     path: ["properties", "steps", "items", "properties", "request"],
-    note: "`body` and `graphql` are mutually exclusive. `method` is required unless `graphql` is set.",
+    note: "`body`, `graphql`, `form`, `multipart`, and `bodyFile` are mutually exclusive (set at most one of them). `method` is required unless `graphql` is set.",
   },
   {
     // wsSchema: url は ws:// または wss:// スキームのみ許可(リテラルの場合のみ静的に判定)
@@ -78,6 +80,22 @@ export function buildRunReportJsonSchema(): Record<string, unknown> {
 }
 
 /**
+ * reqReportSchema(`req --json` の出力形, src/cli/reporters/req.ts)の JSON Schema 表現を生成する。
+ * transform を含まないため flow 側と異なり io オプションは不要。
+ */
+export function buildReqReportJsonSchema(): Record<string, unknown> {
+  return z.toJSONSchema(reqReportSchema) as Record<string, unknown>;
+}
+
+/**
+ * dryRunReportSchema(`run --dry-run --json` の出力形, src/cli/reporters/dry-run.ts)の JSON Schema 表現を生成する。
+ * transform を含まないため flow 側と異なり io オプションは不要。
+ */
+export function buildDryRunReportJsonSchema(): Record<string, unknown> {
+  return z.toJSONSchema(dryRunReportSchema) as Record<string, unknown>;
+}
+
+/**
  * configSchema(klaus.config.yaml, src/core/schema.ts)の JSON Schema 表現を生成する。
  * transform を含まないため flow 側と異なり io オプションは不要。
  */
@@ -88,18 +106,23 @@ export function buildConfigJsonSchema(): Record<string, unknown> {
 /**
  * `klaus schema` が出力する対象。
  * "flow": フロー定義 YAML のスキーマ(既定)。"run-report": `klaus run --json` 出力のスキーマ。
+ * "req-report": `klaus req --json` 出力のスキーマ。"dry-run-report": `klaus run --dry-run --json` 出力のスキーマ。
  * "config": klaus.config.yaml(CLI オプションの既定値ファイル)のスキーマ。
  */
-export type SchemaTarget = "flow" | "run-report" | "config";
+export type SchemaTarget = "flow" | "run-report" | "req-report" | "dry-run-report" | "config";
 
 /** schema コマンド本体。JSON Schema を stdout に書き出すだけ。常に exit 0 */
 export async function schemaCommand(target: SchemaTarget = "flow"): Promise<number> {
   const json =
     target === "run-report"
       ? buildRunReportJsonSchema()
-      : target === "config"
-        ? buildConfigJsonSchema()
-        : buildFlowJsonSchema();
+      : target === "req-report"
+        ? buildReqReportJsonSchema()
+        : target === "dry-run-report"
+          ? buildDryRunReportJsonSchema()
+          : target === "config"
+            ? buildConfigJsonSchema()
+            : buildFlowJsonSchema();
   process.stdout.write(`${JSON.stringify(json, null, 2)}\n`);
   return 0;
 }

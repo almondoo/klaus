@@ -18,8 +18,9 @@ steps:                 # Required: at least one. name must be unique within the 
 
 - Environment files are resolved as `environments/<name>.yaml` by searching upward from the cwd (stopping at the first ancestor directory containing `.git`, or at the filesystem root). See [Getting Started](getting-started.md) for details. `klaus run --env <name>` overrides the flow's `env:`. `klaus run --env-file <path>` loads an environment file from an arbitrary path instead (no upward search), and `klaus run --var <key=value>` adds or overrides individual variables on top — see [CLI Reference](cli.md#klaus-run)
 - Environment files are a flat map of `key: string value`. Values can use templates (such as <code v-pre>{{env.X}}</code>)
-- Setting the reserved key `$protected: true` in an environment file makes `klaus run` refuse to run against that environment by default (exit 3). It only runs when `--allow-protected` is explicitly passed. This is a guardrail against accidentally running against a production-like environment; `$protected` cannot be referenced as a template variable (<code v-pre>{{...}}</code>). Execution via `klaus ui` / the server API never passes this flag, so protected environments are always refused there
-- `$protected` can only be set or unset by editing the file directly. It is not shown in the `klaus ui` environment editor, and saving from the UI leaves any existing `$protected` value untouched
+- Setting the reserved key `$protected: true` in an environment file makes `klaus run` refuse to run against that environment by default (exit 3). It only runs when `--allow-protected` is explicitly passed. This is a guardrail against accidentally running against a production-like environment; `$protected` cannot be referenced as a template variable (<code v-pre>{{...}}</code>). Execution via `klaus ui` / the server API never passes this flag, so flows are always refused there
+- `$protected: readonly` is a milder mode: without `--allow-protected`, `GET` / `HEAD` / `OPTIONS` steps run, and every other method (and WebSocket) is refused with exit 3. GraphQL steps default to `POST`, so they are refused. See [CLI Reference](cli.md#protected-environments-protected)
+- `$protected` can only be set or unset by editing the file directly. It is not shown in the `klaus ui` environment editor, and saving to a protected environment (`true` or `readonly`) from the UI is refused with 403, so edit the file directly
 
 ## tags
 
@@ -33,6 +34,29 @@ steps: [ ... ]
 - Used exclusively for flow selection via `klaus run --tags <list>` / `--exclude-tags <list>` (see [CLI Reference](cli.md#tag-based-flow-selection-tags-exclude-tags)); tags themselves have no other effect on execution
 - Not exposed in `klaus ui` or the server API
 
+## http (HTTP client settings)
+
+```yaml
+name: login flow
+http:
+  followRedirects: true   # Optional: follow 3xx one hop at a time (default false)
+  maxRedirects: 5         # Optional: default 10
+  cookies: true           # Optional: keep Set-Cookie in memory for this run (default false)
+steps: [ ... ]
+```
+
+- `auth` is the flow-wide default [authentication helper](#auth-authentication-helpers); a step's own `request.auth` takes precedence.
+- `maxResponseBytes` caps how many bytes of a response body (or SSE stream) are read into memory (default 104857600, 100 MiB). A larger response ends the step as `error` with a clear message instead of exhausting memory.
+- A `Host` header that differs from the request URL's host and port is refused (a guard refusal, recorded in history) whenever `guard.allowedHosts` is set or `http.proxy` is configured, because it could reach a virtual host outside the allowlist; without either, it is sent as written. The `Host` value must also be a plain host name, IPv4 address, or bracketed IPv6 address with an optional port (a value containing `#`, `/`, `?`, `@`, `%`, `\`, whitespace, or control characters is refused under the same conditions, even if the rest matches the URL). While a proxy is configured, the hop-by-hop headers `Connection`, `Keep-Alive`, `TE`, `Trailer`, `Upgrade`, and `Transfer-Encoding` are refused too, and `Proxy-Authorization` is silently removed (the proxy's credentials come only from the config file).
+- A redirect `Location` that contains credentials (`https://user:pass@host/`) is not followed, and fragments are dropped before the URL is recorded or requested.
+- One HTTP client is created per run of the flow and shared by all steps (HTTP, SSE, and WebSocket). It is closed when the run ends; cookies are never persisted.
+- Each key overrides the same key in the `http` section of `klaus.config.yaml` ([HTTP client](config.md#http-client-http)). With nothing set, redirects are not followed and no cookies are kept.
+- Every redirect hop is checked against `guard.allowedHosts` and `$protected` like a normal request; a refused hop makes the step `error` (exit code 3) and is recorded in history. The visited URLs appear as `redirects` in the step result, history, and the `run` JSON output.
+- Moving to another origin (scheme, host, or port differs, including an https to http downgrade on the same host) forwards **only** the content-negotiation headers you set (`Accept`, `Accept-Language`, `Accept-Encoding`, `User-Agent`, plus `Content-Type` and `Content-Language` when the body is kept, i.e. `307` / `308`) and drops every other header you supplied, whatever its value or name. This includes `Authorization`, `Cookie`, `Proxy-Authorization`, API keys such as `X-Api-Key`, and session tokens captured from an earlier response and sent in a custom header (captured values are not registered secrets, so a value-based rule would miss them). There is no flow-level opt-out. Same-origin hops keep all headers. The dropped header names (names only, per hop) are recorded as `droppedHeaders` in the step result and history.
+- Captures and assertions see the real `Set-Cookie` value (for example `capture: { raw: { header: set-cookie } }` or a header assertion with `regex: "^sid="`). Outputs, history, reports, cassettes, and snapshots show `***` instead: the value part of every pair in a `Cookie` request header and in a `Set-Cookie` response header is masked by position (attributes such as `Path` stay visible), and the `message` and `actual` of a failed assertion on the `cookie` / `set-cookie` header are masked the same way. In addition, a cookie value of 16 or more characters (every value of a `Set-Cookie` response header, whether or not `http.cookies` is on, or extracted with `capture: { x: { cookie: name } }`) is registered as a secret, so it is masked wherever it appears, for example when a server echoes it in a response body, or when a `capture: { x: { header: set-cookie } }` variable is interpolated into a query, a header, or a body (the variable itself stays raw for use in requests). A shorter value is masked only inside `Cookie` / `Set-Cookie` headers, so values such as `json` or `true` cannot corrupt unrelated output; if a server echoes a short session value in a response body, it is not masked. Cookies are re-derived from the jar for every hop and for WebSocket handshakes. A `Secure` cookie is never sent over `http://`.
+- Cookies are never shared across subdomains or ports: every cookie is stored for the exact host **and port** that set it, even when `Domain` names a parent (there is no public suffix list, so this is the safe fallback; RFC 6265 does not separate ports, but unrelated local services on different ports of one host must not see each other's cookies). The scheme is not part of the scope (`http` and `https` on the same port share it; `Secure` is judged separately). A flow that logs in on one subdomain or port and then calls another must pass the session explicitly, for example by capturing it from the login response and sending it in a header.
+- `proxy` and `tls` are **not accepted in a flow** (validation error, exit code 2). They decide where traffic goes and whom it trusts, so they can only be set in `klaus.config.yaml`.
+
 ## request (HTTP step)
 
 ```yaml
@@ -45,10 +69,91 @@ request:
     page: "1"                   #   Merged into the url's query string. If url already has the same key, query wins
   body:                         # Optional. object → sent as JSON (application/json is auto-set if Content-Type is unspecified)
     email: "{{testEmail}}"      #        string → sent as-is
+  # form / multipart / bodyFile: alternatives to body (see below)
   timeoutMs: 30000              # Optional. Defaults to 30000. Exceeding it is a RuntimeError (exit 3)
 ```
 
-If the Content-Type is JSON, the response is automatically parsed and becomes the target of JSONPath assertions / captures. Otherwise it's kept as text and becomes the target of `bodyText` assertions. Redirect and TLS behavior follow undici's defaults (klaus does not control these).
+If the Content-Type is JSON, the response is automatically parsed and becomes the target of JSONPath assertions / captures. Otherwise it's kept as text and becomes the target of `bodyText` assertions. Redirects are not followed unless `http.followRedirects` is set (see [http](#http-http-client-settings)).
+
+**Depth limit:** a JSON response nested deeper than 200 levels is not parsed. It is kept as text (a string `body`; the recorded `response` carries `bodyTooDeep: true`), because masking and result shaping walk the structure recursively. JSONPath captures, `body` path assertions, and `bodySchema` on such a response fail with the message `response body is nested deeper than 200 levels and is kept as text; JSONPath and schema checks cannot be applied` (a capture failure makes the step `error`). Checks on the whole text (`bodyText` assertions, `regex` captures) still work. The same limit applies to a `--body` of `klaus req`, a `klaus_request` body, and the JSON in an SSE event or WebSocket message used with a `path`.
+
+The query string already written in `url` is kept byte for byte (it is not re-parsed or re-encoded, so a value containing `&`, `+`, `=`, or `/` reaches the server as written). Only the `query` entries are added, form-urlencoded; an entry whose key already appears in `url` replaces the first occurrence and drops later ones.
+
+### form, multipart, and bodyFile
+
+```yaml
+request:
+  method: POST
+  url: "{{baseUrl}}/login"
+  form:                          # application/x-www-form-urlencoded
+    username: "{{user}}"
+    password: "{{env.PASSWORD}}"
+```
+
+```yaml
+request:
+  method: POST
+  url: "{{baseUrl}}/upload"
+  multipart:                     # multipart/form-data
+    title: "Quarterly report"    #   a string is a text field
+    attachment:                  #   an object with `file` uploads a file
+      file: reports/q3.pdf       #     relative to the cwd (required)
+      filename: q3.pdf           #     optional, defaults to the file's base name
+      contentType: application/pdf   # optional
+```
+
+```yaml
+request:
+  method: PUT
+  url: "{{baseUrl}}/blobs/1"
+  headers: { Content-Type: application/octet-stream }
+  bodyFile: blobs/one.bin        # the file's bytes are sent as the body
+```
+
+- `body`, `graphql`, `form`, `multipart`, and `bodyFile` are mutually exclusive (validation error otherwise). Values and file paths support templates.
+- `form` adds `Content-Type: application/x-www-form-urlencoded` unless you set one. `multipart` always sets `Content-Type: multipart/form-data` with its boundary; a `Content-Type` header you set on a multipart request is ignored. `bodyFile` adds no `Content-Type`; set one in `headers` if the API needs it.
+- Files must be inside the current directory (symbolic links are resolved first), the same rule as `step.use` and `klaus req --body @file`, so a flow cannot send arbitrary files from elsewhere on the machine. A path outside the cwd is refused like a guard refusal: the step ends as `error` (exit code 3), nothing is sent, and the refusal is recorded in history. A missing file or a directory is also an `error`. The files are read right before sending.
+- History, `--json` output, and `--dry-run` record only the file name and size for file parts and `bodyFile` (for example `{ "bodyFile": "blobs/one.bin", "size": 5 }`), never the content. Secrets inside `form` values and multipart text fields are masked, including their form-encoded forms.
+- With `http.followRedirects`, `307` / `308` re-send the body (including the file) and `301` / `302` on `POST` and `303` become a body-less `GET`.
+
+## auth (authentication helpers)
+
+```yaml
+http:
+  auth:                                  # Optional: default for every HTTP / SSE step in the flow
+    bearer: { token: "{{env.API_TOKEN}}" }
+steps:
+  - name: admin call
+    request:
+      method: GET
+      url: "{{baseUrl}}/admin"
+      auth:                              # Optional: overrides http.auth for this step
+        basic: { username: admin, password: "{{env.ADMIN_PASSWORD}}" }
+  - name: public call
+    request:
+      method: GET
+      url: "{{baseUrl}}/public"
+      auth: none                         # Disables an inherited http.auth for this step
+  - name: machine to machine
+    request:
+      method: GET
+      url: "{{baseUrl}}/reports"
+      auth:
+        oauth2:
+          grant: client_credentials      # The only supported grant
+          tokenUrl: "{{authUrl}}/oauth/token"
+          clientId: "{{clientId}}"
+          clientSecret: "{{env.CLIENT_SECRET}}"
+          scope: "reports:read"          # Optional
+          audience: "https://api.example.com"   # Optional
+```
+
+- Exactly one of `basic`, `bearer`, `oauth2` (or the string `none`). All values support templates. The helper sets the `Authorization` header; a step that also sets its own `Authorization` header is an error.
+- `basic` sends `Authorization: Basic <base64(username:password)>`, `bearer` sends `Authorization: Bearer <token>`.
+- `oauth2` fetches an access token with `POST` to `tokenUrl` (`application/x-www-form-urlencoded`, with `grant_type`, `client_id`, `client_secret`, and the optional `scope` / `audience` in the body) and sends it as `Authorization: Bearer <token>` (or the `token_type` the server returns). The token is cached for the run and fetched again when its `expires_in` has passed (5 seconds early); without `expires_in` it is kept for the whole run. The token request is not a step and is not recorded in history, but it goes through the same checks as any request: it must satisfy `guard.allowedHosts`, so the token endpoint's host has to be allowed too, and under `$protected: readonly` it is refused because it is a `POST` (use `--allow-protected` to run such a flow). It never follows redirects, and works with `--record` / `--replay`. A failed token request ends the step as `error` without echoing the secret.
+- Passwords, tokens, client secrets, fetched access tokens, and the base64 form of `username:password` are secrets: they are masked in history, stdout, JSON, reports, and error messages (a secret shorter than 4 characters is not recognized).
+- `auth` applies to HTTP and SSE steps; WebSocket steps set their own `headers`.
+- The `Authorization` header is dropped when a redirect moves to another origin (see [http](#http-http-client-settings)). `klaus run --dry-run` shows the header with secrets masked and never fetches a token (an OAuth2 step shows a placeholder).
 
 ## GraphQL
 
@@ -181,11 +286,21 @@ capture:
   token: "$.token"            # variable name: JSONPath
   userId: "$.data.user.id"    # nested field
   firstId: "$.items[0].id"    # array index
+  requestId: { header: X-Request-Id }          # response header (name is case-insensitive)
+  session: { cookie: sid }                     # cookie from the run's cookie jar (needs http.cookies: true)
+  orderNo: { regex: "order=(\\w+)", group: 1 }  # regex over the response body text
+  code: { status: true }                       # HTTP status code (a number)
 ```
 
 - Applies a JSONPath to the JSON response, making the result available as a template variable in subsequent steps (the classic case being login → token → Authorization header)
 - **If it doesn't match, or the response isn't JSON, this is a RuntimeError** and the step becomes error (exit 3). A silent chain like `Bearer undefined` cannot happen. A capture whose value is `null` is treated as a success
-- **Captured values are not masked.** Secret masking covers only values resolved via <code v-pre>{{env.X}}</code>, so a token captured here is written as-is to the history JSONL, the JUnit report, and record cassettes. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) for the masking boundaries
+- **Captured values are not masked.** Secret masking covers only values resolved via <code v-pre>{{env.X}}</code>, so a token captured here is written as-is to the history JSONL, the JUnit report, and record cassettes. The one exception is cookies: a cookie value of 16 or more characters taken from `Set-Cookie` (or by `capture: { x: { cookie: name } }`) is registered as a secret and masked wherever it is displayed, and `Cookie` / `Set-Cookie` header values are always masked by position. See [SECURITY.md](https://github.com/almondoo/klaus/blob/main/SECURITY.md) for the masking boundaries
+- Object forms (exactly one key each; mixing keys is a ParseError):
+  - `{header: name}`: the response header value. Not found is a RuntimeError
+  - `{cookie: name}`: the cookie's current value in the run's cookie jar, looked up for the final URL (cookies set by a redirect hop are included). Requires `http.cookies: true`; with no jar, or no such cookie, it is a RuntimeError
+  - `{regex, group?}`: applied to the response body text (works on non-JSON bodies too). `group` defaults to 1 when the pattern has capture groups, otherwise 0 (the whole match). No match, or a group that did not participate, is a RuntimeError. The pattern is used as written (capture definitions are not template-rendered), so it cannot be steered by another capture
+  - `{status: true}`: the status code as a number
+- Error messages never include the captured value or the response body
 - Ignored on SSE / WS steps
 
 ## assert (assertions)
@@ -194,12 +309,15 @@ All fields are optional. If multiple are given, all are evaluated; if even one f
 
 ```yaml
 assert:
-  status: 200
+  status: 200                 # also: [200, 201] (any of) or "2xx" (a status class)
   headers:
     - { name: content-type, contains: json }
+    - { name: content-length, lte: 100000 }
   body:
-    - { path: "$.token", exists: true }
+    - { path: "$.token", exists: true, type: string, length: { min: 20 } }
     - { path: "$.email", equals: "{{testEmail}}" }
+    - { path: "$.total", gte: 0 }
+    - { path: "$.state", oneOf: [pending, paid] }
   bodyText:
     contains: "ok"
   bodySchema:
@@ -210,6 +328,8 @@ assert:
       email: { type: string, format: email }
   duration:
     maxMs: 1000
+  snapshot:                   # compare with a stored baseline (see "snapshot" below)
+    ignore: ["$.id"]
   # For SSE
   eventCount: { min: 1, max: 10 }
   events:
@@ -224,18 +344,28 @@ assert:
 
 | Target | Field | Matcher |
 |---|---|---|
-| Status | `status` | exact numeric match |
-| Headers | `headers[]` | `name` + `equals` / `contains` / `regex` / `exists` |
-| Body (JSONPath) | `body[]` | `path` + `exists` / `equals` / `contains` / `regex` |
+| Status | `status` | a number (exact), an array of numbers (any of), or `"2xx"` (class `1xx`-`5xx`) |
+| Headers | `headers[]` | `name` + `equals` / `contains` / `regex` / `exists` + the comparison matchers below |
+| Body (JSONPath) | `body[]` | `path` + `exists` / `equals` / `contains` / `regex` + the comparison matchers below |
 | Body (raw text) | `bodyText` | `equals` / `contains` / `regex` |
 | Body (JSON Schema) | `bodySchema` | a JSON Schema object |
 | Duration | `duration` | `maxMs` |
+| Baseline (HTTP only) | `snapshot` | `true`, or `ignore` / `include` / `headers` / `name` (see [snapshot](#snapshot-baseline-comparison)) |
 | SSE event count | `eventCount` | `min` / `max` / `equals` |
 | SSE event | `events[]` | `index?` + `path?` + the matchers above |
 | WS message count | `messageCount` | `min` / `max` / `equals` |
 | WS message | `messages[]` | `index?` + `path?` + the matchers above |
 
-Common semantics for `events` / `messages`:
+Comparison matchers (`headers[]` and `body[]` only; each produces its own result and fails when the value does not exist):
+
+| Matcher | Passes when |
+|---|---|
+| `gt` / `gte` / `lt` / `lte` | the value is a number satisfying the comparison. In `body[]` a numeric string such as `"7"` does **not** count as a number; header values are always strings, so a numeric string is compared as a number there (a non-numeric header fails) |
+| `length` | a string or array has exactly this length (number), or a length within `{min, max}` (inclusive, either bound optional). Objects and other types fail |
+| `type` | the JSON type is `string` / `number` / `integer` / `boolean` / `null` / `array` / `object` (`number` also accepts integers) |
+| `oneOf` | the value structurally equals any element of the array (objects and arrays included) |
+
+Common semantics for `events` / `messages` (they accept `exists` / `equals` / `contains` / `regex` only):
 
 - When `index` is given: evaluated against the received data at that index
 - When `index` is omitted: **passes if any received data item matches**
@@ -248,6 +378,32 @@ Common semantics for `events` / `messages`:
 - When the schema has multiple violations, **a separate `AssertionResult` is returned for each violation** (evaluation is not short-circuited on the first failure; all violations are reported together). Each result's `message` includes ajv's `instancePath` (`(root)` for a root-level violation) and the violation detail
 - SSE / WS steps, which have no body, always yield ok:false. An HTTP response whose body exists but fails to parse as JSON is validated against the schema as the raw string (e.g. a schema requiring `type: object` fails, while `type: string` may pass)
 - If the schema itself is invalid and ajv fails to compile it, this does not throw; it's reported as an ok:false assertion failure instead
+
+### snapshot (baseline comparison)
+
+`snapshot` compares the response with a stored baseline, so a changed API fails the step without writing per-field assertions ("API visual regression"). A changed response shows a structural diff; accepting it is an explicit act.
+
+```yaml
+assert:
+  status: 200
+  snapshot:
+    ignore: ["$.id", "$.items[*].createdAt"]   # volatile values, same grammar as `klaus diff --ignore-path`
+    include: [status, headers, body]            # default: [status, body]
+    headers: [content-type, etag]               # headers to keep when include has "headers" (default: content-type)
+    name: v2                                    # optional label added to the key
+```
+
+`snapshot: true` uses the defaults (status and body). Every key is optional.
+
+- **Where baselines live**: `__snapshots__/<flow file name>.snap.json` next to the flow file (`flows/login.yaml` uses `flows/__snapshots__/login.yaml.snap.json`). The file is pretty-printed, key-sorted JSON that maps a snapshot key to `{ status?, headers?, body }`, so it diffs well in git. JSON bodies are stored as JSON values, other bodies as strings. The key is the step name, plus ` #<n>` for the n-th `--data` iteration, plus ` :: <name>` when `name` is set (for example `login`, `login #2`, `login #2 :: v2`). So that two steps can never share a key, a step with `snapshot` cannot have a name that contains ` :: ` or ends with ` #<number>` (a definition error, exit 2, also reported by `klaus validate`).
+- **Secrets**: the baseline is written from the masked response (the same masking as history: values resolved through <code v-pre>{{env.X}}</code> become `***`), and the comparison is masked against masked. A declared secret never lands in a file meant to be committed. `--no-mask` only affects the stdout output and does not change snapshots. Values that are not declared secrets (names, emails, ids in the body) are stored as they are: put volatile or sensitive fields in `ignore` and review the file before committing it. In particular, a short session value (under 16 characters) echoed in a response body is not masked, so review baselines before committing them. `Set-Cookie` / `Cookie` header values stored through `headers` are always `***`.
+- **`ignore`**: matching values are replaced by the placeholder `"[ignored]"` in the stored baseline and are not compared, so timestamps and generated ids do not churn the baseline. The patterns apply to the body (`$.items[*].id`, `$..updatedAt`); at most two `..` per pattern.
+- **`include` / `headers`**: `headers` stores only the named response headers (case-insensitive, lower-cased in the file) and requires `"headers"` in `include`. Volatile headers such as `Date` should stay out.
+- **Comparison**: structural. Object key order does not matter, array order does. A difference fails the step (exit 4) with the paths and the before/after values, at most 20 per step.
+- **Missing baseline, `--update-snapshots`, `--ci`, obsolete entries**: see [Snapshots](cli.md#snapshots-update-snapshots-ci). In short, a missing baseline is written on a local run but fails in CI, `klaus run -u` rewrites changed baselines, and `klaus snapshot accept <runId>` accepts the mismatches of a recorded run.
+- **Scope**: HTTP steps only. A step with `snapshot` that is an SSE or WebSocket step fails with a message saying so (it is never silently ignored). `--dry-run` never reads or writes snapshots. With `--replay` the replayed response is compared, but a baseline is never written.
+- **Safety**: snapshot files are only read or written under a `__snapshots__` directory that resolves inside the current directory, never through a symbolic link (the `__snapshots__` directory and the baseline file must not be links, even when they point inside the directory; a baseline must be a regular file; a `__snapshots__` below a hidden directory such as `.git/` is refused; a violation makes the step `error`, exit 3). A flow file outside the current directory cannot use snapshots. Writing a new baseline while running against a `$protected` environment needs `--update-snapshots`, because production data would otherwise end up in a committed file.
+- **Merging with `use`**: `snapshot` is a single-value field; defining it on both the referenced step and the caller is a conflict, like `status`.
 
 ### `regex` patterns are template-rendered
 

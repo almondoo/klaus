@@ -1,5 +1,11 @@
-import type { HistoryEntry } from "../core/index.js";
-import { getHistoryPage, readAllHistoryEntries, resolveHistoryEntryStatus } from "../core/index.js";
+import { InvalidArgumentError } from "commander";
+import type { HistoryEntry, HistoryEntryStatus } from "../core/index.js";
+import {
+  getHistoryPage,
+  HISTORY_ENTRY_STATUSES,
+  readAllHistoryEntries,
+  resolveHistoryEntryStatus,
+} from "../core/index.js";
 import { sanitizeForTerminal } from "./reporters/sanitize.js";
 import { isJsonOutputMode } from "./reporters/text.js";
 
@@ -16,6 +22,8 @@ export const DEFAULT_HISTORY_FIELDS = "startedAt,runId,flow,step,status,duration
 export interface HistoryListOptions {
   flow?: string;
   failed?: boolean;
+  /** --status のカンマ区切りをパース済みの配列(parseHistoryStatuses の返り値) */
+  status?: HistoryEntryStatus[];
   last: number;
   fields: string;
   json?: boolean;
@@ -26,6 +34,32 @@ export interface HistoryShowOptions {
   step?: string;
 }
 
+/**
+ * --status のカンマ区切り値をパースして検証する(commander の引数パーサとして使う)。
+ * 空要素は無視し、重複は除く。未知の値・空の指定は InvalidArgumentError(commander が整形して exit 1)。
+ */
+export function parseHistoryStatuses(value: string): HistoryEntryStatus[] {
+  const names = value
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+  const valid = HISTORY_ENTRY_STATUSES.join(", ");
+  if (names.length === 0) {
+    throw new InvalidArgumentError(`invalid --status value: ${value} (valid: ${valid})`);
+  }
+  const statuses: HistoryEntryStatus[] = [];
+  for (const name of names) {
+    if (!(HISTORY_ENTRY_STATUSES as readonly string[]).includes(name)) {
+      // 値は端末へ出るためサニタイズする(エスケープシーケンスの混入対策)
+      throw new InvalidArgumentError(
+        `invalid --status value: ${sanitizeForTerminal(name)} (valid: ${valid})`,
+      );
+    }
+    if (!statuses.includes(name as HistoryEntryStatus)) statuses.push(name as HistoryEntryStatus);
+  }
+  return statuses;
+}
+
 /** カンマ区切りの --fields 文字列を空白除去したフィールド名配列にする(空文字は除外) */
 function parseFields(csv: string): string[] {
   const fields = csv
@@ -33,6 +67,25 @@ function parseFields(csv: string): string[] {
     .map((field) => field.trim())
     .filter((field) => field.length > 0);
   return fields.length > 0 ? fields : parseFields(DEFAULT_HISTORY_FIELDS);
+}
+
+/**
+ * assertions[].snapshot.candidate(応答のマスク済みコピー全体)を取り除いたエントリを返す。
+ * 一覧や run 全体の表示では大きすぎるため省く。candidate を持たなければ元のエントリをそのまま返す。
+ * 元のエントリは変異させない。
+ */
+function omitSnapshotCandidates(entry: HistoryEntry): HistoryEntry {
+  if (!entry.assertions?.some((assertion) => assertion.snapshot?.candidate !== undefined)) {
+    return entry;
+  }
+  return {
+    ...entry,
+    assertions: entry.assertions.map((assertion) => {
+      if (assertion.snapshot?.candidate === undefined) return assertion;
+      const { candidate: _candidate, ...snapshot } = assertion.snapshot;
+      return { ...assertion, snapshot };
+    }),
+  };
 }
 
 /**
@@ -83,7 +136,7 @@ function renderTable(fields: string[], rows: Record<string, unknown>[]): string 
 
 /**
  * klaus history(一覧)本体。
- * flow / failed / last(取得件数)でフィルタし、fields で選択した列のみ出力する。
+ * flow / failed / status / last(取得件数)でフィルタし、fields で選択した列のみ出力する。
  * 出力モードは run コマンドと同じ TTY 判定規約: --json または非 TTY なら JSON(compact)、
  * TTY なら簡潔なテキスト表。
  */
@@ -98,8 +151,10 @@ export async function historyListCommand(
     flow: options.flow,
     limit: options.last,
     failed: options.failed || undefined,
+    statuses: options.status,
   });
-  const rows = page.entries.map((entry) => pickFields(entry, fields));
+  // 一覧では --fields assertions を選んでも snapshot の candidate は出さない(全文は history show --step で見る)
+  const rows = page.entries.map((entry) => pickFields(omitSnapshotCandidates(entry), fields));
 
   if (useJson) {
     process.stdout.write(`${JSON.stringify(rows)}\n`);
@@ -113,7 +168,8 @@ export async function historyListCommand(
 /**
  * klaus history show 本体。
  * 指定 runId(必要なら step でも)に一致する履歴エントリを、保存されたまま(マスク済)の形で
- * 実行順(startedAt 昇順)に JSON(compact)出力する。TTY 判定はせず常に JSON を出す
+ * 実行順(startedAt 昇順)に JSON(compact)出力する。ただしスナップショットの candidate(応答の全文コピー)は
+ * --step で 1 ステップに絞ったときだけ含め、run 全体を出すときは省く。TTY 判定はせず常に JSON を出す
  * (単一 run のフル詳細を参照する用途で、エージェント・人間どちらでも同じ形式で扱えるようにするため)。
  * 該当エントリが無い場合は stderr にメッセージを出して 1 を返す。
  */
@@ -134,6 +190,7 @@ export async function historyShowCommand(
     return 1;
   }
 
-  process.stdout.write(`${JSON.stringify(entries)}\n`);
+  const output = options.step ? entries : entries.map(omitSnapshotCandidates);
+  process.stdout.write(`${JSON.stringify(output)}\n`);
   return 0;
 }

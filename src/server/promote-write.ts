@@ -1,0 +1,373 @@
+/**
+ * POST /api/history/promote の出力先の検証と、新規ファイルの安全な書き込み。
+ * 書き込み規則は src/cli/promote.ts(klaus promote)と同じ(cwd 内に限定・シンボリックリンクの拒否・
+ * O_NOFOLLOW で開く)だが、UI には --force が無いので上書きは一切せず(O_EXCL)、既存ファイルは 409 にする。
+ * CLI 側のコードは別担当のため共有化せず、同じ core のヘルパーを使ってここに重複実装している。
+ */
+import { constants } from "node:fs";
+import { lstat, mkdir, open, realpath } from "node:fs/promises";
+import { basename, dirname, extname, resolve } from "node:path";
+import { discoverFlowCandidates, EXCLUDED_DISCOVERY_DIRS } from "../core/discovery.js";
+import {
+  expandSecretVariants,
+  findUnsafeSymlinkInWritePath,
+  isPathWithinDir,
+  isRealPathWithinDir,
+  maskDeep,
+  type PromoteAssertMode,
+  promoteRuns,
+  readAllHistoryEntries,
+  renderPromotedYaml,
+  selectRunEntries,
+  toDisplayPath,
+  validateFlowYaml,
+} from "../core/index.js";
+import type { PromoteResponse } from "./types.js";
+import { hasControlCharacter } from "./validation.js";
+
+const MAX_OUT_LENGTH = 256;
+const YAML_EXTENSIONS = new Set([".yaml", ".yml"]);
+/** 設定ファイルと同名のフローを作ると設定の読み込みが壊れるため、出力先にできないファイル名(比較は foldName 後) */
+const RESERVED_FILE_NAMES = new Set(["klaus.config.yaml", "klaus.config.yml"]);
+/** 既定の保存先ディレクトリ(配下のサブディレクトリも可)。フローがまだ無いプロジェクトでも保存できるようにする */
+const DEFAULT_OUTPUT_DIRS = ["api", "flows"];
+
+/** パス要素の比較用の正規化: Unicode NFC にして小文字化する(大文字小文字・合成形の違いを同一視する FS への対策) */
+function foldName(name: string): string {
+  return name.normalize("NFC").toLowerCase();
+}
+
+/** フロー探索の対象外ディレクトリ(foldName 済み) */
+const EXCLUDED_DIRS_FOLDED = new Set([...EXCLUDED_DISCOVERY_DIRS].map(foldName));
+
+/** 隠しディレクトリ・フロー探索の対象外ディレクトリに当たる要素があるか(要素は foldName で比較する) */
+function hasForbiddenSegment(segments: readonly string[], includeLast: boolean): boolean {
+  const checked = includeLast ? segments : segments.slice(0, -1);
+  return (
+    segments.some((segment) => segment.startsWith(".")) ||
+    checked.some((segment) => EXCLUDED_DIRS_FOLDED.has(foldName(segment)))
+  );
+}
+
+export type OutputPathResult =
+  | { ok: true; target: string; file: string }
+  | { ok: false; status: 403; message: string };
+
+/**
+ * 実在する最も深い祖先ディレクトリの実パスを、cwd の実パスからの相対要素にして返す(cwd 外なら undefined)。
+ * 大文字小文字を区別しないファイルシステムで、`Node_Modules` のように別表記で指した既存ディレクトリの
+ * 実際の名前(node_modules)を取り出して再検査するために使う。
+ */
+async function realAncestorSegments(cwd: string, target: string): Promise<string[] | undefined> {
+  let dir = dirname(target);
+  for (;;) {
+    try {
+      const real = await realpath(dir);
+      const realCwd = await realpath(cwd);
+      if (!isPathWithinDir(realCwd, real)) return undefined;
+      return toDisplayPath(realCwd, real)
+        .split("/")
+        .filter((segment) => segment !== "");
+    } catch {
+      const parent = dirname(dir);
+      if (parent === dir) return undefined;
+      dir = parent;
+    }
+  }
+}
+
+/**
+ * 出力先(cwd 相対)を検証し、絶対パスと表示用パスを返す。拒否はすべて 403(path / name rules)。
+ * 拒否リストではなく許可リストを土台にする: UI で作るフローは、作成後に一覧(GET /api/flows)へ出る場所にだけ置ける。
+ * - cwd の外(絶対パス・.. ・リンク経由)は不可。バックスラッシュを含むパスは(POSIX では別の意味のない文字だが
+ *   Windows 由来の区切りと紛らわしいため)一律に拒否する
+ * - 拡張子は .yaml / .yml のみ。設定ファイル名(klaus.config.yaml / .yml)は不可
+ * - 置き場所は、既に探索されたフローを含むディレクトリ(ちょうどそのディレクトリ)か、api/ / flows/ とその配下に限る。
+ *   environments/ のようなフロー探索の対象外ディレクトリは、許可リストに入らないため構造上作れない
+ * - 多層防御として、隠し要素(. で始まる)と探索対象外ディレクトリ名は、大文字小文字・Unicode 正規化を揃えて
+ *   (foldName)拒否し、実在する最も深い祖先の実パスの要素にも同じ検査をする
+ * - 途中・最終要素のシンボリックリンクの扱いは findUnsafeSymlinkInWritePath に従う
+ */
+export async function resolvePromoteOutput(
+  cwd: string,
+  requested: string,
+): Promise<OutputPathResult> {
+  const forbidden = (message: string): OutputPathResult => ({
+    ok: false,
+    status: 403,
+    message: `Forbidden: ${message}`,
+  });
+  if (
+    requested.length === 0 ||
+    requested.length > MAX_OUT_LENGTH ||
+    hasControlCharacter(requested)
+  ) {
+    return forbidden("invalid output path");
+  }
+  if (requested.includes("\\")) return forbidden("backslashes are not allowed in the output path");
+  const resolvedCwd = resolve(cwd);
+  const target = resolve(resolvedCwd, requested);
+  if (
+    target === resolvedCwd ||
+    !isPathWithinDir(resolvedCwd, target) ||
+    !isRealPathWithinDir(resolvedCwd, target)
+  ) {
+    return forbidden("path traversal detected");
+  }
+  const file = toDisplayPath(resolvedCwd, target);
+  // フロー探索(discovery.ts)は大文字小文字を区別して .yaml / .yml だけを拾うため、ここも同じ規則にする
+  // (大文字の拡張子で書いたファイルは、書けても探索されず klaus run の対象に見えなくなる)
+  if (!YAML_EXTENSIONS.has(extname(target))) {
+    return forbidden(`output file must end with .yaml or .yml: "${file}"`);
+  }
+  const segments = file.split("/");
+  if (RESERVED_FILE_NAMES.has(foldName(basename(target)))) {
+    return forbidden(`"${file}" is reserved for the klaus configuration`);
+  }
+  const skipped = (): OutputPathResult =>
+    forbidden(
+      `output path "${file}" is in a directory that flow discovery skips or a hidden path; choose another location`,
+    );
+  if (hasForbiddenSegment(segments, false)) return skipped();
+  const realSegments = await realAncestorSegments(resolvedCwd, target);
+  if (realSegments === undefined) return forbidden("path traversal detected");
+  if (hasForbiddenSegment([...realSegments, "x"], false)) return skipped();
+
+  // 許可リスト: 探索済みのフローを含むディレクトリ(ちょうどその場所)と、api/ / flows/ 配下
+  const directory = segments.slice(0, -1).map((segment) => segment.normalize("NFC"));
+  const existing = new Set<string>();
+  for (const flowPath of await discoverFlowCandidates(resolvedCwd)) {
+    existing.add(
+      toDisplayPath(resolvedCwd, dirname(flowPath))
+        .split("/")
+        .filter((segment) => segment !== "")
+        .map((segment) => segment.normalize("NFC"))
+        .join("/"),
+    );
+  }
+  const underDefault = directory.length > 0 && DEFAULT_OUTPUT_DIRS.includes(directory[0] as string);
+  if (!underDefault && !existing.has(directory.join("/"))) {
+    return forbidden(
+      `"${file}" is not in a location where flows are kept; use api/, flows/, or a directory that already contains flow files`,
+    );
+  }
+  const unsafe = findUnsafeSymlinkInWritePath(resolvedCwd, target);
+  if (unsafe) return forbidden(`refusing to write the output file: ${unsafe}`);
+  return { ok: true, target, file };
+}
+
+/** 出力先に既に何か(ファイル・ディレクトリ・リンク)があるか */
+export async function outputExists(target: string): Promise<boolean> {
+  try {
+    await lstat(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isErrno(error: unknown, code: string): boolean {
+  return (
+    typeof error === "object" && error !== null && (error as NodeJS.ErrnoException).code === code
+  );
+}
+
+export type WriteResult = { ok: true } | { ok: false; status: 403 | 409; message: string };
+
+/**
+ * 新規ファイルとして書き込む。既存のものがあれば 409(上書きしない)。
+ * 親ディレクトリは作成するが、作成後に実体が cwd 内であることを再確認する(検査と作成の間の差し替えを狭める)。
+ */
+export async function writeNewFile(
+  cwd: string,
+  target: string,
+  file: string,
+  content: string,
+): Promise<WriteResult> {
+  const resolvedCwd = resolve(cwd);
+  try {
+    await mkdir(dirname(target), { recursive: true });
+    const realParent = await realpath(dirname(target));
+    const realCwd = await realpath(resolvedCwd);
+    if (!isPathWithinDir(realCwd, realParent)) {
+      return { ok: false, status: 403, message: "Forbidden: path traversal detected" };
+    }
+    // O_EXCL: 既存(ファイル・ディレクトリ・リンク)は開かずに失敗する。O_NOFOLLOW: 最終要素がリンクなら辿らない
+    const handle = await open(
+      target,
+      constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | (constants.O_NOFOLLOW ?? 0),
+      0o644,
+    );
+    try {
+      await handle.writeFile(content, "utf-8");
+    } finally {
+      await handle.close();
+    }
+    return { ok: true };
+  } catch (error) {
+    if (isErrno(error, "EEXIST")) {
+      return {
+        ok: false,
+        status: 409,
+        message: `"${file}" already exists; existing files are never overwritten from the UI (choose another name or path)`,
+      };
+    }
+    if (isErrno(error, "ELOOP")) {
+      return {
+        ok: false,
+        status: 403,
+        message: `Forbidden: refusing to write the output file: "${file}" is a symbolic link`,
+      };
+    }
+    if (isErrno(error, "ENOTDIR") || isErrno(error, "ENOENT") || isErrno(error, "EISDIR")) {
+      return {
+        ok: false,
+        status: 409,
+        message: `cannot create "${file}": a parent path is not a usable directory`,
+      };
+    }
+    throw error;
+  }
+}
+
+/** promoteHistoryToFile の入力。形式(長さ・書式・runIds の件数)の検証は呼び出し側が済ませておく */
+export interface PromoteHistoryInput {
+  runIds: string[];
+  flow?: string;
+  assert: PromoteAssertMode;
+  baseUrlVar?: string;
+  chain: boolean;
+  name?: string;
+  /** 出力先(cwd 相対)。省略時は promoteRuns の suggestedPath */
+  out?: string;
+  /** true なら書かずにプレビューだけ返す */
+  dryRun: boolean;
+  /**
+   * 履歴のエントリ中でこれらの値を秘密として隠してから昇格する(隠した値は ***、生成物では TODO_* のプレースホルダーになる)。
+   * 履歴に生の値のまま残っている、保護された環境の値を生成物に載せないために klaus mcp が渡す。UI は渡さない
+   */
+  maskValues?: readonly string[];
+}
+
+/**
+ * promoteHistoryToFile の結果。kind と HTTP ステータスの対応は UI のルート(not-found 404 / usage 400 / content 422 /
+ * forbidden 403 / conflict 409)。code は content の中でも呼び出し側が区別したいもの(リテラルの "{{")だけに付く
+ */
+export type PromoteHistoryOutcome =
+  | { ok: true; payload: PromoteResponse }
+  | {
+      ok: false;
+      kind: "not-found" | "usage" | "content" | "forbidden" | "conflict";
+      message: string;
+      code?: "template-literal";
+    };
+
+/**
+ * 履歴の run から「新規の」フロー YAML を生成し、dryRun でなければ新規ファイルとして書く(Hono 非依存。
+ * POST /api/history/promote と klaus mcp の klaus_promote が共有する)。UI と同じく既存ファイルの上書き(--force)と
+ * リテラルの "{{" の許可(--allow-template-literals)の手段は無い。生成物にマスク値(***)が残る場合や、
+ * フロー定義として検証に通らない場合は書かない。出力先は resolvePromoteOutput の許可リストに従う。
+ */
+export async function promoteHistoryToFile(
+  cwd: string,
+  input: PromoteHistoryInput,
+): Promise<PromoteHistoryOutcome> {
+  const history = await readAllHistoryEntries(cwd);
+  const runs = [];
+  for (const runId of input.runIds) {
+    // 同一ミリ秒のステップの順序を履歴の行順で確定させるため、追記順で取り出す(CLI と同じ)
+    const entries = selectRunEntries(history, runId);
+    if (entries.length === 0) {
+      return {
+        ok: false,
+        kind: "not-found",
+        message: `no history entries found for runId "${runId}"`,
+      };
+    }
+    runs.push({
+      runId,
+      entries:
+        input.maskValues !== undefined && input.maskValues.length > 0
+          ? maskDeep(entries, expandSecretVariants(input.maskValues))
+          : entries,
+    });
+  }
+
+  const outcome = promoteRuns(runs, {
+    assert: input.assert,
+    baseUrlVar: input.baseUrlVar,
+    chain: input.chain,
+    name: input.name,
+    flow: input.flow,
+    // 許可手段を設けない(実行時にテンプレートとして展開され、OS 環境変数が送信先へ漏れ得るため)
+    allowTemplateLiterals: false,
+  });
+  if (!outcome.ok) {
+    if (outcome.kind === "usage") return { ok: false, kind: "usage", message: outcome.message };
+    return {
+      ok: false,
+      kind: "content",
+      message: outcome.message,
+      ...(outcome.message.includes('literal "{{"') ? { code: "template-literal" as const } : {}),
+    };
+  }
+  const { result } = outcome;
+
+  const yaml = renderPromotedYaml(result, input.runIds);
+  // マスク値が再現できないまま残る場合は、生成物が誤ったリクエストを送るため書かない
+  if (yaml.includes("***")) {
+    return {
+      ok: false,
+      kind: "content",
+      message: "the generated flow still contains a masked value (***); refusing to write it",
+    };
+  }
+  const validation = validateFlowYaml(yaml);
+  if (!validation.valid) {
+    const issues = validation.errors.map((issue) => `${issue.path || "(root)"}: ${issue.message}`);
+    return {
+      ok: false,
+      kind: "content",
+      message: `the generated flow failed validation: ${issues.join("; ")}`,
+    };
+  }
+
+  const output = await resolvePromoteOutput(cwd, input.out ?? result.suggestedPath);
+  if (!output.ok) return { ok: false, kind: "forbidden", message: output.message };
+
+  let exists: boolean | undefined;
+  if (input.dryRun) {
+    exists = await outputExists(output.target);
+  } else {
+    const written = await writeNewFile(cwd, output.target, output.file, yaml);
+    if (!written.ok) {
+      return {
+        ok: false,
+        kind: written.status === 403 ? "forbidden" : "conflict",
+        message: written.message,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    payload: {
+      dryRun: input.dryRun,
+      written: !input.dryRun,
+      file: output.file,
+      ...(exists !== undefined ? { exists } : {}),
+      yaml,
+      flow: result.flowName,
+      assert: result.assert,
+      steps: result.steps,
+      placeholders: result.placeholders,
+      variables: result.baseUrls,
+      captures: result.captures,
+      skipped: result.skipped,
+      redacted: result.redacted,
+      templateLiterals: result.templateLiterals,
+      notes: result.notes,
+      notice: result.notice,
+    },
+  };
+}

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { useCaptureToEnvironment } from "@/hooks/useCaptureToEnvironment";
 import { formatDuration } from "@/utils/format";
+import { ErrorExplanation } from "./ErrorExplanation";
 import { JsonBlock } from "./JsonBlock";
 import { Spinner } from "./Spinner";
 import { StatusBadge } from "./StatusBadge";
@@ -76,7 +77,7 @@ export function ResponseView({ loading, error, result, envName }: ResponseViewPr
         </span>
       </div>
 
-      {result.error && <p className="text-sm text-fail">{result.error}</p>}
+      {result.error && <ErrorExplanation message={result.error} source={result} />}
 
       {result.response && (
         <div>

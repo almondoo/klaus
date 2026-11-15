@@ -11,7 +11,13 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildConfigJsonSchema, buildFlowJsonSchema, buildRunReportJsonSchema } from "./schema.js";
+import {
+  buildConfigJsonSchema,
+  buildDryRunReportJsonSchema,
+  buildFlowJsonSchema,
+  buildReqReportJsonSchema,
+  buildRunReportJsonSchema,
+} from "./schema.js";
 
 // このファイルはビルド後 dist/schema-gen.js として実行されるため、
 // import.meta.url の1つ上の階層がリポジトリルートになる(dist/ の親)。
@@ -26,6 +32,8 @@ interface SchemaFile {
 const SCHEMA_FILES: readonly SchemaFile[] = [
   { filename: "flow.schema.json", build: buildFlowJsonSchema },
   { filename: "run-report.schema.json", build: buildRunReportJsonSchema },
+  { filename: "req-report.schema.json", build: buildReqReportJsonSchema },
+  { filename: "dry-run-report.schema.json", build: buildDryRunReportJsonSchema },
   { filename: "klaus-config.schema.json", build: buildConfigJsonSchema },
 ];
 

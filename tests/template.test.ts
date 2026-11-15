@@ -92,6 +92,48 @@ describe("renderString", () => {
     });
   });
 
+  describe("deferred(dry-run: 前段の capture に依存する変数)", () => {
+    it("deferred の変数は例外にせず {{name}} のまま残し、unresolved に出現順・重複なしで記録する", () => {
+      const unresolved = new Set<string>();
+      const result = renderString("{{ b }}/{{a}}/{{b}}", {
+        captures: {},
+        env: {},
+        deferred: new Set(["a", "b"]),
+        unresolved,
+      });
+      expect(result).toBe("{{b}}/{{a}}/{{b}}");
+      expect([...unresolved]).toEqual(["b", "a"]);
+    });
+
+    it("deferred の変数は、環境ファイルに同名の値があっても環境の値で解決しない(実行時は capture が優先されるため)", () => {
+      const result = renderString("{{x}}", {
+        captures: {},
+        env: { x: "from-env" },
+        deferred: new Set(["x"]),
+      });
+      expect(result).toBe("{{x}}");
+    });
+
+    it("実際の capture があればそちらを使い、テンプレート関数は deferred より優先される(実行時の解決順と同じ)", () => {
+      const unresolved = new Set<string>();
+      const context = {
+        captures: { x: "captured" },
+        env: {},
+        deferred: new Set(["x", "newUuid"]),
+        unresolved,
+      };
+      expect(renderString("{{x}}", context)).toBe("captured");
+      expect(renderString("{{newUuid}}", context)).toMatch(/^[0-9a-f-]{36}$/);
+      expect(unresolved.size).toBe(0);
+    });
+
+    it("deferred に無い未解決変数は従来どおり RuntimeError を投げる", () => {
+      expect(() =>
+        renderString("{{other}}", { captures: {}, env: {}, deferred: new Set(["x"]) }),
+      ).toThrow(RuntimeError);
+    });
+  });
+
   describe("テンプレート関数", () => {
     it("newUuid は UUID 形式の文字列を返す", () => {
       const result = renderString("{{newUuid}}", { captures: {}, env: {} });

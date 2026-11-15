@@ -33,23 +33,88 @@ ui:
   port: 4884
   host: 127.0.0.1
   open: true
+guard:
+  allowedHosts:
+    - api.example.com
+    - "*.example.com"
+    - localhost:3000
+http:
+  followRedirects: true
+  cookies: true
+  proxy: "{{env.KLAUS_PROXY}}"
+  tls:
+    ca: certs/internal-ca.pem
 ```
 
 | キー | 対応する CLI オプション | 型 |
 |---|---|---|
 | `run.env` | `klaus run --env <name>` | string |
-| `run.report` | `klaus run --report <list>` | `"junit"` / `"tap"` のカンマ区切りリスト(例: `"junit,tap"`) |
+| `run.report` | `klaus run --report <list>` | `"junit"` / `"tap"` / `"html"` / `"github"` のカンマ区切りリスト(例: `"junit,html"`) |
 | `run.reportFile` | `klaus run --report-file <path>` | string |
 | `run.history` | `klaus run --no-history`(`false` で無効化に相当) | boolean |
 | `run.mask` | `klaus run --no-mask`(`false` で無効化に相当) | boolean |
 | `run.jobs` | `klaus run --jobs <n>` | number(1〜32) |
+| `run.openapi` | `klaus run --openapi <path>` | 文字列、または文字列のリスト(下記参照) |
 | `ui.port` | `klaus ui --port <n>` | number(1〜65535) |
 | `ui.host` | `klaus ui --host <host>` | string |
 | `ui.open` | `klaus ui --no-open`(`false` で無効化に相当) | boolean |
+| `guard.allowedHosts` | なし(config 専用。[送信先ホストの許可リスト](#送信先ホストの許可リスト-guard-allowedhosts)を参照) | 文字列の配列 |
+| `http.followRedirects` / `http.maxRedirects` / `http.cookies` / `http.auth` / `http.maxResponseBytes` | なし(フローのトップレベル `http:` が上書きする。[HTTP クライアント](#http-クライアント-http)を参照) | boolean / 数値(0-100) / boolean / 認証ヘルパー / 正の整数 |
+| `http.proxy` | なし(config 専用) | 文字列(proxy の URL) |
+| `http.tls.ca` / `http.tls.cert` / `http.tls.key` / `http.tls.insecure` | なし(config 専用) | ファイルパス / boolean |
 
-いずれのキーも省略可能。未知のキーを含む場合はスキーマ検証エラーになる([実行結果](#エラー時の扱い)を参照)。
+`run.*` のキーは `klaus run` にのみ適用される。`klaus req` がこのファイルから読むのは `guard` と `http` のセクションだけ。いずれのキーも省略可能。未知のキーを含む場合はスキーマ検証エラーになる([実行結果](#エラー時の扱い)を参照)。
+
+`run.openapi` には OpenAPI 文書 1 つ、またはそのリストを書く(`klaus run --openapi`。[OpenAPI の検証](cli.md#openapi-の検証-openapi)を参照)。相対パスは、カレントディレクトリではなく `klaus.config.yaml` のあるディレクトリから解決する。コマンドラインの `--openapi` は、設定ファイルのリストに加えるのではなく置き換える。ほかの OpenAPI オプション(`--openapi-base-url`・`--openapi-strict`・`--openapi-coverage-min`)は設定できない。実行が失敗する条件を変えるものなので、呼び出しごとに選ぶ。
 
 `run.reportFile` は単一値のみ対応する(CLI の繰り返し指定可能な `--report-file` とは異なる)。`run.report` に複数フォーマット(例: `junit,tap`)を指定した状態で `run.reportFile` も設定した場合、それは「N フォーマットに対して `--report-file` を1個指定した」ことになり、CLI で `--report-file` の指定回数が足りないときと同じ個数不一致エラーになる([CLI リファレンス](cli.md#klaus-run)参照)。複数フォーマットの `run.report` に対してフォーマットごとの出力先を指定したい場合は、コマンドラインで `--report-file` を渡すこと(前述の優先順位のとおり CLI の値が `klaus.config.yaml` より常に優先される)。
+
+## 送信先ホストの許可リスト (guard.allowedHosts)
+
+`guard.allowedHosts` は、リクエストの送信先として許可するホストを制限する。フロー(や `klaus req`・`klaus ui` の単発リクエスト)が意図しないサーバーへ送信してしまう事故を防ぐガードレール。
+
+```yaml
+guard:
+  allowedHosts:
+    - api.example.com
+    - "*.example.com"
+    - localhost:3000
+    - "[::1]:3000"
+```
+
+| エントリの書式 | 一致するホスト |
+|---|---|
+| `api.example.com` | そのホストのみ(完全一致) |
+| `*.example.com` | 任意の深さのサブドメイン(`a.example.com`、`a.b.example.com`)。基底ドメイン `example.com` 自身には一致しない |
+| `localhost:3000` / `[::1]:3000` | そのホストの、そのポートのみ。ポートを省略したエントリは任意のポートに一致する。IPv6 リテラルは角括弧で書く |
+
+- 大文字小文字は区別しない。
+- エントリは厳密に検証される。次は検証エラー(exit code 2)になる: `*.` の後ろが 2 ラベル未満(`*.com`、`*.localhost`)、空ラベル(`a..b`、末尾のドット)、パーセントエンコードされたホスト、通常のドット区切り IPv4 以外の数値ホスト(`0`、`2130706433`、`0x7f.1`、8進表記)。`127.0.0.1` のような通常の IPv4、角括弧つき IPv6、`localhost`、`backend` のような単一ラベルの内部名は有効。リクエスト側の URL は URL の正規化後に照合するため、`http://2130706433/` は `127.0.0.1` として扱われる。
+- `guard.allowedHosts` を書かなければ制限なし。空配列や書式不正のエントリは検証エラー(exit code 2、[エラー時の扱い](#エラー時の扱い)を参照)。
+- 送信直前に、テンプレート展開後の URL に対して判定する。対象は HTTP / SSE / WebSocket ステップと、`klaus req` および `klaus ui` からの単発リクエスト。`--replay` では判定しない(実送信がないため)。`--record` では判定する。
+- 拒否されたステップは `error` になり、実行は exit code 3 で終わる。[トラブルシューティング](troubleshooting.md#「host-x-is-not-in-guard-allowedhosts-klaus-config-yaml-refusing-to-send-the-request-」)を参照。
+- CLI フラグで上書きする手段は意図的に設けていない。`klaus ui` は起動時に config を読むため、リストを変更したら再起動すること。
+
+## HTTP クライアント (http)
+
+`http` は、実行単位(フロー 1 回の実行、または `klaus req` / `klaus ui` の単発リクエスト 1 回)の全ステップで共有する HTTP クライアントを設定する。何も指定しなければ従来どおり(リダイレクトを追わない、cookie を保持しない、proxy なし)。
+
+| キー | 意味 |
+|---|---|
+| `followRedirects` | `301` / `302` / `303` / `307` / `308` を 1 ホップずつ追う(既定 `false`)。各ホップは通常のリクエストと同じ `guard.allowedHosts` と `$protected` の判定を通り、拒否されたホップはステップを `error` にする。`POST` への `301` / `302` と `303` はボディなしの `GET` に変わり、`307` / `308` はメソッドとボディを保つ。別オリジン(スキーム・ホスト・ポートのいずれかが違う。https から http への格下げも含む)へ移るときは、`Accept`・`Accept-Language`・`Accept-Encoding`・`User-Agent`(ボディを保つ場合は `Content-Type`・`Content-Language` も)だけを転送し、それ以外のユーザー指定ヘッダー(`Authorization`・`Cookie`・`Proxy-Authorization`、capture したトークンを載せた独自ヘッダーを含む)はすべて落とす。認証情報を含む `Location` は拒否する。経由した URL と落としたヘッダー名(名前のみ)は結果と履歴に `redirects` / `droppedHeaders` として残る |
+| `maxRedirects` | 最大ホップ数(既定 `10`)。超えると `error` |
+| `cookies` | `Set-Cookie` を実行中メモリ上に保持し、以降の条件に合うリクエストに付ける(既定 `false`)。保存はしない。`Cookie` / `Set-Cookie` ヘッダーの値部分は、値によらず位置で `***` にして履歴・出力に出す。16 文字以上の cookie 値は秘密値としても登録するため、出現するどこでも(たとえばレスポンスボディにエコーされても)マスクされる。それより短い値は `Cookie` / `Set-Cookie` ヘッダー内だけをマスクする(`json` のような値が無関係な出力を壊さないため)。`Secure` cookie は `http://` に送らない。`http://host` で設定された cookie は、`https://host` へのリダイレクト後には送られない(実効ポートが 80 と 443 で異なるため)。cookie は常に、設定したホストとポートそのものに対してだけ保存する: リクエストホストまたはその親を指す `Domain` 属性は受け付けるが範囲は広がらず、他のサブドメインとも同じホストの別ポートとも共有しない(公開サフィックス一覧は持たない) |
+| `maxResponseBytes` | レスポンスボディ(または SSE ストリーム)をメモリに読み込む最大バイト数(既定 `104857600` = 100 MiB)。超えるとステップは `error`。フローの `http.maxResponseBytes` が上書きする |
+| `auth` | 全 HTTP / SSE ステップの既定の[認証ヘルパー](flow-definition.md#auth認証ヘルパー)。フローの `http.auth` やステップの `request.auth` が上書きする。秘密値には <code v-pre>{{env.X}}</code> を使う |
+| `proxy` | HTTP(S) proxy の URL。パスワードは秘密値としてマスクされ、ユーザー名は表示される。proxy 設定中は、リクエスト URL と違う `Host` ヘッダーと、ホップ間ヘッダー `Connection`・`Keep-Alive`・`TE`・`Trailer`・`Upgrade`・`Transfer-Encoding` を安全柵の拒否として拒否する。`HTTP_PROXY` などの環境変数は読まない |
+| `tls.ca` / `tls.cert` / `tls.key` | PEM ファイルのパス。この設定ファイルからの相対パスで解決する。`cert` と `key` は同時に指定する。内容は出力に出ない |
+| `tls.insecure` | `true` で証明書検証を無効にし、実行のたびに警告を出す(stderr と、JSON・text・HTML・GitHub レポートの `warnings`) |
+
+`proxy` と `tls` は通信の行き先と信頼先を決めるため、ここにだけ書ける。フローファイルに `http.proxy` や `http.tls` を書くと検証エラー(終了コード 2)になる。CLI フラグ、`klaus req` のオプション、UI のパラメーターからも設定できない。フローのトップレベル `http:` で指定できるのは `followRedirects`・`maxRedirects`・`cookies`・`maxResponseBytes`・`auth` だけで、このセクションをキー単位で上書きする([フロー定義リファレンス](flow-definition.md#http-http-クライアント設定)を参照)。
+
+- proxy の URL には <code v-pre>{{env.X}}</code>(OS 環境変数)をテンプレートとして使える。フローの変数や capture は参照できない。
+- proxy ホスト自体は信頼する設定として扱い、`guard.allowedHosts` では判定しない。リクエストの最終的な宛先(リダイレクトの各ホップを含む)は、proxy 経由の平文 HTTP でも `CONNECT` トンネルでも判定され、拒否されたリクエストは proxy に届かない。
+- `tls.insecure` の警告は stderr に `klaus: warning:` 行として出るほか、[JSON 出力](cli.md#json-出力機械向け)のトップレベル `warnings` 配列にも載る。機械可読な出力は stderr を取得していなくても警告を受け取れる。
 
 ## 意図的に設定不可なキー
 
@@ -58,6 +123,9 @@ ui:
 | オプション | 理由 |
 |---|---|
 | `--allow-protected` | `$protected: true` の環境への実行を拒否するガードレールを、config で既定 true にすることで形骸化させないため |
+| `--allow-hosts`(そのようなオプションは存在しない) | `guard.allowedHosts` は `klaus.config.yaml` の編集でのみ変更できる。呼び出しごとのフラグにすると、制限される側のエージェントが制限を外せてしまうため |
+| `--dry-run` | 送信せずに展開後のリクエストを出力するのは、`--record` / `--replay` と同じく実行の性質を大きく変えるため、呼び出しごとに明示させる |
+| `--update-snapshots` / `-u` | スナップショットの基準の書き換えは、変わったレスポンスを受け入れる明示的な操作である。恒久的な既定値にすると、毎回の実行が API の返す内容をそのまま受け入れてしまう |
 | `--record` / `--replay` | record/replay モードは副作用(実際のネットワークアクセスの有無)が大きく変わる実行モードのため、呼び出しごとに明示させる |
 | `--json` / `--text` | 出力モードは呼び出し元(人が読むか、エージェントやスクリプトが読むか)に依存するため、コマンドラインで都度明示させる |
 | `--var` / `--env-file` / `--data` | いずれも本質的にその場限り・呼び出しごとの上書き(単発の変数、単発の環境ファイルパス、単発のデータ駆動実行用データファイル)であり、config に恒久的な既定値を持たせると本来の用途に反する |

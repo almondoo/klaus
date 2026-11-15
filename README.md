@@ -15,6 +15,17 @@ Documentation site: https://almondoo.github.io/klaus/
 - **Web UI**: `klaus ui` launches a localhost runner + history viewer alongside the CLI
 - **record/replay & OpenAPI generation**: `--record`/`--replay` for cassette-based testing, `klaus generate` to scaffold flows from an OpenAPI spec
 - **Agent-friendly output**: Failures can be identified from exit code alone. JSON output is the default in non-TTY environments
+- **Host allowlist**: `guard.allowedHosts` in `klaus.config.yaml` restricts which hosts requests may be sent to (no CLI flag to override)
+- **Read-only protected environments**: `$protected: readonly` lets only GET / HEAD / OPTIONS run without `--allow-protected`
+- **Dry run**: `klaus run --dry-run` prints each step's expanded request and whether the guards would refuse it, without sending anything
+- **Ad-hoc requests**: `klaus req` sends a single request with the same guards and secret masking as `klaus run` and records it in the history, so agents can use it instead of `curl`
+- **Record, diff, promote, mock**: `klaus diff` compares two recorded runs, `klaus promote` turns recorded runs into a re-runnable flow with inferred assertions, and `klaus mock` serves a recorded cassette as a local mock server
+- **Snapshots**: `assert.snapshot` compares a response with a baseline file (secrets masked, volatile fields ignorable). A changed response fails with a structural diff, and accepting it is explicit (`klaus run -u`, `klaus snapshot accept`); in CI a missing baseline fails instead of being recorded
+- **OpenAPI validation**: `klaus run --openapi spec.yaml` checks every response against an OpenAPI 3.0/3.1 document (status, content type, required headers, body schema) and reports which operations the run covered; `--openapi-coverage-min` makes low coverage fail the run
+- **HTTP client and request bodies**: redirects, an in-memory cookie jar, `basic` / `bearer` / `oauth2` auth helpers, `form` / `multipart` / `bodyFile` bodies, and config-only proxy / TLS settings (`http` in `klaus.config.yaml`; every redirect hop is re-checked against the guards). Runs can be parallelised with `--jobs` and data-driven with `--data`
+- **Review in the UI**: the history viewer compares two runs, saves a recorded run as a new flow (new files only), shows snapshot and OpenAPI verdicts, and accepts snapshot changes
+- **MCP server**: `klaus mcp` serves klaus as tools to an MCP client over stdio. Every send goes through the same host allowlist, environment protection, secret masking, and history as the CLI, and MCP has no option to turn any of them off (set `guard.allowedHosts`: it is what limits where an agent can send)
+- **Reports**: `--report` writes `junit`, `tap`, `html` (a single self-contained file), and `github` (a job summary with annotations for GitHub Actions)
 - **Local-first**: Execution history is appended to `.klaus/history/*.jsonl`. No cloud sync or account mechanism
 
 ## Installation
@@ -23,6 +34,8 @@ Documentation site: https://almondoo.github.io/klaus/
 npm install -g @almondoo/klaus
 # Requires Node.js >= 22.19.0
 ```
+
+The repository also contains a `Dockerfile` for building a klaus image yourself and a composite GitHub Action (`action.yml`); neither is published to a registry or the Marketplace.
 
 ## Quick Start
 
@@ -80,12 +93,18 @@ The full syntax for templates, assertions, and SSE / GraphQL / WebSocket flows i
 | Command | Description |
 |---|---|
 | `klaus run <files...>` | Runs flow YAML files |
+| `klaus req <method> <url>` | Sends a single ad-hoc request (guarded, secret-masked, recorded in history) |
 | `klaus ui` | Launches the localhost web UI (runner + history viewer) |
 | `klaus validate [files...]` | Schema-validates flow YAML without running it |
 | `klaus schema` | Prints the JSON Schema for flow YAML / `run --json` output / `klaus.config.yaml` |
 | `klaus generate <spec>` | Generates flow YAML scaffolding per operation from an OpenAPI spec |
 | `klaus init` | Generates a minimal flows/environments setup in the current directory |
 | `klaus history [show <runId>]` | Lists execution history, or prints one entry as JSON |
+| `klaus diff [runA] [runB]` | Compares two recorded runs from history (exit 4 when they differ) |
+| `klaus promote <runId...>` | Turns recorded runs into a re-runnable flow YAML with inferred assertions |
+| `klaus mock <dir>` | Serves a recorded cassette as a local mock server |
+| `klaus snapshot list\|accept` | Lists the snapshot mismatches of a recorded run, or accepts them as the new baseline |
+| `klaus mcp [--read-only]` | Runs a stdio MCP server that exposes klaus as tools for AI agents (guards and masking always apply; there is no option to turn them off) |
 
 See the [CLI reference](https://almondoo.github.io/klaus/guide/cli) for the full option list of each subcommand.
 
@@ -99,7 +118,7 @@ See the [CLI reference](https://almondoo.github.io/klaus/guide/cli) for the full
 | 0 | All succeeded |
 | 1 | General error (unexpected failure) |
 | 2 | Definition file parse error |
-| 3 | Runtime error (connection failure, timeout, etc.) |
+| 3 | Runtime error (connection failure, timeout, a step refused by a guardrail, etc.) |
 | 4 | Assertion failure |
 
 ## Documentation
@@ -112,12 +131,21 @@ See the [CLI reference](https://almondoo.github.io/klaus/guide/cli) for the full
 - [record / replay mode](https://almondoo.github.io/klaus/guide/record-replay) — Cassette-based testing for network-isolated or destructive-API scenarios
 - [Web UI](https://almondoo.github.io/klaus/guide/ui) — The `klaus ui` runner + history viewer, and its token / CSRF / Host-validation security model
 - [Execution History](https://almondoo.github.io/klaus/guide/history) — The `.klaus/history/*.jsonl` schema and file conventions
+- [MCP server for AI agents](https://almondoo.github.io/klaus/guide/mcp) — `klaus mcp`: registering it in an MCP client, the tools, and the guardrails
+- [Comparison with other tools](https://almondoo.github.io/klaus/guide/comparison) — How klaus differs from similar API testing tools
 - [Troubleshooting](https://almondoo.github.io/klaus/guide/troubleshooting) — Error messages klaus actually prints, with cause and fix
 - [Agent Skill (Claude Code / Codex)](https://almondoo.github.io/klaus/guide/agent-skill) — Install locations and what the bundled SKILL.md teaches agents
 
 ## Agent Skill (Claude Code / Codex)
 
 An Agent Skill document is bundled as `skills/klaus/SKILL.md`. Copy it to `~/.claude/skills/klaus/` (Claude Code) or `~/.agents/skills/klaus/` (Codex) so agents can learn how to write flow YAML and what each exit code means without reading the source. See [Agent Skill (Claude Code / Codex)](https://almondoo.github.io/klaus/guide/agent-skill) for setup instructions.
+
+For Claude Code you can instead install the repository as a plugin, which adds the skill and the klaus MCP server together:
+
+```bash
+claude plugin marketplace add almondoo/klaus
+claude plugin install klaus@klaus
+```
 
 ## Development
 

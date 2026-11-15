@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type {
+  AssertionResult,
   FlowResult,
   RequestSnapshot,
   ResponseSnapshot,
@@ -19,10 +20,49 @@ import { summarizeSteps, truncate } from "./text.js";
  * 圧縮するため v2 で構造を刷新した(後方互換は取らない: 利用者不在のため旧形式維持は不要)。
  * - failure-focused: passed ステップは1行要約に落とし、failed/error/skipped のみ詳細を持つ
  * - truncate: request/response ボディ・SSE events・WS wsMessages は 500 文字で切り詰める
- * - historyRef: 履歴記録が有効な実行では、全文取得用のポインタ(`klaus history show`)を各ステップに付与する
+ * - historyRef: 履歴記録が有効な実行では、履歴に実際に記録されたステップに、全文取得用のポインタ(`klaus history show`)を付与する
  * - compact: pretty print せず JSON.stringify する
  * - version: このスキーマの後方互換が壊れる変更(フィールド削除・型変更等)をする場合は値を上げること
  */
+
+/** openapi アサーションの詳細(kind が "openapi" のアサーションにだけ付く) */
+const openApiDetailSchema = z.strictObject({
+  state: z
+    .enum(["valid", "invalid", "undocumented", "unmatched", "skipped"])
+    .describe(
+      '"valid" (matches the specification), "invalid" (violates it; the assertion failed), "undocumented" (the status code is not documented; a failure only with --openapi-strict), "unmatched" (no operation matches the request; only reported as an assertion with --openapi-strict), "skipped" (the response could not be validated, e.g. its schema cannot be compiled; a failure only with --openapi-strict).',
+    ),
+  operation: z
+    .string()
+    .optional()
+    .describe("The matched operation, e.g. `GET /users/{id}`. Absent when unmatched."),
+  document: z
+    .string()
+    .optional()
+    .describe("The OpenAPI document of the matched operation, relative to the current directory."),
+  status: z.number().optional().describe("The HTTP status code of the response."),
+  violations: z
+    .array(
+      z.strictObject({
+        location: z
+          .enum(["status", "content-type", "header", "body"])
+          .describe("Which part of the response violates the specification."),
+        path: z
+          .string()
+          .optional()
+          .describe(
+            "For `body`: a JSON Pointer to the offending value (`/items/0/id`; empty for the root). For `header`: the header name.",
+          ),
+        message: z.string().describe("What is wrong (values from the response are not echoed)."),
+      }),
+    )
+    .optional()
+    .describe("The violations, at most 20."),
+  violationCount: z
+    .number()
+    .optional()
+    .describe("The total number of violations (greater than `violations.length` when capped)."),
+});
 
 /** アサーション1件の評価結果(src/core/types.ts の AssertionResult と同形)。expected/actual は任意の値を取りうる */
 const assertionResultSchema = z.strictObject({
@@ -41,7 +81,166 @@ const assertionResultSchema = z.strictObject({
     .optional()
     .describe("Actual observed value, when applicable to this assertion kind."),
   message: z.string().describe("Human-readable summary of this assertion's result."),
+  state: z
+    .enum(["matched", "written", "updated", "mismatch", "missing"])
+    .optional()
+    .describe(
+      'Snapshot assertions only (kind "snapshot"): "matched" (equals the baseline), "written" (a new baseline was recorded), "updated" (the baseline was replaced by --update-snapshots), "mismatch" (differs from the baseline; the assertion failed), "missing" (no baseline and none was written, e.g. in CI).',
+    ),
+  snapshotKey: z
+    .string()
+    .optional()
+    .describe(
+      "Snapshot assertions only: the key of this snapshot in its file (step name, plus ` #<iteration>` for --data runs, plus ` :: <name>`).",
+    ),
+  snapshotFile: z
+    .string()
+    .optional()
+    .describe(
+      "Snapshot assertions only: the snapshot file, relative to the current directory (`<flow dir>/__snapshots__/<flow file>.snap.json`).",
+    ),
+  differences: z
+    .array(
+      z.strictObject({
+        path: z
+          .string()
+          .describe("JSONPath-style location, e.g. `$.body.items[0].id` or `$.status`."),
+        kind: z
+          .enum(["added", "removed", "changed", "type-changed", "too-deep"])
+          .describe("How the response differs from the baseline at this path."),
+        before: z.unknown().optional().describe("Baseline value (absent for `added`)."),
+        after: z.unknown().optional().describe("Value in this response (absent for `removed`)."),
+      }),
+    )
+    .optional()
+    .describe(
+      "Snapshot mismatches only: the structural differences between the baseline (before) and this response (after), at most 20.",
+    ),
+  differenceCount: z
+    .number()
+    .optional()
+    .describe(
+      "Snapshot mismatches only: the total number of differences (greater than `differences.length` when the list was capped).",
+    ),
+  openapi: openApiDetailSchema
+    .optional()
+    .describe(
+      'OpenAPI assertions only (kind "openapi"): the matched operation and the violations.',
+    ),
 });
+
+/** run 全体の OpenAPI の検証・カバレッジ(--openapi を指定した実行にだけ付く) */
+export const jsonOpenApiSummarySchema = z.strictObject({
+  documents: z
+    .array(
+      z.strictObject({
+        file: z.string().describe("The OpenAPI document, relative to the current directory."),
+        title: z.string().optional().describe("info.title of the document."),
+        version: z.string().optional().describe("info.version of the document."),
+        operations: z.number().describe("The number of operations in the document."),
+      }),
+    )
+    .describe("The OpenAPI documents given to --openapi, in order."),
+  operations: z
+    .strictObject({
+      total: z.number().describe("The number of operations across all documents."),
+      covered: z
+        .number()
+        .describe(
+          "Operations that at least one response was matched to (planned ones for --dry-run).",
+        ),
+      percent: z
+        .number()
+        .describe(
+          "covered / total as a percentage, to one decimal place (100 when there are no operations).",
+        ),
+    })
+    .describe("Operation coverage."),
+  covered: z
+    .array(
+      z.strictObject({
+        operation: z.string().describe("e.g. `GET /users/{id}`."),
+        document: z.string().describe("The OpenAPI document of the operation."),
+        statuses: z
+          .array(z.number())
+          .describe("The status codes observed for this operation (empty for --dry-run)."),
+        documented: z
+          .array(z.string())
+          .describe("The response keys the specification documents (`200`, `2XX`, `DEFAULT`)."),
+      }),
+    )
+    .describe("The covered operations."),
+  uncovered: z
+    .array(z.strictObject({ operation: z.string(), document: z.string() }))
+    .describe("Operations that no request was matched to."),
+  unmatched: z
+    .array(
+      z.strictObject({
+        method: z.string(),
+        url: z.string().describe("The request URL without query and fragment."),
+        count: z.number().describe("How many times this request was sent."),
+      }),
+    )
+    .describe("Requests that matched no operation (not failures unless --openapi-strict)."),
+  excluded: z
+    .array(
+      z.strictObject({
+        flow: z.string(),
+        step: z.string(),
+        reason: z
+          .enum(["sse", "websocket", "redirected"])
+          .describe("Why the step is not validated."),
+      }),
+    )
+    .describe("Steps that are not validated: SSE, WebSocket, and steps that followed redirects."),
+  violations: z.number().describe("The number of responses that violate the specification."),
+  partial: z
+    .boolean()
+    .describe(
+      "True when only some flows were run (--tags / --exclude-tags): the coverage is a part of the whole.",
+    ),
+  planned: z
+    .boolean()
+    .describe(
+      "True for --dry-run: nothing was sent, so coverage is what the flows would exercise.",
+    ),
+  coverageMin: z
+    .strictObject({
+      percent: z.number().describe("The --openapi-coverage-min value."),
+      met: z
+        .boolean()
+        .describe("False when the coverage is below it (the run fails with exit code 4)."),
+    })
+    .optional()
+    .describe("Present only with --openapi-coverage-min."),
+  truncated: z.boolean().optional().describe("True when a list above was cut at 1000 entries."),
+});
+export type JsonOpenApiSummary = z.infer<typeof jsonOpenApiSummarySchema>;
+
+/** run 全体のスナップショット集計。snapshot アサーションが 1 件でもあった実行にだけ付く */
+export const jsonSnapshotSummarySchema = z.strictObject({
+  matched: z.number().describe("Snapshot assertions that equal their baseline."),
+  written: z.number().describe("New baselines recorded in this run."),
+  updated: z.number().describe("Baselines replaced in this run by --update-snapshots."),
+  mismatched: z.number().describe("Snapshot assertions that differ from their baseline (failed)."),
+  missing: z
+    .number()
+    .describe("Snapshot assertions with no baseline that were not written (CI, --replay, ...)."),
+  obsolete: z
+    .number()
+    .describe(
+      "Entries in snapshot files that no step produced in this run (reported only after a full run of the flow; --update-snapshots removes them).",
+    ),
+  files: z
+    .array(z.string())
+    .describe(
+      "Snapshot files written or trimmed in this run, relative to the current directory (review and commit them).",
+    ),
+  obsoleteEntries: z
+    .array(z.strictObject({ file: z.string(), keys: z.array(z.string()) }))
+    .describe("The obsolete entries per snapshot file."),
+});
+export type JsonSnapshotSummary = z.infer<typeof jsonSnapshotSummarySchema>;
 
 /** 全体のステータス集計。failure-focused な出力でも全体像が一目で分かるようにする */
 export const jsonSummarySchema = z.strictObject({
@@ -137,7 +336,26 @@ export const jsonStepReportSchema = z.strictObject({
   historyRef: historyRefSchema
     .optional()
     .describe(
-      "Pointer into the JSONL history file for this step's full record. Present only when history recording was enabled for the run.",
+      "Pointer into the JSONL history file for this step's full record. Present only when history recording was enabled for the run and this step's entry was actually recorded (steps that fail with a connection error, timeout, capture failure or similar leave no history entry and carry no historyRef).",
+    ),
+  redirects: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "URLs visited after the first request when `http.followRedirects` followed redirects (the last one is the final response's URL). Present only when the step was redirected, for any step status.",
+    ),
+  droppedHeaders: z
+    .array(
+      z.strictObject({
+        hop: z.number().describe("1-based redirect hop at which the headers were dropped."),
+        headers: z
+          .array(z.string())
+          .describe("Names (never values) of the request headers that were dropped."),
+      }),
+    )
+    .optional()
+    .describe(
+      "Request headers dropped on a cross-origin redirect (credentials and headers carrying a secret value). Present only when something was dropped.",
     ),
   startedAt: z
     .string()
@@ -169,6 +387,12 @@ export const jsonStepReportSchema = z.strictObject({
     .string()
     .optional()
     .describe("Runtime error message, or the reason the step was skipped."),
+  errorCode: z
+    .string()
+    .optional()
+    .describe(
+      "Stable machine-readable code for the error (e.g. `guard.allowed-hosts`, `response-too-large`). Present only when status is error and the cause has a code; see the history guide for the list.",
+    ),
 });
 export type JsonStepReport = z.infer<typeof jsonStepReportSchema>;
 
@@ -219,9 +443,25 @@ export const jsonReportSchema = z
       "Aggregate pass/fail/error/skipped counts across all flows.",
     ),
     flows: z.array(jsonFlowReportSchema).describe("Per-flow results, in execution order."),
+    snapshots: jsonSnapshotSummarySchema
+      .optional()
+      .describe(
+        "Snapshot (assert.snapshot) totals for the run. Present only when a step had a snapshot assertion, or a snapshot file had obsolete entries, or snapshot files were written.",
+      ),
+    openapi: jsonOpenApiSummarySchema
+      .optional()
+      .describe(
+        "OpenAPI validation and coverage (`klaus run --openapi`). Present only when --openapi was given.",
+      ),
+    warnings: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "Warnings that do not change any step's outcome (e.g. certificate verification disabled by `http.tls.insecure`, a history write failure), without duplicates. Present only when there is at least one.",
+      ),
   })
   .describe(
-    "klaus `run --json` output (v2). Failure-focused: passed steps are reduced to a one-line summary, while failed/error/skipped steps carry full request/response/assertion detail. Body and event/message payloads are truncated to 500 characters; use historyRef with `klaus history show` to retrieve full content when history recording is enabled.",
+    "klaus `run --json` output (v2). Failure-focused: passed steps are reduced to a one-line summary, while failed/error/skipped steps carry full request/response/assertion detail. Body and event/message payloads are truncated to 500 characters; use historyRef with `klaus history show` to retrieve full content of steps that have one (present only for steps recorded in history).",
   );
 export type JsonReport = z.infer<typeof jsonReportSchema>;
 
@@ -237,7 +477,10 @@ function truncateBody(body: unknown): string | undefined {
   return truncate(text);
 }
 
-function buildRequest(request: RequestSnapshot | undefined): JsonRequestSnapshot | undefined {
+/** request スナップショットを JSON 出力形(body は 500 文字で切り詰め)にする。req の出力でも再利用する */
+export function buildRequest(
+  request: RequestSnapshot | undefined,
+): JsonRequestSnapshot | undefined {
   if (!request) return undefined;
   return {
     method: request.method,
@@ -247,7 +490,10 @@ function buildRequest(request: RequestSnapshot | undefined): JsonRequestSnapshot
   };
 }
 
-function buildResponse(response: ResponseSnapshot | undefined): JsonResponseSnapshot | undefined {
+/** response スナップショットを JSON 出力形にする。req の出力でも再利用する */
+export function buildResponse(
+  response: ResponseSnapshot | undefined,
+): JsonResponseSnapshot | undefined {
   if (!response) return undefined;
   return {
     status: response.status,
@@ -256,7 +502,8 @@ function buildResponse(response: ResponseSnapshot | undefined): JsonResponseSnap
   };
 }
 
-function buildEvents(events: SseEvent[] | undefined): JsonSseEvent[] | undefined {
+/** SSE イベントを JSON 出力形にする。req の出力でも再利用する */
+export function buildEvents(events: SseEvent[] | undefined): JsonSseEvent[] | undefined {
   return events?.map((event) => ({ event: event.event, id: event.id, data: truncate(event.data) }));
 }
 
@@ -265,7 +512,9 @@ function buildWsMessages(messages: WsMessage[] | undefined): JsonWsMessage[] | u
 }
 
 /**
- * historyEnabled のときだけ、step.startedAt から履歴ファイルの日付を導出して historyRef を組み立てる。
+ * historyEnabled かつ履歴エントリが実際に書き込まれたステップ(step.historyRecorded)にだけ、
+ * step.startedAt から履歴ファイルの日付を導出して historyRef を組み立てる
+ * (接続不能・タイムアウト・キャプチャ失敗などで履歴に残らなかったステップには、引いても見つからないポインタを出さない)。
  * iteration は flow.iteration をそのまま引き継ぐ(--data 実行時のみ設定され、同一フロー・同一ステップ名の
  * 複数イテレーションを historyRef のみからでも区別できるようにする)。
  */
@@ -275,8 +524,27 @@ function buildHistoryRef(
   historyEnabled: boolean,
   iteration: number | undefined,
 ): HistoryRef | undefined {
-  if (!historyEnabled) return undefined;
+  if (!historyEnabled || step.historyRecorded !== true) return undefined;
   return { date: historyDateFromTimestamp(step.startedAt), runId, step: step.name, iteration };
+}
+
+/**
+ * アサーション結果を JSON 出力形にする。snapshot アサーションは内部の入れ子(snapshot)を state / 差分などの
+ * 平らなフィールドにし、履歴からの承認用に持っている候補(candidate。応答全体のコピー)は出力しない。
+ */
+function toJsonAssertion(assertion: AssertionResult): z.infer<typeof assertionResultSchema> {
+  const { snapshot, ...rest } = assertion;
+  if (snapshot === undefined) return rest;
+  return {
+    ...rest,
+    state: snapshot.state,
+    snapshotKey: snapshot.key,
+    snapshotFile: snapshot.file,
+    ...(snapshot.differences !== undefined ? { differences: snapshot.differences } : {}),
+    ...(snapshot.differenceCount !== undefined
+      ? { differenceCount: snapshot.differenceCount }
+      : {}),
+  };
 }
 
 function buildStep(
@@ -287,9 +555,14 @@ function buildStep(
 ): JsonStepReport {
   const durationMs = Math.round(step.durationMs);
   const historyRef = buildHistoryRef(step, runId, historyEnabled, iteration);
+  // リダイレクトの経路は、成否に関わらず(passed の1行要約でも)付ける
+  const redirectFields = {
+    ...(step.redirects !== undefined ? { redirects: step.redirects } : {}),
+    ...(step.droppedHeaders !== undefined ? { droppedHeaders: step.droppedHeaders } : {}),
+  };
 
   if (step.status === "passed") {
-    return { name: step.name, status: step.status, durationMs, historyRef };
+    return { name: step.name, status: step.status, durationMs, historyRef, ...redirectFields };
   }
 
   // failed / error / skipped は詳細を含める
@@ -298,13 +571,15 @@ function buildStep(
     status: step.status,
     durationMs,
     historyRef,
+    ...redirectFields,
     startedAt: step.startedAt,
     request: buildRequest(step.request),
     response: buildResponse(step.response),
     events: buildEvents(step.events),
     wsMessages: buildWsMessages(step.wsMessages),
-    assertions: step.assertions,
+    assertions: step.assertions.map(toJsonAssertion),
     error: step.error,
+    errorCode: step.errorCode,
   };
 }
 
@@ -343,6 +618,11 @@ export function formatJson(runResult: RunResult, options: FormatJsonOptions): st
     durationMs: Math.round(runResult.durationMs),
     summary: buildSummary(runResult),
     flows: runResult.flows.map((flow) => buildFlow(flow, runResult.runId, options.historyEnabled)),
+    ...(runResult.snapshots !== undefined ? { snapshots: runResult.snapshots } : {}),
+    ...(runResult.openapi !== undefined ? { openapi: runResult.openapi } : {}),
+    ...(runResult.warnings !== undefined && runResult.warnings.length > 0
+      ? { warnings: runResult.warnings }
+      : {}),
   };
   return JSON.stringify(report);
 }

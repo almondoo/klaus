@@ -1,0 +1,23 @@
+# yaml-language-server: $schema=https://almondoo.github.io/klaus/schema/flow.schema.json
+name: ユーザー一覧のスナップショット
+# assert.snapshot の見本。レスポンスを基準(__snapshots__/users-snapshot.yaml.snap.json)として保存し、
+# 以降の実行で比較する。応答が変わると構造的な差分つきで失敗する(exit 4)。
+#   初回(基準が無いローカルの実行) … 基準を書き込んで成功する。CI(環境変数 CI または --ci)では書かずに失敗する
+#   意図した変更を受け入れる         … klaus run api/users-snapshot.yaml -u、または klaus snapshot accept <runId>
+# 基準ファイルはコミットする前提のファイル。宣言した秘密値({{env.X}})はマスクされるが、それ以外の値は
+# そのまま保存されるので、揮発する値や機微な値は ignore に書き、コミット前に中身を確認すること。
+env: local          # examples/environments/local.yaml を参照(--env で上書き可)
+steps:
+  - name: list-users
+    request:
+      method: GET
+      url: "{{baseUrl}}/users"
+      query:
+        limit: "2"
+    assert:
+      status: 200
+      snapshot:
+        include: [status, headers, body]   # 既定は [status, body]
+        headers: [content-type]            # 保存・比較するヘッダー(Date のように揮発するものは含めない)
+        ignore:
+          - "$.users[*].id"                # 揮発する値の例: 一致した値は "[ignored]" で保存し、比較しない

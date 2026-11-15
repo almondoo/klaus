@@ -5,9 +5,15 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Command, InvalidArgumentError } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
 import { ParseError } from "../core/index.js";
-import { applyConfigToRunOptions, applyConfigToUiOptions, loadCliConfig } from "./config.js";
+import {
+  applyConfigToRunOptions,
+  applyConfigToUiOptions,
+  loadCliConfig,
+  resolveGuardOptions,
+} from "./config.js";
+import { registerDiffCommand } from "./diff.js";
 import { type GenerateCommandOptions, generateCommand } from "./generate.js";
 import {
   DEFAULT_HISTORY_FIELDS,
@@ -15,10 +21,24 @@ import {
   type HistoryShowOptions,
   historyListCommand,
   historyShowCommand,
+  parseHistoryStatuses,
 } from "./history.js";
 import { initCommand } from "./init.js";
+import { registerMcpCommand } from "./mcp.js";
+import { registerMockCommand } from "./mock.js";
+import {
+  collectHeaderOption,
+  collectQueryOption,
+  collectVarOption,
+  parseActorOption,
+  parseMethodArgument,
+  parseTimeoutOption,
+} from "./option-parsers.js";
+import { registerPromoteCommand } from "./promote.js";
+import { type ReqCommandOptions, reqCommand } from "./req.js";
 import { type RunCommandOptions, runCommand } from "./run.js";
 import { schemaCommand } from "./schema.js";
+import { registerSnapshotCommand } from "./snapshot.js";
 import { type UiCommandOptions, uiCommand } from "./ui.js";
 import { type ValidateCommandOptions, validateCommand } from "./validate.js";
 
@@ -133,29 +153,18 @@ program
   .option(
     "--var <key=value>",
     "set an ad-hoc template variable (repeatable; the value may itself contain '='). Overrides same-named keys loaded from the environment. NOT masked as a secret in output — use OS env + {{env.X}} for real secrets",
-    (value: string, previous: Record<string, string>) => {
-      const separatorIndex = value.indexOf("=");
-      if (separatorIndex <= 0) {
-        // separatorIndex === -1(区切りの "=" が無い)、0(キーが空)のいずれも不正値として拒否する。
-        // commander の _callParseArg は InvalidArgumentError のみ特別扱いする(--port と同じ理由)
-        throw new InvalidArgumentError(`invalid --var value (expected key=value): ${value}`);
-      }
-      // 値側に "=" を含められるよう、最初の "=" だけで分割する
-      const key = value.slice(0, separatorIndex);
-      const varValue = value.slice(separatorIndex + 1);
-      return { ...previous, [key]: varValue };
-    },
+    collectVarOption,
     {} as Record<string, string>,
   )
   .option("--json", "force JSON output (prints JSON even when running on a TTY)")
   .option("--text", "force text output (prints text even when stdout is not a TTY)")
   .option(
     "--report <list>",
-    'output one or more additional report formats: a comma-separated list from "junit", "tap" (e.g. "junit,tap")',
+    'output one or more additional report formats: a comma-separated list from "junit", "tap", "html", "github" (e.g. "junit,html")',
   )
   .option(
     "--report-file <path>",
-    "output path for the report format(s) given via --report (repeatable). With N formats, pass this exactly N times, in the same order, to pair each path with its format; omit it entirely to use the per-format default filenames (klaus-report.xml for junit, klaus-report.tap for tap)",
+    "output path for the report format(s) given via --report (repeatable). With N formats, pass this exactly N times, in the same order, to pair each path with its format; omit it entirely to use the per-format default filenames (klaus-report.xml for junit, klaus-report.tap for tap, klaus-report.html for html, klaus-report.md for github; github appends to $GITHUB_STEP_SUMMARY instead when that is set and no --report-file is given)",
     (value: string, previous: string[]) => [...previous, value],
     [] as string[],
   )
@@ -199,6 +208,51 @@ program
       return parsed;
     },
   )
+  .option(
+    "--dry-run",
+    "send nothing: print each step's expanded request (template variables that depend on earlier captures stay as {{name}}) and whether the guards would refuse it; exits 3 if any step would be refused. Writes no history; cannot be combined with --record, --replay, or --report",
+  )
+  .option(
+    "--openapi <path>",
+    "validate every HTTP response against this OpenAPI 3.0/3.1 document (YAML or JSON; local files only) and report operation coverage; a violation fails the step (exit code 4). Repeatable. Default from run.openapi in klaus.config.yaml; with --dry-run, only the planned coverage is reported",
+    (value: string, previous: string[]) => [...previous, value],
+    [] as string[],
+  )
+  .option(
+    "--openapi-base-url <url>",
+    "treat this URL as a server of the OpenAPI documents when matching requests to operations (in addition to their servers; requires --openapi)",
+  )
+  .option(
+    "--openapi-strict",
+    "fail on requests that match no operation, on status codes the specification does not document, and on responses that cannot be validated (requires --openapi; cannot be combined with --dry-run)",
+  )
+  .option(
+    "--openapi-coverage-min <percent>",
+    "fail the run (exit code 4) when fewer than this percentage of the OpenAPI operations were matched by a request (0-100; requires --openapi; cannot be combined with --dry-run)",
+    (value: string) => {
+      // 10 進数だけを受け付ける(Number() は 0x10・1e1・空白つきの値も数にしてしまうため)
+      const parsed = Number(value);
+      if (!/^\d+(\.\d+)?$/.test(value) || parsed > 100) {
+        throw new InvalidArgumentError(
+          `invalid --openapi-coverage-min value (expected a number 0-100): ${value}`,
+        );
+      }
+      return parsed;
+    },
+  )
+  .option(
+    "--actor <name>",
+    "name recorded as history actor.name for this run (the actor kind — human/agent/ci — is still detected from environment variables)",
+    parseActorOption,
+  )
+  .option(
+    "-u, --update-snapshots",
+    "assert.snapshot: rewrite baselines that differ or are missing, and remove obsolete entries (the explicit way to accept a changed response). Never read from klaus.config.yaml; cannot be combined with --dry-run, --replay, or --ci",
+  )
+  .option(
+    "--ci",
+    "assert.snapshot: fail instead of writing when a baseline is missing (also the default when the CI environment variable is set to a truthy value)",
+  )
   .addHelpText(
     "after",
     `
@@ -223,13 +277,92 @@ ${exitCodesHelpLine}
           history: command.getOptionValueSource("history"),
           mask: command.getOptionValueSource("mask"),
           jobs: command.getOptionValueSource("jobs"),
+          openapi: command.getOptionValueSource("openapi"),
         },
         configResult.config,
       );
 
       // --report/--report-file(フォーマット不明・個数不一致)の検査は runCommand 側(resolveReportTargets)
       // が行う(--record/--replay 等の他の組み合わせ検査と同じ流儀で runCommand に集約している)。
-      process.exitCode = await runCommand(files, mergedOptions);
+      // guard(送信先ホストの許可リスト)は config からのみ設定できる(CLI フラグでの上書きは設けない)
+      const guard = resolveGuardOptions(configResult.config);
+      // --dry-run ではレポートファイルを書かないため、config の run.report / run.reportFile は適用しない
+      // (config に report を書いたプロジェクトでも --dry-run を使えるようにする。CLI で明示した --report は
+      // runCommand が引数エラーにする)
+      const { report: _configReport, ...mergedWithoutReport } = mergedOptions;
+      const finalOptions: RunCommandOptions = options.dryRun
+        ? {
+            ...mergedWithoutReport,
+            ...(options.report !== undefined ? { report: options.report } : {}),
+            reportFile: options.reportFile,
+          }
+        : mergedOptions;
+      process.exitCode = await runCommand(files, guard ? { ...finalOptions, guard } : finalOptions);
+    });
+  });
+
+program
+  .command("req")
+  .description("send a single ad-hoc HTTP request (guarded, secret-masked, recorded in history)")
+  .argument("<method>", "HTTP method (e.g. GET, POST; case-insensitive)", parseMethodArgument)
+  .argument("<url>", "request URL (template placeholders such as {{baseUrl}} are expanded)")
+  .option(
+    "-H, --header <name:value>",
+    "request header (repeatable; split at the first ':'. A repeated name keeps the last value). Values are template-expanded",
+    collectHeaderOption,
+    {} as Record<string, string>,
+  )
+  .option(
+    "--query <key=value>",
+    "query string parameter merged into the URL (repeatable; the value may itself contain '='; overrides a same-named key already in the URL)",
+    collectQueryOption,
+    {} as Record<string, string>,
+  )
+  .option(
+    "--body <json>",
+    "request body: a JSON value, or @<file> to read it from a file under the current directory. Input that is not valid JSON is sent as a raw string",
+  )
+  .option(
+    "-e, --env <name>",
+    "environment name (references environments/<name>.yaml; cannot be combined with --env-file)",
+  )
+  .option(
+    "--env-file <path>",
+    "load environment variables from an arbitrary YAML file path (relative to cwd or absolute) instead of a named environment; cannot be combined with -e/--env",
+  )
+  .option(
+    "--var <key=value>",
+    "set an ad-hoc template variable (repeatable; the value may itself contain '='). Overrides same-named keys loaded from the environment. NOT masked as a secret in output — use OS env + {{env.X}} for real secrets",
+    collectVarOption,
+    {} as Record<string, string>,
+  )
+  .option("--timeout <ms>", "request timeout in milliseconds (default 30000)", parseTimeoutOption)
+  .option("--json", "force JSON output (prints JSON even when running on a TTY)")
+  .option("--text", "force text output (prints text even when stdout is not a TTY)")
+  .option("--no-history", "disable writing to the execution history (.klaus/history/*.jsonl)")
+  .option("--no-mask", "disable secret masking in stdout output (JSON/text)")
+  .option(
+    "--actor <name>",
+    "name recorded as history actor.name for this request (the actor kind — human/agent/ci — is still detected from environment variables)",
+    parseActorOption,
+  )
+  .addHelpText(
+    "after",
+    `
+${docsHelpLine}
+${exitCodesHelpLine}
+`,
+  )
+  .action(async (method: string, url: string, options: ReqCommandOptions) => {
+    await runAction(async () => {
+      // req は klaus.config.yaml から guard(送信先ホストの許可リスト)だけを読む。run の既定値
+      // (run.env / run.history / run.mask 等)は `klaus run` のオプション用であり、req には適用しない
+      const configResult = await loadConfigOrReport(process.cwd());
+      if (!configResult.ok) {
+        return;
+      }
+      const guard = resolveGuardOptions(configResult.config);
+      process.exitCode = await reqCommand(method, url, guard ? { ...options, guard } : options);
     });
   });
 
@@ -272,7 +405,8 @@ program
         configResult.config,
       );
 
-      await uiCommand(mergedOptions);
+      const guard = resolveGuardOptions(configResult.config);
+      await uiCommand(guard ? { ...mergedOptions, guard } : mergedOptions);
     });
   });
 
@@ -293,11 +427,11 @@ program
 program
   .command("schema")
   .description(
-    "print the JSON Schema for the flow definition YAML (or the run --json output, or klaus.config.yaml) to stdout",
+    "print the JSON Schema for the flow definition YAML (or the run --json output, the req --json output, the run --dry-run --json output, or klaus.config.yaml) to stdout",
   )
   .option(
     "-t, --target <target>",
-    'schema to print: "flow" (default), "run-report", or "config"',
+    'schema to print: "flow" (default), "run-report", "req-report", "dry-run-report", or "config"',
     "flow",
   )
   .action(async (options: { target: string }) => {
@@ -305,10 +439,12 @@ program
     if (
       options.target !== "flow" &&
       options.target !== "run-report" &&
+      options.target !== "req-report" &&
+      options.target !== "dry-run-report" &&
       options.target !== "config"
     ) {
       process.stderr.write(
-        `klaus: invalid --target "${options.target}" (expected "flow", "run-report", or "config")\n`,
+        `klaus: invalid --target "${options.target}" (expected "flow", "run-report", "req-report", "dry-run-report", or "config")\n`,
       );
       process.exitCode = 1;
       return;
@@ -348,7 +484,17 @@ const historyCommand = program
   .command("history")
   .description("list execution history (.klaus/history/*.jsonl)")
   .option("--flow <name>", "filter by flow name")
-  .option("--failed", "only include entries whose status is failed")
+  .addOption(
+    new Option("--failed", "only include entries whose status is failed").conflicts("status"),
+  )
+  .addOption(
+    new Option(
+      "--status <statuses>",
+      "only include entries whose status is in the comma-separated list (passed, failed, skipped, error)",
+    )
+      .argParser(parseHistoryStatuses)
+      .conflicts("failed"),
+  )
   .option(
     "--last <n>",
     "number of entries to fetch",
@@ -372,14 +518,23 @@ const historyCommand = program
 
 historyCommand
   .command("show")
-  .description("print the history entries for the given runId, exactly as stored, as JSON")
+  .description(
+    "print the history entries for the given runId as stored, as JSON (snapshot candidates are included only with --step)",
+  )
   .argument("<runId>", "the target runId")
-  .option("--step <name>", "filter by step name")
+  .option("--step <name>", "filter by step name (also includes snapshot candidates)")
   .action(async (runId: string, options: HistoryShowOptions) => {
     await runAction(async () => {
       process.exitCode = await historyShowCommand(runId, options);
     });
   });
+
+// 別ファイルで定義したコマンドを登録する。
+registerDiffCommand(program);
+registerPromoteCommand(program);
+registerMockCommand(program);
+registerSnapshotCommand(program);
+registerMcpCommand(program);
 
 // このモジュールが直接実行された(node dist/cli.js ...)場合のみパースする。
 // テストから import した際に process.argv(vitest 自身の起動引数)を誤ってパースしないためのガード。

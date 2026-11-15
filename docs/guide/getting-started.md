@@ -135,7 +135,7 @@ Full failure details (the complete request and response) are not shown in text o
 
 ## Where to Go Next
 
-- [cli](cli.md) — all options for `klaus run` / `klaus ui`, and the exit code scheme
+- [cli](cli.md) — all options for `klaus run` / `klaus req` / `klaus ui`, and the exit code scheme
 - [flow-definition](flow-definition.md) — the full reference for flow definition YAML fields (including SSE / WebSocket / GraphQL / assertion types)
 - [history](history.md) — the execution history JSONL schema
 - [ui](ui.md) — the localhost web UI launched by `klaus ui`

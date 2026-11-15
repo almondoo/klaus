@@ -1,6 +1,6 @@
 {
   "name": "@almondoo/klaus",
-  "version": "0.14.4",
+  "version": "0.32.0",
   "description": "API testing CLI: define request flows in YAML and run execution, assertions, and history tracking",
   "type": "module",
   "license": "Elastic-2.0",
@@ -41,6 +41,7 @@
     "dist/index.js",
     "dist/index.d.ts",
     "dist/server.js",
+    "dist/openapi-worker.js",
     "dist/schema/*.json",
     "dist/ui/**/*.html",
     "dist/ui/**/*.css",
@@ -74,6 +75,7 @@
   "devDependencies": {
     "@apidevtools/swagger-parser": "^13.1.0",
     "@biomejs/biome": "^2.6.3",
+    "@modelcontextprotocol/server": "2.4.0",
     "@types/node": "^26.6.5",
     "@types/ws": "^8.18.2",
     "@vitest/coverage-v8": "^5.0.5",

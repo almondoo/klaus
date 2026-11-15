@@ -1,6 +1,6 @@
 # Agent Skill (Claude Code / Codex)
 
-klaus ships an [Agent Skill](https://code.claude.com/docs/en/skills) (`SKILL.md`) inside the repository (`skills/klaus/SKILL.md`). Placing it where Claude Code or the OpenAI Codex CLI look for skills lets the agent learn how to write flow YAML, the `validate` → `run` → `history` command workflow, and what each exit code means — without reading the source code or this site.
+klaus ships an [Agent Skill](https://code.claude.com/docs/en/skills) (`SKILL.md`) inside the repository (`skills/klaus/SKILL.md`). Placing it where Claude Code or the OpenAI Codex CLI look for skills lets the agent learn how to write flow YAML, the `validate` → `run` → `history` command workflow, using `klaus req` instead of `curl` for ad-hoc requests, and what each exit code means — without reading the source code or this site.
 
 This is independent from the `AGENTS.md` that `klaus init` generates (a project-root summary file); this one is registered with the tool's own skill-discovery mechanism. It's fine to have both.
 
@@ -20,6 +20,19 @@ This is independent from the `AGENTS.md` that `klaus init` generates (a project-
 The sections below walk through installing for Claude Code and Codex as representative examples. For any other agent, copy `skills/klaus/` into the directory listed above.
 
 ## Installing for Claude Code
+
+### As a plugin
+
+The klaus repository is a Claude Code plugin marketplace. Installing the plugin adds the skill (namespaced as `/klaus:klaus`) and the klaus MCP server together:
+
+```bash
+claude plugin marketplace add almondoo/klaus
+claude plugin install klaus@klaus
+```
+
+See [MCP server for AI agents](/guide/mcp#claude-code) for what the plugin starts and its limits.
+
+### By copying
 
 Copy the whole `skills/klaus/` directory into one of the following (keep the directory name and the `SKILL.md` filename unchanged):
 

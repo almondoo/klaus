@@ -1,5 +1,14 @@
 import { execSync, spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -8,12 +17,44 @@ import { closeServer, listenEphemeral, reserveClosedPort } from "../support/net.
 const projectRoot = join(__dirname, "..", "..");
 const cliPath = join(projectRoot, "dist", "cli.js");
 
+/** /snap が返す本文(スナップショットのテストが差し替える) */
+let snapBody: unknown = { id: 1, name: "alice", at: "t1" };
+
+/** /slow-* が受信したリクエストの URL(シャットダウン時に待機中の送信が届かないことの検証用) */
+const slowHits: string[] = [];
+
 /** 成功/失敗/接続不能を再現するための最小限のローカル HTTP サーバー */
 async function startFixtureServer() {
   const server = createServer((req, res) => {
+    // 深さ 3000 の JSON をテキストとして返す(深い値を JSON.stringify しない: Node 22.19 でスタックが溢れるため)
+    if (req.url === "/deep") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(`${"[".repeat(3000)}${"]".repeat(3000)}`);
+      return;
+    }
+    // 受信してから 1.5 秒後に応答する(送信中のリクエストを作る)
+    if (req.url?.startsWith("/slow-")) {
+      slowHits.push(req.url);
+      setTimeout(() => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      }, 1500);
+      return;
+    }
+    if (req.url === "/snap") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(snapBody));
+      return;
+    }
     if (req.url === "/ok" && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    // リダイレクトを追うフローの検証用(/redirect-a → /ok)
+    if (req.url === "/redirect-a" && req.method === "GET") {
+      res.writeHead(302, { Location: "/ok" });
+      res.end();
       return;
     }
     // WHATWG URL 正規化形でリクエスト行に載ったままの req.url をそのままエコーする
@@ -21,6 +62,23 @@ async function startFixtureServer() {
     if (req.url?.startsWith("/echo") && req.method === "GET") {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ url: req.url }));
+      return;
+    }
+    // req コマンド用: 受け取ったメソッド・URL・ヘッダー・ボディをそのままエコーする(任意メソッド)
+    if (req.url?.startsWith("/req-echo")) {
+      const chunks: Buffer[] = [];
+      req.on("data", (chunk) => chunks.push(chunk));
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({
+            method: req.method,
+            url: req.url,
+            headers: req.headers,
+            body: Buffer.concat(chunks).toString("utf-8"),
+          }),
+        );
+      });
       return;
     }
     res.writeHead(404, { "Content-Type": "application/json" });
@@ -42,9 +100,10 @@ function runCli(
   args: string[],
   cwd: string,
   entryPath: string = cliPath,
+  env?: NodeJS.ProcessEnv,
 ): Promise<{ status: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("node", [entryPath, ...args], { cwd });
+    const child = spawn("node", [entryPath, ...args], { cwd, ...(env ? { env } : {}) });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {
@@ -56,6 +115,57 @@ function runCli(
     child.on("error", reject);
     child.on("close", (status) => resolve({ status, stdout, stderr }));
   });
+}
+
+/** JSON-RPC の応答(result か error のどちらか) */
+interface RpcResponse {
+  jsonrpc: string;
+  id: number;
+  // biome-ignore lint/suspicious/noExplicitAny: プロトコルの応答の形はメソッドごとに異なるため
+  result?: any;
+  error?: { code: number; message: string };
+}
+
+/**
+ * node dist/cli.js mcp を子プロセスとして起動し、stdio の MCP(改行区切りの JSON-RPC)を手書きで話す。
+ * フレーミングは SDK の StdioServerTransport と同じ(1 メッセージ 1 行、末尾は改行)。
+ * stdout の全行を stdoutLines に溜め、プロトコル以外のものが混ざっていないことの検証に使う。
+ */
+function startMcp(args: string[], cwd: string, env?: NodeJS.ProcessEnv) {
+  const child = spawn("node", [cliPath, "mcp", ...args], { cwd, ...(env ? { env } : {}) });
+  const stdoutLines: string[] = [];
+  const waiting = new Map<number, (response: RpcResponse) => void>();
+  let buffer = "";
+  child.stdout.on("data", (chunk: Buffer) => {
+    buffer += chunk.toString("utf-8");
+    for (let index = buffer.indexOf("\n"); index !== -1; index = buffer.indexOf("\n")) {
+      const line = buffer.slice(0, index);
+      buffer = buffer.slice(index + 1);
+      stdoutLines.push(line);
+      const message = JSON.parse(line) as RpcResponse;
+      waiting.get(message.id)?.(message);
+    }
+  });
+  let nextId = 1;
+  return {
+    stdoutLines,
+    request(method: string, params: unknown): Promise<RpcResponse> {
+      const id = nextId++;
+      const response = new Promise<RpcResponse>((resolve) => waiting.set(id, resolve));
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      return response;
+    },
+    notify(method: string): void {
+      child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", method })}\n`);
+    },
+    /** 標準入力を閉じ、プロセスの終了コードを返す */
+    close(): Promise<number | null> {
+      return new Promise((resolve) => {
+        child.on("close", (status) => resolve(status));
+        child.stdin.end();
+      });
+    },
+  };
 }
 
 describe("cli integration", () => {
@@ -343,6 +453,48 @@ describe("cli integration", () => {
     expect(xml).toContain('<testcase name="ok"');
   });
 
+  it("(e3) --report html,github: HTML ファイルが生成され、GitHub 環境ではサマリー追記 + stderr アノテーションで stdout の JSON は壊れない", async () => {
+    const flowPath = join(workDir, "ng-for-html-github.yaml");
+    await writeFile(
+      flowPath,
+      `name: ng flow\nsteps:\n  - name: bad\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 201\n`,
+      "utf-8",
+    );
+    const htmlPath = join(workDir, "report.html");
+    const summaryPath = join(workDir, "step-summary.md");
+
+    const result = await runCli(
+      [
+        "run",
+        flowPath,
+        "--no-history",
+        "--report",
+        "html,github",
+        "--report-file",
+        htmlPath,
+        "--report-file",
+        join(workDir, "gh.md"),
+      ],
+      workDir,
+      cliPath,
+      { ...process.env, GITHUB_ACTIONS: "true", GITHUB_STEP_SUMMARY: summaryPath },
+    );
+    expect(result.status).toBe(4);
+    expect(JSON.parse(result.stdout).status).toBe("failed");
+    expect(result.stderr).toContain("::error file=");
+    expect(await readFile(htmlPath, "utf-8")).toContain("<!DOCTYPE html>");
+
+    // --report-file 未指定なら GITHUB_STEP_SUMMARY へ追記される
+    const result3 = await runCli(
+      ["run", flowPath, "--no-history", "--report", "github"],
+      workDir,
+      cliPath,
+      { ...process.env, GITHUB_ACTIONS: "true", GITHUB_STEP_SUMMARY: summaryPath },
+    );
+    expect(result3.status).toBe(4);
+    expect(await readFile(summaryPath, "utf-8")).toContain("## klaus run: FAILED");
+  });
+
   it("(e2) --report junit,tap + --report-file を2回指定すると両方のレポートファイルが生成される", async () => {
     const flowPath = join(workDir, "success-for-multi-report.yaml");
     await writeFile(
@@ -531,6 +683,136 @@ describe("cli integration", () => {
     }
   }, 20000);
 
+  it("(k2) klaus.config.yaml の guard.allowedHosts: 許可外ホストへの run は exit 3 で送信されず、許可ホストなら exit 0", async () => {
+    const guardWorkDir = join(workDir, "guard-run-scenario");
+    await mkdir(guardWorkDir, { recursive: true });
+    const flowPath = join(guardWorkDir, "ok.yaml");
+    await writeFile(
+      flowPath,
+      `name: guard flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+
+    await writeFile(
+      join(guardWorkDir, "klaus.config.yaml"),
+      "guard:\n  allowedHosts:\n    - api.example.com\n",
+      "utf-8",
+    );
+    const denied = await runCli(["run", flowPath, "--no-history"], guardWorkDir);
+    expect(denied.status).toBe(3);
+    expect(JSON.parse(denied.stdout).status).toBe("error");
+    expect(denied.stdout).toContain("guard.allowedHosts");
+
+    await writeFile(
+      join(guardWorkDir, "klaus.config.yaml"),
+      `guard:\n  allowedHosts:\n    - "${new URL(fixture.baseUrl).host}"\n`,
+      "utf-8",
+    );
+    const allowed = await runCli(["run", flowPath, "--no-history"], guardWorkDir);
+    expect(allowed.status).toBe(0);
+  });
+
+  it("(k3) klaus.config.yaml の guard.allowedHosts が空配列だと run は exit 2 になる", async () => {
+    const guardWorkDir = join(workDir, "guard-empty-scenario");
+    await mkdir(guardWorkDir, { recursive: true });
+    await writeFile(
+      join(guardWorkDir, "klaus.config.yaml"),
+      "guard:\n  allowedHosts: []\n",
+      "utf-8",
+    );
+    const flowPath = join(guardWorkDir, "ok.yaml");
+    await writeFile(
+      flowPath,
+      `name: guard flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n`,
+      "utf-8",
+    );
+
+    const result = await runCli(["run", flowPath, "--no-history"], guardWorkDir);
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("klaus.config.yaml");
+  });
+
+  it("(k4) run --actor / 環境変数の推定が履歴(history show)の actor・file・git に記録される", async () => {
+    const auditWorkDir = join(workDir, "audit-scenario");
+    await mkdir(auditWorkDir, { recursive: true });
+    const flowPath = join(auditWorkDir, "ok.yaml");
+    await writeFile(
+      flowPath,
+      `name: audit flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n    assert:\n      status: 200\n`,
+      "utf-8",
+    );
+
+    const run = await runCli(["run", flowPath, "--actor", "it-bot"], auditWorkDir);
+    expect(run.status).toBe(0);
+    const runId = (JSON.parse(run.stdout) as { runId: string }).runId;
+
+    const show = await runCli(["history", "show", runId], auditWorkDir);
+    const [entry] = JSON.parse(show.stdout) as Array<{
+      actor?: { kind: string; name?: string };
+      file?: string;
+      git?: unknown;
+    }>;
+    // kind は実行環境(CI / エージェント)に依存して変わるため、name と file の記録のみ固定する
+    expect(entry?.actor?.name).toBe("it-bot");
+    expect(["human", "agent", "ci"]).toContain(entry?.actor?.kind);
+    expect(entry?.file).toBe("ok.yaml");
+  });
+
+  it("(k5) klaus ui: klaus.config.yaml の guard が POST /api/request に効き、許可外ホストは error になる", async () => {
+    const uiGuardDir = join(workDir, "guard-ui-scenario");
+    await mkdir(uiGuardDir, { recursive: true });
+    await writeFile(
+      join(uiGuardDir, "klaus.config.yaml"),
+      "guard:\n  allowedHosts:\n    - api.example.com\n",
+      "utf-8",
+    );
+
+    const child = spawn("node", [cliPath, "ui", "--no-open", "--port", "14898"], {
+      cwd: uiGuardDir,
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf-8");
+    });
+    child.on("error", () => {});
+
+    try {
+      const deadline = Date.now() + 15000;
+      while (!/klaus UI started: \S+/.test(stdout) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      const url = /klaus UI started: (\S+)/.exec(stdout)?.[1];
+      expect(url).toBeDefined();
+      const token = new URL(url as string).searchParams.get("token") as string;
+
+      const res = await fetch("http://127.0.0.1:14898/api/request", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": token,
+          Cookie: `klaus_token=${token}`,
+        },
+        body: JSON.stringify({ request: { method: "GET", url: `${fixture.baseUrl}/ok` } }),
+      });
+      const payload = (await res.json()) as { result: { status: string; error?: string } };
+
+      expect(res.status).toBe(200);
+      expect(payload.result.status).toBe("error");
+      expect(payload.result.error).toContain("guard.allowedHosts");
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise<void>((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) {
+          resolve();
+          return;
+        }
+        child.once("exit", () => resolve());
+        setTimeout(resolve, 3000);
+      });
+    }
+  }, 20000);
+
   it("(m) schema: 既定(flow スキーマ)の JSON Schema を stdout に出力し exit 0 になる", async () => {
     const result = await runCli(["schema"], workDir);
 
@@ -565,6 +847,20 @@ describe("cli integration", () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("invalid --last value: abc");
     expect(result.stderr).not.toMatch(/^\s+at\s/m);
+  });
+
+  it("(p2) history --status: 未知の値と --failed との併用は exit 1 で拒否される", async () => {
+    const unknown = await runCli(["history", "--status", "bogus"], workDir);
+    expect(unknown.status).toBe(1);
+    expect(unknown.stderr).toContain(
+      "invalid --status value: bogus (valid: passed, failed, skipped, error)",
+    );
+    expect(unknown.stdout).toBe("");
+
+    const conflict = await runCli(["history", "--failed", "--status", "error"], workDir);
+    expect(conflict.status).toBe(1);
+    expect(conflict.stderr).toContain("cannot be used with");
+    expect(conflict.stdout).toBe("");
   });
 
   it("(q) init: api/example.yaml と environments/local.yaml と AGENTS.md を生成し exit 0 になる", async () => {
@@ -761,4 +1057,837 @@ describe("cli integration", () => {
     expect(showParsed).toHaveLength(1);
     expect(showParsed[0]?.step).toBe("ok");
   });
+
+  it("(req-1) req GET: exit 0 + version 1 の JSON(request / response)。HTTP 404 でも応答を受信したので exit 0", async () => {
+    const ok = await runCli(["req", "GET", `${fixture.baseUrl}/ok`, "--no-history"], workDir);
+
+    expect(ok.status).toBe(0);
+    const report = JSON.parse(ok.stdout);
+    expect(report.version).toBe(1);
+    expect(report.status).toBe("passed");
+    expect(report.request.method).toBe("GET");
+    expect(report.response.status).toBe(200);
+    expect(report).not.toHaveProperty("historyRef");
+
+    const notFound = await runCli(
+      ["req", "GET", `${fixture.baseUrl}/missing`, "--no-history"],
+      workDir,
+    );
+    expect(notFound.status).toBe(0);
+    expect(JSON.parse(notFound.stdout).response.status).toBe(404);
+  });
+
+  it("(req-2) req POST: -H / --query / --body を送信し、historyRef の runId で history show から全文を取得できる", async () => {
+    const reqWorkDir = join(workDir, "req-scenario");
+    await mkdir(reqWorkDir, { recursive: true });
+
+    const result = await runCli(
+      [
+        "req",
+        "post",
+        `${fixture.baseUrl}/req-echo`,
+        "-H",
+        "X-Trace: abc",
+        "--query",
+        "q=klaus",
+        "--body",
+        '{"name":"a"}',
+        "--actor",
+        "it-agent",
+      ],
+      reqWorkDir,
+    );
+
+    expect(result.status).toBe(0);
+    const report = JSON.parse(result.stdout);
+    const echo = JSON.parse(report.response.body);
+    expect(echo.method).toBe("POST");
+    expect(echo.url).toBe("/req-echo?q=klaus");
+    expect(echo.headers["x-trace"]).toBe("abc");
+    expect(JSON.parse(echo.body)).toEqual({ name: "a" });
+    expect(report.historyRef).toMatchObject({ step: "request" });
+
+    const show = await runCli(
+      ["history", "show", report.historyRef.runId, "--step", "request"],
+      reqWorkDir,
+    );
+    expect(show.status).toBe(0);
+    const entries = JSON.parse(show.stdout) as Array<Record<string, unknown>>;
+    expect(entries[0]).toMatchObject({
+      source: "single",
+      actor: { name: "it-agent" },
+      request: { method: "POST" },
+    });
+  });
+
+  it("(req-3) req: 接続不能は exit 3(status: error)", async () => {
+    const closedPort = await reserveClosedPort();
+
+    const result = await runCli(
+      ["req", "GET", `http://127.0.0.1:${closedPort}/`, "--no-history"],
+      workDir,
+    );
+
+    expect(result.status).toBe(3);
+    expect(JSON.parse(result.stdout).status).toBe("error");
+  });
+
+  it("(req-4) req: guard.allowedHosts は exit 3 で拒否し、$protected: readonly は GET のみ許可する", async () => {
+    const guardWorkDir = join(workDir, "req-guard-scenario");
+    await mkdir(join(guardWorkDir, "environments"), { recursive: true });
+    await writeFile(
+      join(guardWorkDir, "environments", "stg.yaml"),
+      `$protected: readonly\nbaseUrl: ${fixture.baseUrl}\n`,
+      "utf-8",
+    );
+
+    const get = await runCli(
+      ["req", "GET", "{{baseUrl}}/req-echo", "-e", "stg", "--no-history"],
+      guardWorkDir,
+    );
+    const post = await runCli(
+      ["req", "POST", "{{baseUrl}}/req-echo", "-e", "stg", "--no-history"],
+      guardWorkDir,
+    );
+    expect(get.status).toBe(0);
+    expect(post.status).toBe(3);
+    expect(JSON.parse(post.stdout).error).toContain("refusing POST");
+
+    await writeFile(
+      join(guardWorkDir, "klaus.config.yaml"),
+      "guard:\n  allowedHosts:\n    - api.example.com\n",
+      "utf-8",
+    );
+    const denied = await runCli(
+      ["req", "GET", `${fixture.baseUrl}/req-echo`, "--no-history"],
+      guardWorkDir,
+    );
+    expect(denied.status).toBe(3);
+    expect(JSON.parse(denied.stdout).error).toContain("guard.allowedHosts");
+  });
+
+  it("(req-5) req: 不正な引数は exit 0 以外(--header の形式不正は commander、--json と --text の併用は exit 1、cwd 外の --body ファイルは exit 2)で、何も送信しない", async () => {
+    const badHeader = await runCli(
+      ["req", "GET", `${fixture.baseUrl}/ok`, "-H", "novalue", "--no-history"],
+      workDir,
+    );
+    expect(badHeader.status).not.toBe(0);
+    expect(badHeader.stderr).toContain("invalid --header value");
+    expect(badHeader.stderr).not.toMatch(/^\s+at\s/m);
+    expect(badHeader.stdout).toBe("");
+
+    const both = await runCli(
+      ["req", "GET", `${fixture.baseUrl}/ok`, "--json", "--text", "--no-history"],
+      workDir,
+    );
+    expect(both.status).toBe(1);
+    expect(both.stdout).toBe("");
+
+    const outside = await runCli(
+      ["req", "POST", `${fixture.baseUrl}/ok`, "--body", "@../outside.json", "--no-history"],
+      workDir,
+    );
+    expect(outside.status).toBe(2);
+    expect(outside.stderr).toContain("outside the current directory");
+  });
+
+  it("(req-6) schema -t req-report: req --json の JSON Schema を出力し exit 0 になる", async () => {
+    const result = await runCli(["schema", "-t", "req-report"], workDir);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).properties.historyRef).toBeDefined();
+  });
+
+  it("(dry-1) run --dry-run: capture 依存つきの 2 ステップを送信せずに展開し、dryRun: true の JSON と exit 0", async () => {
+    const dryWorkDir = join(workDir, "dry-run-scenario");
+    await mkdir(dryWorkDir, { recursive: true });
+    const flowPath = join(dryWorkDir, "chain.yaml");
+    await writeFile(
+      flowPath,
+      `name: chain\nsteps:\n  - name: login\n    request:\n      method: POST\n      url: "${fixture.baseUrl}/req-echo/login"\n      body: { user: a }\n    capture: { token: "$.body" }\n  - name: me\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/req-echo/me"\n      headers: { Authorization: "Bearer {{token}}" }\n`,
+      "utf-8",
+    );
+
+    const result = await runCli(["run", flowPath, "--dry-run"], dryWorkDir);
+
+    expect(result.status).toBe(0);
+    const report = JSON.parse(result.stdout);
+    expect(report).toMatchObject({ version: 1, dryRun: true, status: "ok" });
+    expect(report.flows[0].steps[1]).toMatchObject({
+      unresolved: ["token"],
+      request: { headers: { Authorization: "Bearer {{token}}" } },
+      guard: { status: "allowed" },
+    });
+    // 履歴は書かれない
+    await expect(access(join(dryWorkDir, ".klaus"))).rejects.toThrow();
+  });
+
+  it("(dry-2) run --dry-run: guard.allowedHosts で拒否されるステップがあれば exit 3、config の run.report があっても使える", async () => {
+    const dryWorkDir = join(workDir, "dry-run-guard-scenario");
+    await mkdir(dryWorkDir, { recursive: true });
+    const flowPath = join(dryWorkDir, "ok.yaml");
+    await writeFile(
+      flowPath,
+      `name: guard flow\nsteps:\n  - name: ok\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/ok"\n`,
+      "utf-8",
+    );
+    await writeFile(
+      join(dryWorkDir, "klaus.config.yaml"),
+      "run:\n  report: junit\nguard:\n  allowedHosts:\n    - api.example.com\n",
+      "utf-8",
+    );
+
+    const result = await runCli(["run", flowPath, "--dry-run"], dryWorkDir);
+
+    expect(result.status).toBe(3);
+    const report = JSON.parse(result.stdout);
+    expect(report.status).toBe("error");
+    expect(report.flows[0].steps[0].guard.status).toBe("refused");
+    // config の run.report は --dry-run では適用されず、レポートファイルは書かれない
+    await expect(access(join(dryWorkDir, "klaus-report.xml"))).rejects.toThrow();
+  });
+
+  it("(body-1) run: form / multipart / bodyFile をビルド済み CLI から送信でき、cwd の外のファイルは exit 3 で拒否する", async () => {
+    const bodyDir = join(workDir, "body-forms");
+    await mkdir(bodyDir, { recursive: true });
+    await writeFile(join(bodyDir, "hello.txt"), "hello-from-file", "utf-8");
+    const flowPath = join(bodyDir, "bodies.yaml");
+    await writeFile(
+      flowPath,
+      `name: bodies
+steps:
+  - name: form
+    request: { method: POST, url: "${fixture.baseUrl}/req-echo", form: { user: alice, note: "a b&c" } }
+    assert:
+      body:
+        - { path: "$.headers.content-type", equals: "application/x-www-form-urlencoded" }
+        - { path: "$.body", equals: "user=alice&note=a+b%26c" }
+  - name: multipart
+    request:
+      method: POST
+      url: "${fixture.baseUrl}/req-echo"
+      multipart:
+        title: hi
+        upload: { file: hello.txt, contentType: text/plain }
+    assert:
+      body:
+        - { path: "$.headers.content-type", regex: "^multipart/form-data; boundary=" }
+        - { path: "$.body", contains: "hello-from-file" }
+  - name: file
+    request:
+      method: PUT
+      url: "${fixture.baseUrl}/req-echo"
+      headers: { Content-Type: text/plain }
+      bodyFile: hello.txt
+    assert:
+      body:
+        - { path: "$.body", equals: "hello-from-file" }
+`,
+      "utf-8",
+    );
+    const sent = await runCli(["run", flowPath, "--no-history"], bodyDir);
+    expect(sent.status, sent.stdout).toBe(0);
+
+    const escapePath = join(bodyDir, "escape.yaml");
+    await writeFile(
+      escapePath,
+      `name: escape\nsteps:\n  - name: escape\n    request: { method: POST, url: "${fixture.baseUrl}/req-echo", bodyFile: "../../package.json" }\n`,
+      "utf-8",
+    );
+    const escaped = await runCli(["run", escapePath, "--no-history"], bodyDir);
+    expect(escaped.status).toBe(3);
+    expect(JSON.parse(escaped.stdout).flows[0].steps[0].error).toContain(
+      "outside the current directory",
+    );
+  });
+
+  it("(dry-3) run --dry-run: --data で行ごとに展開され、--record / --replay / --report との併用は exit 1", async () => {
+    const dryWorkDir = join(workDir, "dry-run-data-scenario");
+    await mkdir(dryWorkDir, { recursive: true });
+    const flowPath = join(dryWorkDir, "item.yaml");
+    await writeFile(
+      flowPath,
+      `name: item\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/req-echo/{{id}}"\n`,
+      "utf-8",
+    );
+    const dataPath = join(dryWorkDir, "rows.json");
+    await writeFile(dataPath, '[{"id":"a"},{"id":"b"}]', "utf-8");
+
+    const data = await runCli(
+      ["run", flowPath, "--dry-run", "--data", dataPath, "--jobs", "2"],
+      dryWorkDir,
+    );
+    expect(data.status).toBe(0);
+    const urls = JSON.parse(data.stdout).flows.map(
+      (f: { iteration: number; steps: { request: { url: string } }[] }) =>
+        `${f.iteration}:${f.steps[0]?.request.url.replace(fixture.baseUrl, "")}`,
+    );
+    expect(urls).toEqual(["1:/req-echo/a", "2:/req-echo/b"]);
+
+    for (const extra of [
+      ["--record", "cas"],
+      ["--replay", "cas"],
+      ["--report", "junit"],
+    ]) {
+      const conflict = await runCli(["run", flowPath, "--dry-run", ...extra], dryWorkDir);
+      expect(conflict.status, extra.join(" ")).toBe(1);
+      expect(conflict.stdout).toBe("");
+      expect(conflict.stderr).toContain("--dry-run cannot be combined with");
+    }
+  });
+
+  it("(dry-4) schema -t dry-run-report: run --dry-run --json の JSON Schema を出力し exit 0 になる", async () => {
+    const result = await runCli(["schema", "-t", "dry-run-report"], workDir);
+
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).properties.dryRun).toBeDefined();
+  });
+  it("(mock) klaus mock: 記録済みレスポンスを返し、SIGTERM で exit 0 になる。カセットが無ければ exit 2、不正な --port は exit 1", async () => {
+    const mockDir = join(workDir, "mock-scenario");
+    await mkdir(mockDir, { recursive: true });
+    const entry = {
+      v: 1,
+      method: "GET",
+      url: "http://api.example.com/hello?x=1",
+      status: 200,
+      headers: { "content-type": "application/json" },
+      bodyText: '{"hello":"***"}',
+    };
+    await writeFile(join(mockDir, "cassette.jsonl"), `${JSON.stringify(entry)}\n`, "utf-8");
+
+    const child = spawn("node", [cliPath, "mock", mockDir, "--port", "0", "--json"], {
+      cwd: workDir,
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf-8");
+    });
+    child.on("error", () => {});
+    const exited = new Promise<number | null>((resolve) => {
+      child.once("exit", (code) => resolve(code));
+    });
+
+    try {
+      const deadline = Date.now() + 15000;
+      while (!stdout.includes("\n") && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const startup = JSON.parse(stdout.split("\n")[0] ?? "");
+      expect(startup.event).toBe("listening");
+
+      const hit = await fetch(`${startup.url}/hello?x=1`);
+      expect(hit.status).toBe(200);
+      expect(await hit.text()).toBe('{"hello":"***"}');
+      expect((await fetch(`${startup.url}/unknown`)).status).toBe(404);
+    } finally {
+      child.kill("SIGTERM");
+    }
+    expect(await exited).toBe(0);
+
+    const missing = await runCli(["mock", join(workDir, "no-such-cassette")], workDir);
+    expect(missing.status).toBe(2);
+    const badPort = await runCli(["mock", mockDir, "--port", "99999"], workDir);
+    expect(badPort.status).toBe(1);
+  }, 30000);
+
+  it("(aa) run --json: リダイレクトの経路・落としたヘッダーと、tls.insecure の警告(トップレベル warnings)が JSON に載る", async () => {
+    const reportDir = join(workDir, "report-follow-ups");
+    await mkdir(reportDir, { recursive: true });
+    await writeFile(
+      join(reportDir, "moved.yaml"),
+      `name: moved flow\nhttp:\n  followRedirects: true\nsteps:\n  - name: moved\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/redirect-a"\n    assert:\n      status: 201\n`,
+      "utf-8",
+    );
+    await writeFile(
+      join(reportDir, "klaus.config.yaml"),
+      "http:\n  tls:\n    insecure: true\n",
+      "utf-8",
+    );
+
+    const result = await runCli(["run", "moved.yaml", "--no-history"], reportDir);
+
+    expect(result.status).toBe(4);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.flows[0].steps[0].redirects).toEqual([`${fixture.baseUrl}/ok`]);
+    expect(parsed.warnings).toEqual([expect.stringContaining("http.tls.insecure is enabled")]);
+    // stderr にも従来どおり出る
+    expect(result.stderr).toContain("http.tls.insecure is enabled");
+  });
+
+  it("(ab) assert.snapshot: 書き込み(exit 0)→ 一致 → 不一致(exit 4・差分つき JSON)→ snapshot accept → -u の exit code と JSON", async () => {
+    const snapDir = join(workDir, "snapshot-scenario");
+    await mkdir(snapDir, { recursive: true });
+    await writeFile(
+      join(snapDir, "snap.yaml"),
+      `name: snap flow\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/snap"\n    assert:\n      snapshot:\n        ignore: ["$.at"]\n`,
+      "utf-8",
+    );
+    // 周囲の CI 環境変数に依存させない(CI=true だと基準が無いときに失敗する)
+    const env = { ...process.env, CI: "false" };
+
+    const written = await runCli(["run", "snap.yaml"], snapDir, cliPath, env);
+    expect(written.status).toBe(0);
+    expect(JSON.parse(written.stdout).snapshots).toMatchObject({
+      written: 1,
+      files: ["__snapshots__/snap.yaml.snap.json"],
+    });
+
+    snapBody = { id: 1, name: "alice", at: "t2" };
+    const matched = await runCli(["run", "snap.yaml", "--no-history"], snapDir, cliPath, env);
+    expect(matched.status).toBe(0);
+    expect(JSON.parse(matched.stdout).snapshots).toMatchObject({ matched: 1 });
+
+    snapBody = { id: 1, name: "bob", at: "t3" };
+    const mismatch = await runCli(["run", "snap.yaml"], snapDir, cliPath, env);
+    expect(mismatch.status).toBe(4);
+    const report = JSON.parse(mismatch.stdout);
+    expect(report.snapshots.mismatched).toBe(1);
+    expect(report.flows[0].steps[0].assertions[0]).toMatchObject({
+      kind: "snapshot",
+      state: "mismatch",
+      differences: [{ path: "$.body.name", before: "alice", after: "bob" }],
+    });
+
+    // CI 指定で、基準の無い別フローは書かずに失敗する
+    await writeFile(
+      join(snapDir, "fresh.yaml"),
+      `name: fresh\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/snap"\n    assert:\n      snapshot: true\n`,
+      "utf-8",
+    );
+    const missing = await runCli(
+      ["run", "fresh.yaml", "--no-history", "--ci"],
+      snapDir,
+      cliPath,
+      env,
+    );
+    expect(missing.status).toBe(4);
+    expect(JSON.parse(missing.stdout).snapshots).toMatchObject({ missing: 1, written: 0 });
+
+    // 承認(accept)してから再実行すると一致する
+    const accepted = await runCli(["snapshot", "accept", report.runId], snapDir, cliPath, env);
+    expect(accepted.status).toBe(0);
+    expect(JSON.parse(accepted.stdout).accepted).toEqual([
+      { key: "get", snapshotFile: "__snapshots__/snap.yaml.snap.json", state: "updated" },
+    ]);
+    const rerun = await runCli(["run", "snap.yaml", "--no-history"], snapDir, cliPath, env);
+    expect(rerun.status).toBe(0);
+
+    // -u の併用エラーは exit 1、-u 単体は exit 0 で更新
+    const conflict = await runCli(["run", "snap.yaml", "-u", "--ci"], snapDir, cliPath, env);
+    expect(conflict.status).toBe(1);
+    snapBody = { id: 2, name: "carol", at: "t4" };
+    const updated = await runCli(["run", "snap.yaml", "--no-history", "-u"], snapDir, cliPath, env);
+    expect(updated.status).toBe(0);
+    expect(JSON.parse(updated.stdout).snapshots).toMatchObject({ updated: 1 });
+
+    // 壊れたスナップショットは exit 2、承認対象の無い run の accept は exit 1
+    await writeFile(join(snapDir, "__snapshots__", "snap.yaml.snap.json"), "{broken", "utf-8");
+    const corrupt = await runCli(["run", "snap.yaml", "--no-history"], snapDir, cliPath, env);
+    expect(corrupt.status).toBe(2);
+    const nothing = await runCli(["snapshot", "accept", "no-such-run"], snapDir, cliPath, env);
+    expect(nothing.status).toBe(1);
+  });
+
+  it("(ac) --openapi: 仕様どおり(exit 0・カバレッジ)→ 違反(exit 4)→ カバレッジ下限(exit 4)→ run.openapi 設定 → 壊れた仕様(exit 2)→ 引数エラー(exit 1)→ dry-run の計画", async () => {
+    const apiDir = join(workDir, "openapi-scenario");
+    await mkdir(apiDir, { recursive: true });
+    await writeFile(
+      join(apiDir, "openapi.json"),
+      JSON.stringify({
+        openapi: "3.0.3",
+        info: { title: "Snap API", version: "1" },
+        paths: {
+          "/snap": {
+            get: {
+              responses: {
+                "200": {
+                  description: "ok",
+                  content: {
+                    "application/json": {
+                      schema: {
+                        type: "object",
+                        required: ["id"],
+                        properties: { id: { type: "integer" }, name: { type: "string" } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          "/untested": { get: { responses: { "200": { description: "ok" } } } },
+        },
+      }),
+      "utf-8",
+    );
+    await writeFile(
+      join(apiDir, "flow.yaml"),
+      `name: api flow\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "${fixture.baseUrl}/snap"\n`,
+      "utf-8",
+    );
+    snapBody = { id: 1, name: "alice", at: "t1" };
+
+    const ok = await runCli(
+      ["run", "flow.yaml", "--openapi", "openapi.json", "--no-history"],
+      apiDir,
+      cliPath,
+    );
+    expect(ok.status).toBe(0);
+    expect(JSON.parse(ok.stdout).openapi).toMatchObject({
+      documents: [{ file: "openapi.json", title: "Snap API", operations: 2 }],
+      operations: { total: 2, covered: 1, percent: 50 },
+      uncovered: [{ operation: "GET /untested" }],
+      unmatched: [],
+      partial: false,
+      planned: false,
+    });
+
+    // 下限を下回ると、通ったステップがあっても exit 4(status も failed)
+    const below = await runCli(
+      [
+        "run",
+        "flow.yaml",
+        "--openapi",
+        "openapi.json",
+        "--openapi-coverage-min",
+        "80",
+        "--no-history",
+      ],
+      apiDir,
+      cliPath,
+    );
+    expect(below.status).toBe(4);
+    expect(JSON.parse(below.stdout)).toMatchObject({
+      status: "failed",
+      openapi: { coverageMin: { percent: 80, met: false } },
+    });
+
+    // 設定ファイルの run.openapi(設定ファイルからの相対パス)
+    await writeFile(join(apiDir, "klaus.config.yaml"), "run:\n  openapi: openapi.json\n", "utf-8");
+    const configured = await runCli(["run", "flow.yaml", "--no-history"], apiDir, cliPath);
+    expect(configured.status).toBe(0);
+    expect(JSON.parse(configured.stdout).openapi.operations.total).toBe(2);
+
+    // 応答が仕様に違反する
+    snapBody = { id: "not-a-number" };
+    const bad = await runCli(["run", "flow.yaml", "--no-history"], apiDir, cliPath);
+    expect(bad.status).toBe(4);
+    const report = JSON.parse(bad.stdout);
+    expect(report.flows[0].steps[0].assertions[0]).toMatchObject({
+      kind: "openapi",
+      ok: false,
+      openapi: {
+        state: "invalid",
+        operation: "GET /snap",
+        violations: [{ location: "body", path: "/id" }],
+      },
+    });
+    expect(report.openapi.violations).toBe(1);
+
+    // dry-run は送らず、計画のカバレッジだけを出す
+    const dry = await runCli(["run", "flow.yaml", "--dry-run"], apiDir, cliPath);
+    expect(dry.status).toBe(0);
+    expect(JSON.parse(dry.stdout).openapi).toMatchObject({
+      planned: true,
+      operations: { covered: 1 },
+    });
+
+    // 引数の誤りは exit 1、壊れた仕様は exit 2
+    await writeFile(join(apiDir, "klaus.config.yaml"), "run: {}\n", "utf-8");
+    const strictWithoutSpec = await runCli(
+      ["run", "flow.yaml", "--openapi-strict"],
+      apiDir,
+      cliPath,
+    );
+    expect(strictWithoutSpec.status).toBe(1);
+    // 10 進数以外(16 進・指数・空白つき)は受け付けない
+    for (const value of ["0x10", "1e1", " 5", "-1", "5%"]) {
+      const bad = await runCli(
+        ["run", "flow.yaml", "--openapi", "openapi.json", "--openapi-coverage-min", value],
+        apiDir,
+        cliPath,
+      );
+      expect(bad.status, value).toBe(1);
+    }
+    const range = await runCli(
+      ["run", "flow.yaml", "--openapi", "openapi.json", "--openapi-coverage-min", "101"],
+      apiDir,
+      cliPath,
+    );
+    expect(range.status).toBe(1);
+    await writeFile(join(apiDir, "broken.yaml"), "openapi: 3.0.0\npaths: [\n", "utf-8");
+    const broken = await runCli(["run", "flow.yaml", "--openapi", "broken.yaml"], apiDir, cliPath);
+    expect(broken.status).toBe(2);
+  });
+
+  it("(ac) klaus mcp: initialize → tools/list → tools/call を stdio の JSON-RPC で話し、stdout にはプロトコル以外を出さず、stdin を閉じると exit 0", async () => {
+    const mcpDir = join(workDir, "mcp-scenario");
+    await mkdir(mcpDir, { recursive: true });
+    const mcp = startMcp([], mcpDir);
+
+    const initialized = await mcp.request("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "protocol-test", version: "9.9.9" },
+    });
+    mcp.notify("notifications/initialized");
+    const listed = await mcp.request("tools/list", {});
+    const ok = await mcp.request("tools/call", {
+      name: "klaus_request",
+      arguments: { method: "GET", url: `${fixture.baseUrl}/ok` },
+    });
+    // 許可リスト外のホストは isError(上書きの手段は無い)
+    await writeFile(
+      join(mcpDir, "klaus.config.yaml"),
+      "guard:\n  allowedHosts:\n    - example.com\n",
+      "utf-8",
+    );
+    const refused = await mcp.request("tools/call", {
+      name: "klaus_request",
+      arguments: { method: "GET", url: `${fixture.baseUrl}/ok` },
+    });
+    const exitCode = await mcp.close();
+
+    expect(initialized.result.serverInfo.name).toBe("klaus");
+    expect(initialized.result.serverInfo.version).toMatch(/^\d+\.\d+\.\d+$/);
+    const tools = listed.result.tools as {
+      name: string;
+      description: string;
+      inputSchema: { type: string };
+      annotations: Record<string, boolean>;
+    }[];
+    expect(tools.map((tool) => tool.name)).toEqual([
+      "klaus_list_flows",
+      "klaus_validate_flow",
+      "klaus_list_environments",
+      "klaus_dry_run",
+      "klaus_run_flow",
+      "klaus_request",
+      "klaus_history_list",
+      "klaus_history_show",
+      "klaus_diff_runs",
+      "klaus_snapshot_list",
+      "klaus_promote",
+      "klaus_snapshot_accept",
+    ]);
+    for (const tool of tools) {
+      expect(tool.description, tool.name).not.toBe("");
+      expect(tool.inputSchema.type, tool.name).toBe("object");
+      expect(Object.keys(tool.annotations), tool.name).toEqual(
+        expect.arrayContaining([
+          "readOnlyHint",
+          "destructiveHint",
+          "idempotentHint",
+          "openWorldHint",
+        ]),
+      );
+    }
+    const annotation = (name: string) => tools.find((tool) => tool.name === name)?.annotations;
+    expect(annotation("klaus_list_flows")).toMatchObject({ readOnlyHint: true });
+    expect(annotation("klaus_run_flow")).toMatchObject({
+      readOnlyHint: false,
+      openWorldHint: true,
+    });
+    expect(annotation("klaus_promote")).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+    });
+    expect(annotation("klaus_snapshot_accept")).toMatchObject({ destructiveHint: true });
+
+    expect(ok.result.isError).toBeUndefined();
+    const okBody = JSON.parse(ok.result.content[0].text);
+    expect(okBody.response).toMatchObject({ status: 200, body: { ok: true } });
+    expect(refused.result.isError).toBe(true);
+    expect(JSON.parse(refused.result.content[0].text)).toMatchObject({
+      errorCode: "guard.allowed-hosts",
+    });
+
+    // stdout の全行が JSON-RPC のメッセージ(プロトコル以外のものが混ざっていない)
+    expect(mcp.stdoutLines).toHaveLength(4);
+    for (const line of mcp.stdoutLines) {
+      expect(JSON.parse(line)).toMatchObject({ jsonrpc: "2.0" });
+    }
+    expect(exitCode).toBe(0);
+
+    // クライアントが名乗った名前が履歴の actor になる
+    const history = (
+      await readFile(
+        join(
+          mcpDir,
+          ".klaus",
+          "history",
+          (
+            await readdir(join(mcpDir, ".klaus", "history"))
+          )[0] as string,
+        ),
+        "utf-8",
+      )
+    )
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(history[0].actor).toEqual({ kind: "agent", name: "protocol-test" });
+  }, 30000);
+
+  it("(ae) 入れ子が深すぎる JSON 応答(深さ 3000): klaus req も klaus mcp の klaus_request も、環境変数のシークレットを使っていても正常終了し、本文はテキストとして履歴に残る", async () => {
+    const deepDir = join(workDir, "deep-json");
+    await mkdir(deepDir, { recursive: true });
+    const env = { ...process.env, KLAUS_IT_DEEP_SECRET: "it-deep-secret-value-1234" };
+    const secretHeader = "X-Secret: {{env.KLAUS_IT_DEEP_SECRET}}";
+
+    const req = await runCli(
+      ["req", "GET", `${fixture.baseUrl}/deep`, "-H", secretHeader],
+      deepDir,
+      cliPath,
+      env,
+    );
+    expect(req.status).toBe(0);
+    const report = JSON.parse(req.stdout);
+    expect(report.status).toBe("passed");
+    expect(typeof report.response.body).toBe("string");
+    expect(report.historyRef).toBeDefined();
+
+    const mcp = startMcp([], deepDir, env);
+    await mcp.request("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "protocol-test", version: "9.9.9" },
+    });
+    mcp.notify("notifications/initialized");
+    const called = await mcp.request("tools/call", {
+      name: "klaus_request",
+      arguments: {
+        method: "GET",
+        url: `${fixture.baseUrl}/deep`,
+        headers: { "X-Secret": "{{env.KLAUS_IT_DEEP_SECRET}}" },
+      },
+    });
+    const exitCode = await mcp.close();
+
+    expect(called.result.isError).not.toBe(true);
+    const result = JSON.parse(called.result.content[0].text);
+    expect(result.status).toBe("passed");
+    expect(typeof result.response.body).toBe("string");
+    expect(exitCode).toBe(0);
+    const historyDir = join(deepDir, ".klaus", "history");
+    const lines = (
+      await readFile(join(historyDir, (await readdir(historyDir))[0] as string), "utf-8")
+    )
+      .trim()
+      .split("\n");
+    expect(lines).toHaveLength(2);
+    for (const line of lines) expect(typeof JSON.parse(line).response.body).toBe("string");
+  }, 30000);
+
+  it("(af) klaus mcp: 標準入力を閉じたとき、送信中のリクエストは続き、待機中の 2 つ目の送信は開始されない", async () => {
+    const shutdownDir = join(workDir, "mcp-shutdown");
+    await mkdir(shutdownDir, { recursive: true });
+    slowHits.length = 0;
+    const mcp = startMcp([], shutdownDir);
+    await mcp.request("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "protocol-test", version: "9.9.9" },
+    });
+    mcp.notify("notifications/initialized");
+
+    // 応答は待たない(接続を閉じるので届かない)。1 つ目が送信中の間に 2 つ目が直列キューで待機する
+    void mcp.request("tools/call", {
+      name: "klaus_request",
+      arguments: { method: "GET", url: `${fixture.baseUrl}/slow-first` },
+    });
+    void mcp.request("tools/call", {
+      name: "klaus_request",
+      arguments: { method: "GET", url: `${fixture.baseUrl}/slow-second` },
+    });
+    for (let waited = 0; slowHits.length === 0 && waited < 10000; waited += 20) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    expect(slowHits).toEqual(["/slow-first"]);
+    const exitCode = await mcp.close();
+    // 1 つ目の応答(1.5 秒後)の後に 2 つ目が始まらないことを、十分に待ってから確認する
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    expect(exitCode).toBe(0);
+    expect(slowHits).toEqual(["/slow-first"]);
+  }, 30000);
+
+  it("(ag) klaus run --json: 応答を受け取った後の capture 失敗は historyRef つきの error として履歴に残り(klaus history --status error には出て --failed には出ない)、接続エラーは残らず historyRef も付かない", async () => {
+    const refDir = join(workDir, "history-ref");
+    await mkdir(refDir, { recursive: true });
+    const closedPort = await reserveClosedPort();
+    await writeFile(
+      join(refDir, "capture.yaml"),
+      `name: capture flow
+steps:
+  - name: login
+    continueOnError: true
+    request:
+      method: GET
+      url: "${fixture.baseUrl}/ok"
+    capture:
+      token: "$.does.not.exist"
+  - name: unreachable
+    continueOnError: true
+    request:
+      method: GET
+      url: "http://127.0.0.1:${closedPort}/x"
+  - name: after
+    request:
+      method: GET
+      url: "${fixture.baseUrl}/ok"
+`,
+      "utf-8",
+    );
+
+    const run = await runCli(["run", "capture.yaml", "--json"], refDir);
+
+    expect(run.status).not.toBe(0);
+    const report = JSON.parse(run.stdout);
+    const [login, unreachable, after] = report.flows[0].steps;
+    expect(login).toMatchObject({ name: "login", status: "error" });
+    expect(login.historyRef).toMatchObject({ runId: report.runId, step: "login" });
+    expect(unreachable).toMatchObject({ name: "unreachable", status: "error" });
+    expect(Object.hasOwn(unreachable, "historyRef")).toBe(false);
+    expect(after.historyRef).toMatchObject({ runId: report.runId, step: "after" });
+
+    const errors = JSON.parse((await runCli(["history", "--status", "error"], refDir)).stdout);
+    const failed = JSON.parse((await runCli(["history", "--failed"], refDir)).stdout);
+    const errorSteps = errors.map((entry: { step: string }) => entry.step);
+    expect(errorSteps).toEqual(["login"]);
+    expect(failed.map((entry: { step: string }) => entry.step)).toEqual([]);
+    // 記録された error のエントリには応答が付く
+    const shown = JSON.parse(
+      (await runCli(["history", "show", report.runId, "--step", "login"], refDir)).stdout,
+    );
+    const entry = Array.isArray(shown) ? shown[0] : (shown.entries?.[0] ?? shown);
+    expect(entry).toMatchObject({ status: "error", response: { status: 200 } });
+  }, 30000);
+
+  it("(ad) klaus mcp --read-only: 書き込みツール(klaus_promote / klaus_snapshot_accept)は登録されず、呼んでもエラーになる", async () => {
+    const mcpDir = join(workDir, "mcp-read-only");
+    await mkdir(mcpDir, { recursive: true });
+    const mcp = startMcp(["--read-only"], mcpDir);
+
+    await mcp.request("initialize", {
+      protocolVersion: "2025-11-25",
+      capabilities: {},
+      clientInfo: { name: "protocol-test", version: "9.9.9" },
+    });
+    mcp.notify("notifications/initialized");
+    const listed = await mcp.request("tools/list", {});
+    const promote = await mcp.request("tools/call", {
+      name: "klaus_promote",
+      arguments: { runIds: ["x"], out: "flows/x.yaml" },
+    });
+    const exitCode = await mcp.close();
+
+    const names = (listed.result.tools as { name: string }[]).map((tool) => tool.name);
+    expect(names).toHaveLength(10);
+    expect(names).not.toContain("klaus_promote");
+    expect(names).not.toContain("klaus_snapshot_accept");
+    // 未登録のツールの呼び出しは、プロトコルのエラーか isError のどちらかで拒否される
+    expect(promote.error !== undefined || promote.result?.isError === true).toBe(true);
+    expect(exitCode).toBe(0);
+  }, 30000);
 });

@@ -6,8 +6,15 @@
 import type { Context } from "hono";
 import type { SSEMessage, SSEStreamingApi } from "hono/streaming";
 import { streamSSE } from "hono/streaming";
-import type { FlowResult } from "../../core/index.js";
-import { executeFlow, loadFlow, ParseError } from "../../core/index.js";
+import type { FlowResult, GuardOptions, HttpConfig } from "../../core/index.js";
+import {
+  executeFlow,
+  loadFlow,
+  maskCookieHeadersDeep,
+  type OpenApiRunSummary,
+  OpenApiValidator,
+  ParseError,
+} from "../../core/index.js";
 import { parseJsonBody } from "../json-body.js";
 import type {
   RunRequestBody,
@@ -58,7 +65,13 @@ function createSafeSseWriter(stream: SSEStreamingApi): (message: SSEMessage) => 
 }
 
 /** POST /api/runs: フローを実行し、SSE で step-start/step-result/run-result を配信する */
-export async function handleRunRequest(c: Context, cwd: string): Promise<Response> {
+export async function handleRunRequest(
+  c: Context,
+  cwd: string,
+  guard?: GuardOptions,
+  http?: HttpConfig,
+  openapiPaths?: readonly string[],
+): Promise<Response> {
   const body = await parseJsonBody<RunRequestBody>(c);
   if (body === undefined) {
     return c.json({ error: "invalid JSON body" }, 400);
@@ -81,13 +94,31 @@ export async function handleRunRequest(c: Context, cwd: string): Promise<Respons
   return streamSSE(c, async (stream) => {
     const safeWriteSSE = createSafeSseWriter(stream);
     let flowResult: FlowResult;
+    // 成否に影響しない警告(tls.insecure の使用・履歴書き込み失敗など)。重複は除き、run-result にも載せる
+    const warnings: string[] = [];
+    let openapiSummary: OpenApiRunSummary | undefined;
+    // OpenAPI の検証器はワーカースレッドを持つため、実行の終わり方(成功・失敗・例外・クライアント切断)によらず
+    // 必ず close する(フロー実行は切断後も最後まで続き、その後ここの finally に来る)
+    let openapi: OpenApiValidator | undefined;
     try {
       const flow = await loadFlow(resolvedPath);
+      // OpenAPI の検証器は実行ごとに作る(カバレッジはその実行の分だけ集計する)。読めない仕様は実行前のエラーにする
+      openapi =
+        openapiPaths !== undefined && openapiPaths.length > 0
+          ? await OpenApiValidator.load([...openapiPaths], {})
+          : undefined;
       flowResult = await executeFlow(flow, resolvedPath, {
         cwd,
         envNameOverride,
         // UI からの実行でも履歴書き込みは既定どおり有効にする(明示しておく)
         history: true,
+        guard,
+        http,
+        openapi,
+        // 保護環境の拒否メッセージの案内を UI 向け(--allow-protected は UI から渡せない)にする。履歴にも同じ文言が残る
+        entryPoint: "ui",
+        // UI 起点の実行は人間の操作として履歴に記録する
+        actor: { kind: "human" },
         onStepStart: async (context) => {
           const payload: StepStartPayload = {
             flow: context.flow,
@@ -100,15 +131,23 @@ export async function handleRunRequest(c: Context, cwd: string): Promise<Respons
           const payload: StepResultPayload = {
             flow: context.flow,
             file: context.file,
-            result: context.result,
+            // 実行時の結果は生の Set-Cookie / Cookie を持つため、ブラウザへ送る前に履歴と同じく位置でマスクする
+            result: maskCookieHeadersDeep(context.result),
           };
           await safeWriteSSE({ event: "step-result", data: JSON.stringify(payload) });
         },
         // ステップの成否に影響しない警告(履歴書き込み失敗など)はサーバーログ(stderr)へ流す
         onWarning: (message) => {
           process.stderr.write(`klaus ui: warning: ${message}\n`);
+          if (!warnings.includes(message)) warnings.push(message);
         },
       });
+      if (openapi !== undefined) {
+        openapiSummary = openapi.summarize({ partial: false, planned: false });
+        for (const warning of openapi.warnings) {
+          if (!warnings.includes(warning)) warnings.push(warning);
+        }
+      }
     } catch (error) {
       // フロー定義・環境ファイルのパースエラーなど、ステップループに入る前の失敗をここで拾う
       // (通常の実行時エラーは executeFlow 内で StepResult.error に格納され、ここには来ない)
@@ -130,9 +169,16 @@ export async function handleRunRequest(c: Context, cwd: string): Promise<Respons
         ],
         durationMs: 0,
       };
+    } finally {
+      openapi?.close();
     }
 
-    const runResultPayload: RunResultPayload = { flow: flowResult };
+    const runResultPayload: RunResultPayload = {
+      // step-result と同じく、Cookie / Set-Cookie ヘッダーの値は位置でマスクして送る
+      flow: maskCookieHeadersDeep(flowResult),
+      ...(warnings.length > 0 ? { warnings } : {}),
+      ...(openapiSummary !== undefined ? { openapi: openapiSummary } : {}),
+    };
     await safeWriteSSE({ event: "run-result", data: JSON.stringify(runResultPayload) });
   });
 }

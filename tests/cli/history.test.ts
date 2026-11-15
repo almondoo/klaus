@@ -1,7 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { historyListCommand, historyShowCommand } from "../../src/cli/history.js";
+import {
+  historyListCommand,
+  historyShowCommand,
+  parseHistoryStatuses,
+} from "../../src/cli/history.js";
 import { sanitizeForTerminal } from "../../src/cli/reporters/sanitize.js";
 
 const projectRoot = join(__dirname, "..", "..");
@@ -97,6 +101,76 @@ describe("historyListCommand / historyShowCommand", () => {
     await rm(workDir, { recursive: true, force: true });
   });
 
+  describe("スナップショットの candidate", () => {
+    const CANDIDATE = { status: 200, body: { big: "response copy" } };
+    const SNAPSHOT_ENTRY = {
+      ...ENTRY_PING,
+      runId: "run-snap",
+      step: "snap",
+      startedAt: "2026-08-08T12:00:00.000Z",
+      status: "failed",
+      assertions: [
+        {
+          ok: false,
+          kind: "snapshot",
+          expected: "baseline",
+          actual: "candidate",
+          message: "snapshot mismatch",
+          snapshot: {
+            key: "snap",
+            file: "s.json",
+            state: "mismatch",
+            differenceCount: 1,
+            candidate: CANDIDATE,
+          },
+        },
+      ],
+    };
+
+    beforeEach(async () => {
+      const file = join(workDir, ".klaus", "history", "2026-08-08.jsonl");
+      await writeFile(file, `${JSON.stringify(SNAPSHOT_ENTRY)}\n`, { flag: "a" });
+    });
+
+    it("一覧は --fields assertions を指定しても candidate を出さず、他の snapshot 情報は残す", async () => {
+      await historyListCommand({ last: 20, fields: "step,assertions", json: true }, workDir);
+
+      const output = JSON.parse(stdoutSpy.join("").trim()) as Array<{
+        step: string;
+        assertions: Array<{ snapshot: Record<string, unknown> }>;
+      }>;
+      const snap = output.find((e) => e.step === "snap");
+      expect(snap?.assertions[0]?.snapshot.state).toBe("mismatch");
+      expect(snap?.assertions[0]?.snapshot.candidate).toBeUndefined();
+      expect(stdoutSpy.join("")).not.toContain("response copy");
+    });
+
+    it("一覧のテキスト表にも candidate は出ない", async () => {
+      const original = process.stdout.isTTY;
+      process.stdout.isTTY = true;
+      try {
+        await historyListCommand({ last: 20, fields: "step,assertions" }, workDir);
+      } finally {
+        process.stdout.isTTY = original;
+      }
+      expect(stdoutSpy.join("")).toContain("mismatch");
+      expect(stdoutSpy.join("")).not.toContain("response copy");
+    });
+
+    it("show は run 全体を出すときは candidate を省き、--step を付けたときだけ含める", async () => {
+      await historyShowCommand("run-snap", {}, workDir);
+      expect(stdoutSpy.join("")).not.toContain("response copy");
+      expect(stdoutSpy.join("")).toContain('"state":"mismatch"');
+
+      stdoutSpy.length = 0;
+      await historyShowCommand("run-snap", { step: "snap" }, workDir);
+      const output = JSON.parse(stdoutSpy.join("").trim()) as Array<{
+        assertions: Array<{ snapshot: { candidate: unknown } }>;
+      }>;
+      expect(output[0]?.assertions[0]?.snapshot.candidate).toEqual(CANDIDATE);
+    });
+  });
+
   describe("historyListCommand", () => {
     it("デフォルトフィールドで新しい順に一覧を JSON 出力する", async () => {
       const exitCode = await historyListCommand(
@@ -128,6 +202,47 @@ describe("historyListCommand / historyShowCommand", () => {
       expect((output[0] as { request: { method: string } }).request.method).toBe("GET");
     });
 
+    it("監査項目(env / file / actor / git)を --fields で指定して取り出せる(オブジェクトは JSON のまま)", async () => {
+      const audited = {
+        ...ENTRY_PING,
+        runId: "run-audit",
+        step: "audited",
+        startedAt: "2026-08-08T11:00:00.000Z",
+        env: "staging",
+        file: "flows/ping.yaml",
+        actor: { kind: "agent", name: "claude-code" },
+        git: { commit: "abc123", dirty: true },
+      };
+      await writeFile(
+        join(workDir, ".klaus", "history", "2026-08-09.jsonl"),
+        `${JSON.stringify(audited)}\n`,
+        "utf-8",
+      );
+
+      await historyListCommand({ last: 1, fields: "step,env,file,actor,git", json: true }, workDir);
+
+      expect(JSON.parse(stdoutSpy.join("").trim())).toEqual([
+        {
+          step: "audited",
+          env: "staging",
+          file: "flows/ping.yaml",
+          actor: { kind: "agent", name: "claude-code" },
+          git: { commit: "abc123", dirty: true },
+        },
+      ]);
+
+      // history show は保存されたままのエントリを出力するため、監査項目もそのまま含まれる
+      stdoutSpy.length = 0;
+      await historyShowCommand("run-audit", {}, workDir);
+      expect(JSON.parse(stdoutSpy.join("").trim())).toEqual([audited]);
+    });
+
+    it("監査項目を持たない旧エントリでは該当フィールドが省略される(後方互換)", async () => {
+      await historyListCommand({ last: 1, fields: "step,env,actor,git", json: true }, workDir);
+
+      expect(JSON.parse(stdoutSpy.join("").trim())).toEqual([{ step: "get-me" }]);
+    });
+
     it("--failed で status が failed のエントリのみに絞り込む", async () => {
       await historyListCommand(
         { last: 20, fields: "step,status", failed: true, json: true },
@@ -136,6 +251,102 @@ describe("historyListCommand / historyShowCommand", () => {
 
       const output = JSON.parse(stdoutSpy.join("").trim()) as Array<Record<string, unknown>>;
       expect(output).toEqual([{ step: "get-me", status: "failed" }]);
+    });
+
+    describe("--status", () => {
+      // 送信拒否(安全柵)で error になったステップ。assertions は空
+      const ENTRY_ERROR = {
+        ...ENTRY_PING,
+        runId: "run-3",
+        step: "blocked",
+        startedAt: "2026-08-08T11:00:00.000Z",
+        status: "error",
+        error: "refused",
+        assertions: [],
+      };
+
+      beforeEach(async () => {
+        const file = join(workDir, ".klaus", "history", "2026-08-08.jsonl");
+        await writeFile(file, `${JSON.stringify(ENTRY_ERROR)}\n`, { flag: "a" });
+      });
+
+      async function listSteps(options: Record<string, unknown>): Promise<unknown[]> {
+        stdoutSpy.length = 0;
+        await historyListCommand(
+          { last: 20, fields: "step,status", json: true, ...options },
+          workDir,
+        );
+        return JSON.parse(stdoutSpy.join("").trim()) as unknown[];
+      }
+
+      it("error だけを指定すると error のエントリのみ返る(--failed では出ない)", async () => {
+        expect(await listSteps({ status: ["error"] })).toEqual([
+          { step: "blocked", status: "error" },
+        ]);
+        expect(await listSteps({ failed: true })).toEqual([{ step: "get-me", status: "failed" }]);
+      });
+
+      it("複数指定は和集合になり、新しい順のまま返る", async () => {
+        expect(await listSteps({ status: ["failed", "error"] })).toEqual([
+          { step: "blocked", status: "error" },
+          { step: "get-me", status: "failed" },
+        ]);
+      });
+
+      it("--flow / --last と併用できる", async () => {
+        expect(await listSteps({ status: ["passed", "error"], flow: "other flow" })).toEqual([
+          { step: "blocked", status: "error" },
+          { step: "ping", status: "passed" },
+        ]);
+        expect(await listSteps({ status: ["passed", "error"], last: 1 })).toEqual([
+          { step: "blocked", status: "error" },
+        ]);
+      });
+
+      it("テキスト表でも絞り込みが効く", async () => {
+        const originalIsTTY = process.stdout.isTTY;
+        process.stdout.isTTY = true;
+        try {
+          await historyListCommand({ last: 20, fields: "step,status", status: ["error"] }, workDir);
+        } finally {
+          process.stdout.isTTY = originalIsTTY;
+        }
+        expect(stdoutSpy.join("").trim().split("\n")).toEqual([
+          "step     status",
+          "blocked  error",
+        ]);
+      });
+
+      it("status を持たない旧エントリは assertions から導出した status で判定される", async () => {
+        const { status: _status, ...legacy } = ENTRY_GET_ME;
+        const file = join(workDir, ".klaus", "history", "2026-08-08.jsonl");
+        await writeFile(
+          file,
+          `${JSON.stringify({ ...legacy, step: "legacy", startedAt: "2026-08-08T13:00:00.000Z" })}\n`,
+          {
+            flag: "a",
+          },
+        );
+        expect(await listSteps({ status: ["failed"], last: 1 })).toEqual([
+          { step: "legacy", status: "failed" },
+        ]);
+      });
+    });
+
+    describe("parseHistoryStatuses", () => {
+      it("カンマ区切りを配列にし、空白・空要素・重複を除く", () => {
+        expect(parseHistoryStatuses("error, failed,,error")).toEqual(["error", "failed"]);
+      });
+
+      it("未知の値は有効な値の一覧つきで拒否する", () => {
+        expect(() => parseHistoryStatuses("error,bogus")).toThrow(
+          "invalid --status value: bogus (valid: passed, failed, skipped, error)",
+        );
+      });
+
+      it("空の指定は拒否する", () => {
+        expect(() => parseHistoryStatuses(" , ")).toThrow("invalid --status value");
+      });
     });
 
     it("--flow でフロー名の完全一致フィルタをかける", async () => {

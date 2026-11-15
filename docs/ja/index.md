@@ -12,11 +12,13 @@ API 検証 CLI「klaus」のドキュメント目次。
 - [record / replay モード](guide/record-replay.md) — 実ネットワークの代わりに記録済みカセットでフローを検証する
 - [localhost UI](guide/ui.md) — `klaus ui` の使い方、セキュリティモデル
 - [Agent Skill(Claude Code / Codex)](guide/agent-skill.md) — 同梱の Agent Skill で AI コーディングエージェントに klaus の使い方を教える
+- [AI エージェント向けの MCP サーバー](guide/mcp.md) — `klaus mcp`: MCP クライアントが klaus の安全柵のもとで API を調べ、検証できるようにする(シークレットは常にマスク)
+- [他ツールとの比較](guide/comparison.md) — Hurl・Bruno・runn・Step CI と比べた klaus の位置づけと、他のツールが向く場面
 - [トラブルシューティング](guide/troubleshooting.md) — klaus が実際に出力するエラーメッセージと、その原因・対処
 
 ## リファレンス
 
-- [CLI リファレンス](guide/cli.md) — `klaus run` / `klaus ui` の全オプション、exit code 体系、出力モード
+- [CLI リファレンス](guide/cli.md) — `klaus run` / `klaus req` / `klaus ui` の全オプション、exit code 体系、出力モード
 - [フロー定義リファレンス](guide/flow-definition.md) — YAML の完全リファレンス(request / GraphQL / WebSocket / SSE / テンプレート / capture / assert)
 - [CLI オプションの既定値(klaus.config.yaml)](guide/config.md) — CLI オプションのプロジェクト共通デフォルトを設定する
 - [実行履歴](guide/history.md) — `.klaus/history/*.jsonl` のスキーマとバージョニング契約

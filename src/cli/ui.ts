@@ -7,7 +7,9 @@
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { GuardOptions, HttpConfig } from "../core/index.js";
 import type { StartServerOptions, StartServerResult } from "../server/index.js";
+import { loadCliConfig, loadHttpOptions } from "./config.js";
 
 export interface UiCommandOptions {
   /** commander 側で既定値 4884 を設定しているため、通常は常に値が入る(直接呼び出すテスト等のために型上は任意にしている) */
@@ -16,6 +18,12 @@ export interface UiCommandOptions {
   host?: string;
   /** commander の --no-open により、指定が無ければ true(ブラウザを開く) */
   open: boolean;
+  /** klaus.config.yaml の `guard`。サーバーの実行(フロー・単発リクエスト)に渡す。CLI フラグは設けない */
+  guard?: GuardOptions | undefined;
+  /** klaus.config.yaml の `http`。未指定なら起動時に設定ファイルから読む(run / req と同じローダー)。サーバーの実行に渡す。CLI フラグは設けない */
+  http?: HttpConfig | undefined;
+  /** klaus.config.yaml の `run.openapi`(設定ファイル基準の絶対パス)。未指定なら起動時に設定ファイルから読む。フロー実行の応答の検証に使う。CLI フラグは設けない */
+  openapi?: readonly string[] | undefined;
 }
 
 interface ServerModule {
@@ -76,10 +84,21 @@ export async function uiCommand(options: UiCommandOptions): Promise<void> {
   // dist/cli.js と dist/server.js は同じ dist/ 直下に並ぶビルド構成(tsup.config.ts 参照)
   const serverEntryPath = join(__dirname, "server.js");
   const { startServer } = (await import(serverEntryPath)) as ServerModule;
+  // http 設定は guard と同じく起動時に一度だけ読む(リクエストからは受け付けない)
+  const http = options.http ?? (await loadHttpOptions(process.cwd()));
+  // run.openapi も同様に起動時に一度だけ読む(loadCliConfig が設定ファイル基準の絶対パスの配列にしている)
+  const openapi = options.openapi ?? (await loadCliConfig(process.cwd()))?.run?.openapi;
 
   let startResult: StartServerResult;
   try {
-    startResult = await startServer({ port: options.port, host: options.host, cwd: process.cwd() });
+    startResult = await startServer({
+      port: options.port,
+      host: options.host,
+      cwd: process.cwd(),
+      guard: options.guard,
+      http,
+      openapi: typeof openapi === "string" ? [openapi] : openapi,
+    });
   } catch (error) {
     // 固定既定ポート(4884)化に伴い衝突しやすくなるため、EADDRINUSE には --port の案内を添える
     if (isErrnoException(error) && error.code === "EADDRINUSE") {
