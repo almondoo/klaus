@@ -5,7 +5,7 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Command, InvalidArgumentError } from "commander";
+import { Command, InvalidArgumentError, Option } from "commander";
 import { ParseError } from "../core/index.js";
 import {
   applyConfigToRunOptions,
@@ -21,6 +21,7 @@ import {
   type HistoryShowOptions,
   historyListCommand,
   historyShowCommand,
+  parseHistoryStatuses,
 } from "./history.js";
 import { initCommand } from "./init.js";
 import { registerMockCommand } from "./mock.js";
@@ -482,7 +483,17 @@ const historyCommand = program
   .command("history")
   .description("list execution history (.klaus/history/*.jsonl)")
   .option("--flow <name>", "filter by flow name")
-  .option("--failed", "only include entries whose status is failed")
+  .addOption(
+    new Option("--failed", "only include entries whose status is failed").conflicts("status"),
+  )
+  .addOption(
+    new Option(
+      "--status <statuses>",
+      "only include entries whose status is in the comma-separated list (passed, failed, skipped, error)",
+    )
+      .argParser(parseHistoryStatuses)
+      .conflicts("failed"),
+  )
   .option(
     "--last <n>",
     "number of entries to fetch",

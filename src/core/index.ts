@@ -63,9 +63,10 @@ export {
   maskDeep,
   maskString,
 } from "./history.js";
-export type { GetHistoryQuery, HistoryPage } from "./history-query.js";
+export type { GetHistoryQuery, HistoryEntryStatus, HistoryPage } from "./history-query.js";
 export {
   getHistoryPage,
+  HISTORY_ENTRY_STATUSES,
   readAllHistoryEntries,
   resolveHistoryEntryStatus,
 } from "./history-query.js";

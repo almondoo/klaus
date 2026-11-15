@@ -1,7 +1,11 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { historyListCommand, historyShowCommand } from "../../src/cli/history.js";
+import {
+  historyListCommand,
+  historyShowCommand,
+  parseHistoryStatuses,
+} from "../../src/cli/history.js";
 import { sanitizeForTerminal } from "../../src/cli/reporters/sanitize.js";
 
 const projectRoot = join(__dirname, "..", "..");
@@ -247,6 +251,102 @@ describe("historyListCommand / historyShowCommand", () => {
 
       const output = JSON.parse(stdoutSpy.join("").trim()) as Array<Record<string, unknown>>;
       expect(output).toEqual([{ step: "get-me", status: "failed" }]);
+    });
+
+    describe("--status", () => {
+      // 送信拒否(安全柵)で error になったステップ。assertions は空
+      const ENTRY_ERROR = {
+        ...ENTRY_PING,
+        runId: "run-3",
+        step: "blocked",
+        startedAt: "2026-08-08T11:00:00.000Z",
+        status: "error",
+        error: "refused",
+        assertions: [],
+      };
+
+      beforeEach(async () => {
+        const file = join(workDir, ".klaus", "history", "2026-08-08.jsonl");
+        await writeFile(file, `${JSON.stringify(ENTRY_ERROR)}\n`, { flag: "a" });
+      });
+
+      async function listSteps(options: Record<string, unknown>): Promise<unknown[]> {
+        stdoutSpy.length = 0;
+        await historyListCommand(
+          { last: 20, fields: "step,status", json: true, ...options },
+          workDir,
+        );
+        return JSON.parse(stdoutSpy.join("").trim()) as unknown[];
+      }
+
+      it("error だけを指定すると error のエントリのみ返る(--failed では出ない)", async () => {
+        expect(await listSteps({ status: ["error"] })).toEqual([
+          { step: "blocked", status: "error" },
+        ]);
+        expect(await listSteps({ failed: true })).toEqual([{ step: "get-me", status: "failed" }]);
+      });
+
+      it("複数指定は和集合になり、新しい順のまま返る", async () => {
+        expect(await listSteps({ status: ["failed", "error"] })).toEqual([
+          { step: "blocked", status: "error" },
+          { step: "get-me", status: "failed" },
+        ]);
+      });
+
+      it("--flow / --last と併用できる", async () => {
+        expect(await listSteps({ status: ["passed", "error"], flow: "other flow" })).toEqual([
+          { step: "blocked", status: "error" },
+          { step: "ping", status: "passed" },
+        ]);
+        expect(await listSteps({ status: ["passed", "error"], last: 1 })).toEqual([
+          { step: "blocked", status: "error" },
+        ]);
+      });
+
+      it("テキスト表でも絞り込みが効く", async () => {
+        const originalIsTTY = process.stdout.isTTY;
+        process.stdout.isTTY = true;
+        try {
+          await historyListCommand({ last: 20, fields: "step,status", status: ["error"] }, workDir);
+        } finally {
+          process.stdout.isTTY = originalIsTTY;
+        }
+        expect(stdoutSpy.join("").trim().split("\n")).toEqual([
+          "step     status",
+          "blocked  error",
+        ]);
+      });
+
+      it("status を持たない旧エントリは assertions から導出した status で判定される", async () => {
+        const { status: _status, ...legacy } = ENTRY_GET_ME;
+        const file = join(workDir, ".klaus", "history", "2026-08-08.jsonl");
+        await writeFile(
+          file,
+          `${JSON.stringify({ ...legacy, step: "legacy", startedAt: "2026-08-08T13:00:00.000Z" })}\n`,
+          {
+            flag: "a",
+          },
+        );
+        expect(await listSteps({ status: ["failed"], last: 1 })).toEqual([
+          { step: "legacy", status: "failed" },
+        ]);
+      });
+    });
+
+    describe("parseHistoryStatuses", () => {
+      it("カンマ区切りを配列にし、空白・空要素・重複を除く", () => {
+        expect(parseHistoryStatuses("error, failed,,error")).toEqual(["error", "failed"]);
+      });
+
+      it("未知の値は有効な値の一覧つきで拒否する", () => {
+        expect(() => parseHistoryStatuses("error,bogus")).toThrow(
+          "invalid --status value: bogus (valid: passed, failed, skipped, error)",
+        );
+      });
+
+      it("空の指定は拒否する", () => {
+        expect(() => parseHistoryStatuses(" , ")).toThrow("invalid --status value");
+      });
     });
 
     it("--flow でフロー名の完全一致フィルタをかける", async () => {

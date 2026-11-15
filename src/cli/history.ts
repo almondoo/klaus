@@ -1,5 +1,11 @@
-import type { HistoryEntry } from "../core/index.js";
-import { getHistoryPage, readAllHistoryEntries, resolveHistoryEntryStatus } from "../core/index.js";
+import { InvalidArgumentError } from "commander";
+import type { HistoryEntry, HistoryEntryStatus } from "../core/index.js";
+import {
+  getHistoryPage,
+  HISTORY_ENTRY_STATUSES,
+  readAllHistoryEntries,
+  resolveHistoryEntryStatus,
+} from "../core/index.js";
 import { sanitizeForTerminal } from "./reporters/sanitize.js";
 import { isJsonOutputMode } from "./reporters/text.js";
 
@@ -16,6 +22,8 @@ export const DEFAULT_HISTORY_FIELDS = "startedAt,runId,flow,step,status,duration
 export interface HistoryListOptions {
   flow?: string;
   failed?: boolean;
+  /** --status のカンマ区切りをパース済みの配列(parseHistoryStatuses の返り値) */
+  status?: HistoryEntryStatus[];
   last: number;
   fields: string;
   json?: boolean;
@@ -24,6 +32,32 @@ export interface HistoryListOptions {
 /** klaus history show のオプション */
 export interface HistoryShowOptions {
   step?: string;
+}
+
+/**
+ * --status のカンマ区切り値をパースして検証する(commander の引数パーサとして使う)。
+ * 空要素は無視し、重複は除く。未知の値・空の指定は InvalidArgumentError(commander が整形して exit 1)。
+ */
+export function parseHistoryStatuses(value: string): HistoryEntryStatus[] {
+  const names = value
+    .split(",")
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
+  const valid = HISTORY_ENTRY_STATUSES.join(", ");
+  if (names.length === 0) {
+    throw new InvalidArgumentError(`invalid --status value: ${value} (valid: ${valid})`);
+  }
+  const statuses: HistoryEntryStatus[] = [];
+  for (const name of names) {
+    if (!(HISTORY_ENTRY_STATUSES as readonly string[]).includes(name)) {
+      // 値は端末へ出るためサニタイズする(エスケープシーケンスの混入対策)
+      throw new InvalidArgumentError(
+        `invalid --status value: ${sanitizeForTerminal(name)} (valid: ${valid})`,
+      );
+    }
+    if (!statuses.includes(name as HistoryEntryStatus)) statuses.push(name as HistoryEntryStatus);
+  }
+  return statuses;
 }
 
 /** カンマ区切りの --fields 文字列を空白除去したフィールド名配列にする(空文字は除外) */
@@ -102,7 +136,7 @@ function renderTable(fields: string[], rows: Record<string, unknown>[]): string 
 
 /**
  * klaus history(一覧)本体。
- * flow / failed / last(取得件数)でフィルタし、fields で選択した列のみ出力する。
+ * flow / failed / status / last(取得件数)でフィルタし、fields で選択した列のみ出力する。
  * 出力モードは run コマンドと同じ TTY 判定規約: --json または非 TTY なら JSON(compact)、
  * TTY なら簡潔なテキスト表。
  */
@@ -117,6 +151,7 @@ export async function historyListCommand(
     flow: options.flow,
     limit: options.last,
     failed: options.failed || undefined,
+    statuses: options.status,
   });
   // 一覧では --fields assertions を選んでも snapshot の candidate は出さない(全文は history show --step で見る)
   const rows = page.entries.map((entry) => pickFields(omitSnapshotCandidates(entry), fields));

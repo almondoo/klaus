@@ -77,11 +77,13 @@ export async function readAllHistoryEntries(cwd: string): Promise<HistoryEntry[]
   return entries;
 }
 
-/** エントリが flow / before / failed の各フィルタにすべて一致するかを判定する */
+/** エントリが flow / before / failed / statuses の各フィルタにすべて一致するかを判定する */
 function matchesHistoryQuery(entry: HistoryEntry, query: GetHistoryQuery): boolean {
   if (query.flow && entry.flow !== query.flow) return false;
   if (query.before && !(entry.startedAt < query.before)) return false;
   if (query.failed && resolveHistoryEntryStatus(entry) !== "failed") return false;
+  // statuses は指定されたステータスのいずれかに一致するエントリのみ残す(旧エントリは導出した status で判定)
+  if (query.statuses && !query.statuses.includes(resolveHistoryEntryStatus(entry))) return false;
   return true;
 }
 
@@ -99,6 +101,11 @@ export function resolveHistoryEntryStatus(
   return entry.assertions.some((assertion) => !assertion.ok) ? "failed" : "passed";
 }
 
+/** 履歴エントリが取り得る status の一覧(CLI の --status の検証にも使う) */
+export const HISTORY_ENTRY_STATUSES = ["passed", "failed", "skipped", "error"] as const;
+
+export type HistoryEntryStatus = (typeof HISTORY_ENTRY_STATUSES)[number];
+
 export interface GetHistoryQuery {
   // 呼び出し元(app.ts / CLI)がクエリパラメータ未指定時に明示的に undefined を渡すため許容する
   flow?: string | undefined;
@@ -106,6 +113,8 @@ export interface GetHistoryQuery {
   before?: string | undefined;
   /** true の場合、status が "failed"(または旧エントリで assertions から failed と導出される)エントリのみに絞る */
   failed?: boolean | undefined;
+  /** 指定した場合、status がこのいずれかに一致するエントリのみに絞る(CLI の --status 用。GET /api/history は使わない) */
+  statuses?: readonly HistoryEntryStatus[] | undefined;
 }
 
 /** GET /api/history のレスポンスおよび CLI 出力の共通形 */

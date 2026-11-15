@@ -771,6 +771,20 @@ describe("cli integration", () => {
     expect(result.stderr).not.toMatch(/^\s+at\s/m);
   });
 
+  it("(p2) history --status: 未知の値と --failed との併用は exit 1 で拒否される", async () => {
+    const unknown = await runCli(["history", "--status", "bogus"], workDir);
+    expect(unknown.status).toBe(1);
+    expect(unknown.stderr).toContain(
+      "invalid --status value: bogus (valid: passed, failed, skipped, error)",
+    );
+    expect(unknown.stdout).toBe("");
+
+    const conflict = await runCli(["history", "--failed", "--status", "error"], workDir);
+    expect(conflict.status).toBe(1);
+    expect(conflict.stderr).toContain("cannot be used with");
+    expect(conflict.stdout).toBe("");
+  });
+
   it("(q) init: api/example.yaml と environments/local.yaml と AGENTS.md を生成し exit 0 になる", async () => {
     const initWorkDir = join(workDir, "init-scenario");
     await mkdir(initWorkDir, { recursive: true });
