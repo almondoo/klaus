@@ -1,5 +1,6 @@
 import Ajv2020 from "ajv/dist/2020";
 import { JSONPath } from "jsonpath-plus";
+import { maskCookieRequestHeader, maskSetCookieHeader } from "./cookie-jar.js";
 import type {
   AssertDef,
   BodyAssertion,
@@ -180,7 +181,15 @@ function pushMatchResults(
   precompiledRegex?: RegExp,
   /** header のように値が常に文字列になる対象で、gt/gte/lt/lte に数値文字列を許す */
   numericStrings = false,
+  /**
+   * 実際の値を結果の actual / message に載せるときの表示用変換(Cookie / Set-Cookie ヘッダー用)。
+   * 比較には常に生の値を使い、保存・出力される actual と message だけを変換後の値にする
+   */
+  maskDisplay?: (value: string) => string,
 ): void {
+  // 結果に載せる値(文字列のときだけ表示用に変換する)
+  const shown = (value: unknown): unknown =>
+    maskDisplay !== undefined && typeof value === "string" ? maskDisplay(value) : value;
   if (matchers.exists !== undefined) {
     const ok = resolvedExists === matchers.exists;
     results.push({
@@ -199,37 +208,39 @@ function pushMatchResults(
       ok,
       kind: `${kindPrefix}.equals`,
       expected: matchers.equals,
-      actual: resolvedValue,
+      actual: shown(resolvedValue),
       message: ok
         ? `${subject} equals expected value`
-        : `${subject}: expected ${JSON.stringify(matchers.equals)} but got ${JSON.stringify(resolvedValue)}`,
+        : `${subject}: expected ${JSON.stringify(matchers.equals)} but got ${JSON.stringify(shown(resolvedValue))}`,
     });
   }
   if (matchers.contains !== undefined) {
     const actualStr = stringifyForMatch(resolvedValue);
+    const shownStr = stringifyForMatch(shown(resolvedValue));
     const ok = resolvedExists && actualStr.includes(matchers.contains);
     results.push({
       ok,
       kind: `${kindPrefix}.contains`,
       expected: matchers.contains,
-      actual: actualStr,
+      actual: shownStr,
       message: ok
         ? `${subject} contains "${matchers.contains}"`
-        : `${subject}: expected to contain "${matchers.contains}" but got "${actualStr}"`,
+        : `${subject}: expected to contain "${matchers.contains}" but got "${shownStr}"`,
     });
   }
   if (matchers.regex !== undefined) {
     const actualStr = stringifyForMatch(resolvedValue);
+    const shownStr = stringifyForMatch(shown(resolvedValue));
     const regex = precompiledRegex ?? compileUserRegex(matchers.regex);
     const ok = resolvedExists && regex.test(actualStr);
     results.push({
       ok,
       kind: `${kindPrefix}.regex`,
       expected: matchers.regex,
-      actual: actualStr,
+      actual: shownStr,
       message: ok
         ? `${subject} matches /${matchers.regex}/`
-        : `${subject}: expected to match /${matchers.regex}/ but got "${actualStr}"`,
+        : `${subject}: expected to match /${matchers.regex}/ but got "${shownStr}"`,
     });
   }
   const comparisons = [
@@ -246,10 +257,10 @@ function pushMatchResults(
       ok,
       kind: `${kindPrefix}.${key}`,
       expected: limit,
-      actual: resolvedValue,
+      actual: shown(resolvedValue),
       message: ok
         ? `${subject} ${actual} ${symbol} ${limit}`
-        : `${subject}: expected a number ${symbol} ${limit} but got ${JSON.stringify(resolvedValue)}`,
+        : `${subject}: expected a number ${symbol} ${limit} but got ${JSON.stringify(shown(resolvedValue))}`,
     });
   }
   if (matchers.length !== undefined) {
@@ -299,10 +310,10 @@ function pushMatchResults(
       ok,
       kind: `${kindPrefix}.oneOf`,
       expected: matchers.oneOf,
-      actual: resolvedValue,
+      actual: shown(resolvedValue),
       message: ok
         ? `${subject} is one of the expected values`
-        : `${subject}: expected one of ${JSON.stringify(matchers.oneOf)} but got ${JSON.stringify(resolvedValue)}`,
+        : `${subject}: expected one of ${JSON.stringify(matchers.oneOf)} but got ${JSON.stringify(shown(resolvedValue))}`,
     });
   }
 }
@@ -343,6 +354,18 @@ export function assertStatus(
   ];
 }
 
+/**
+ * header アサーションの結果に載せる値を位置でマスクする関数(Cookie / Set-Cookie だけ)。
+ * 値は自由文字列として actual / message に入り、maskDeep(ヘッダーオブジェクトの構造で判定する)では
+ * 見えないため、アサーションの評価時点で変換しておく。比較そのものは生の値で行う。
+ */
+function cookieDisplayMask(headerName: string): ((value: string) => string) | undefined {
+  const lower = headerName.toLowerCase();
+  if (lower === "cookie") return maskCookieRequestHeader;
+  if (lower === "set-cookie") return maskSetCookieHeader;
+  return undefined;
+}
+
 /** header アサーション(ヘッダー名は大文字小文字を無視) */
 export function assertHeaders(
   defs: HeaderAssertion[] | undefined,
@@ -363,6 +386,7 @@ export function assertHeaders(
       value,
       undefined,
       true,
+      cookieDisplayMask(def.name),
     );
   }
   return results;

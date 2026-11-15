@@ -10,6 +10,7 @@ import type { FlowResult, GuardOptions, HttpConfig } from "../../core/index.js";
 import {
   executeFlow,
   loadFlow,
+  maskCookieHeadersDeep,
   type OpenApiRunSummary,
   OpenApiValidator,
   ParseError,
@@ -130,7 +131,8 @@ export async function handleRunRequest(
           const payload: StepResultPayload = {
             flow: context.flow,
             file: context.file,
-            result: context.result,
+            // 実行時の結果は生の Set-Cookie / Cookie を持つため、ブラウザへ送る前に履歴と同じく位置でマスクする
+            result: maskCookieHeadersDeep(context.result),
           };
           await safeWriteSSE({ event: "step-result", data: JSON.stringify(payload) });
         },
@@ -172,7 +174,8 @@ export async function handleRunRequest(
     }
 
     const runResultPayload: RunResultPayload = {
-      flow: flowResult,
+      // step-result と同じく、Cookie / Set-Cookie ヘッダーの値は位置でマスクして送る
+      flow: maskCookieHeadersDeep(flowResult),
       ...(warnings.length > 0 ? { warnings } : {}),
       ...(openapiSummary !== undefined ? { openapi: openapiSummary } : {}),
     };

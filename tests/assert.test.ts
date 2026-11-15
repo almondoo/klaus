@@ -49,6 +49,42 @@ describe("assertHeaders", () => {
     const results = assertHeaders([{ name: "X-Missing", equals: "foo" }], headers);
     expect(results[0]?.ok).toBe(false);
   });
+
+  it("Cookie / Set-Cookie は比較に生の値を使い、actual と message には位置でマスクした値を載せる", () => {
+    const cookies = {
+      "set-cookie": "sid=SESSION-RAW; Path=/, t=second-raw",
+      cookie: "sid=SESSION-RAW; theme=dark",
+    };
+    const pass = assertHeaders([{ name: "Set-Cookie", regex: "^sid=SESSION" }], cookies);
+    expect(pass[0]).toMatchObject({ ok: true, actual: "sid=***; Path=/, t=***" });
+    expect(JSON.stringify(pass)).not.toContain("SESSION-RAW");
+
+    const fail = assertHeaders(
+      [
+        { name: "set-cookie", regex: "^nomatch" },
+        { name: "set-cookie", contains: "zzz" },
+        { name: "set-cookie", equals: "x" },
+        { name: "set-cookie", oneOf: ["x"] },
+        { name: "Cookie", equals: "x" },
+      ],
+      cookies,
+    );
+    expect(fail.every((r) => !r.ok)).toBe(true);
+    const text = JSON.stringify(fail);
+    expect(text).not.toContain("SESSION-RAW");
+    expect(text).not.toContain("second-raw");
+    expect(text).not.toContain("dark");
+    expect(fail[0]?.message).toBe(
+      'header "set-cookie": expected to match /^nomatch/ but got "sid=***; Path=/, t=***"',
+    );
+    expect(fail[4]?.actual).toBe("sid=***; theme=***");
+  });
+
+  it("Cookie 以外のヘッダーの actual / message は従来どおり値をそのまま載せる", () => {
+    const [result] = assertHeaders([{ name: "X-Id", equals: "x" }], { "x-id": "abc-123" });
+    expect(result?.actual).toBe("abc-123");
+    expect(result?.message).toContain('but got "abc-123"');
+  });
 });
 
 describe("assertBody", () => {

@@ -479,14 +479,16 @@ describe("cookie jar", () => {
     expect(off.result.steps[1]?.response?.body).toEqual({ cookie: null });
   });
 
-  it("Set-Cookie の値はレスポンスのヘッダーを表示するどの場所でも位置でマスクされる(属性は残る)", async () => {
+  it("Set-Cookie は実行時のレスポンスでは生の値のまま、履歴では位置でマスクされる(属性は残る)", async () => {
     const server = await loginServer(["sid=session-value-1234; Path=/", "t=second-value-5678"]);
     const { result, entries } = await run(
       flowOf([get(`${server.baseUrl}/login`, {}, "login")], { cookies: true }),
     );
     expect(entries[0]?.response?.headers["set-cookie"]).toBe("sid=***; Path=/, t=***");
-    expect(result.steps[0]?.response?.headers["set-cookie"]).toBe("sid=***; Path=/, t=***");
-    const text = JSON.stringify({ result, entries });
+    expect(result.steps[0]?.response?.headers["set-cookie"]).toBe(
+      "sid=session-value-1234; Path=/, t=second-value-5678",
+    );
+    const text = JSON.stringify(entries);
     expect(text).not.toContain("session-value-1234");
     expect(text).not.toContain("second-value-5678");
   });

@@ -1,5 +1,4 @@
 import { type Dispatcher, FormData, request } from "undici";
-import { maskSetCookieHeader } from "./cookie-jar.js";
 import { RuntimeError } from "./errors.js";
 
 /** リクエスト共通オプション */
@@ -112,9 +111,9 @@ function normalizeHeaders(headers: Dispatcher.ResponseData["headers"]): Record<s
   const result: Record<string, string> = {};
   for (const [key, value] of Object.entries(headers)) {
     if (value === undefined) continue;
-    const joined = Array.isArray(value) ? value.join(", ") : value;
-    // Set-Cookie の値は、結果・履歴・カセットなどへ渡る前に位置でマスクする(生の値は setCookies に別途保持する)
-    result[key] = key.toLowerCase() === "set-cookie" ? maskSetCookieHeader(joined) : joined;
+    // Set-Cookie も生の値のまま保つ(capture・アサーションは実行時に本物の値を見る)。
+    // 履歴・カセット・出力へ渡る側で、Cookie / Set-Cookie ヘッダーを構造的にマスクする(cookie-jar.ts の maskCookieHeaders)
+    result[key] = Array.isArray(value) ? value.join(", ") : value;
   }
   return result;
 }

@@ -252,10 +252,11 @@ class SpecFiles {
     const shown = toDisplayPath(cwd, path);
     const from = referrer !== undefined ? toDisplayPath(cwd, referrer) : undefined;
     // $ref の行き先は、存在しない・ルートの文書のディレクトリの外・読めない、のどれでも同じメッセージにする
-    // (どのファイルがディスク上にあるかを、仕様を使って探れないようにするため)
+    // (どのファイルがディスク上にあるかを、仕様を使って探れないようにするため)。
+    // 対処(参照先をルートのディレクトリの下に置く・仕様を 1 ファイルにまとめる)は、パスを含めず一律に案内する
     const refused = (): ParseError =>
       new ParseError(
-        `$ref "${ref}" cannot be resolved (the target must be an existing .yaml, .yml or .json file inside the directory of the OpenAPI document)`,
+        `$ref "${ref}" cannot be resolved (the target must be an existing .yaml, .yml or .json file inside the directory of the OpenAPI document; place the referenced files under that directory or bundle the document into a single file)`,
         from,
       );
     if (ref !== undefined) {

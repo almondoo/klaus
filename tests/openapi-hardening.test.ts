@@ -175,6 +175,9 @@ describe("OpenAPI: 参照先ファイルの扱い", () => {
         expect(error, ref).toBeInstanceOf(ParseError);
         const text = (error as Error).message;
         expect(text).toContain("cannot be resolved");
+        // 対処(参照先をルートのディレクトリの下に置く・仕様を 1 ファイルにまとめる)も、同じメッセージで案内する
+        expect(text).toContain("place the referenced files under that directory");
+        expect(text).toContain("bundle the document into a single file");
         expect(text).not.toContain("SUPERSECRET_ENUM");
         messages.push(text.replace(/\$ref "[^"]*"/, "$ref"));
       }

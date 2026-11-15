@@ -37,6 +37,8 @@ function buildCassetteKey(method: string, url: string): string {
  * HTTP レスポンスから CassetteEntry を組み立て、secrets でマスクする。
  * 履歴 JSONL(maskHistoryEntry)と同じ方式(expandSecretVariants + maskDeep)を使い、
  * URL・ヘッダー・bodyText に含まれる {{env.X}} 解決値を "***" に置換してからカセットへ渡す。
+ * Cookie / Set-Cookie ヘッダーの値は、secrets が空でも maskDeep が位置で *** にする
+ * (実行時のレスポンスは生の Set-Cookie を持つため、カセットに残す前に必ずマスクする)。
  */
 export function buildCassetteEntry(
   method: string,
@@ -52,9 +54,7 @@ export function buildCassetteEntry(
     headers: response.headers,
     bodyText: response.bodyText,
   };
-  if (secrets.length === 0) return entry;
-  const variants = expandSecretVariants(secrets);
-  return maskDeep(entry, variants);
+  return maskDeep(entry, expandSecretVariants(secrets));
 }
 
 /**

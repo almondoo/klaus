@@ -59,6 +59,7 @@ export {
   expandSecretVariants,
   historyDateFromTimestamp,
   historyFilePath,
+  maskCookieHeadersDeep,
   maskDeep,
   maskString,
 } from "./history.js";

@@ -3283,3 +3283,95 @@ describe("POST /api/history/promote の出力先(許可リスト・大文字小�
     }
   }
 });
+
+describe("klaus server: ブラウザへ送るライブ結果の Cookie マスク", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  const RAW_SID = "SESSION-RAW-1";
+  let dir: string;
+  let target: ReturnType<typeof createServer>;
+  let server: StartServerResult;
+  let apiBase: string;
+
+  beforeAll(async () => {
+    target = createServer((_req, res) => {
+      res.writeHead(200, { "Set-Cookie": `sid=${RAW_SID}; Path=/`, "X-Plain": "visible" });
+      res.end("ok");
+    });
+    const { baseUrl } = await listenEphemeral(target);
+    await mkdir(tmpRoot, { recursive: true });
+    dir = await mkdtemp(join(tmpRoot, "klaus-server-cookie-"));
+    await writeFile(
+      join(dir, "flow.yaml"),
+      [
+        "name: cookie flow",
+        "steps:",
+        "  - name: login",
+        "    request:",
+        "      method: GET",
+        `      url: "${baseUrl}/login"`,
+        "      headers:",
+        `        Cookie: "sid=${RAW_SID}"`,
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    server = await startServer({ cwd: dir, port: 0 });
+    apiBase = `http://127.0.0.1:${server.port}`;
+    urls.target = baseUrl;
+  });
+
+  afterAll(async () => {
+    await server.close();
+    await closeServer(target);
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  const urls = { target: "" };
+
+  function post(path: string, body: unknown) {
+    return fetch(`${apiBase}${path}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": server.token,
+        Cookie: `klaus_token=${server.token}`,
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it("POST /api/runs の step-result / run-result は Cookie・Set-Cookie の値が ***(他のヘッダーはそのまま)", async () => {
+    const events = await collectSseEvents(await post("/api/runs", { path: "flow.yaml" }));
+    const stepResult = events.find((e) => e.event === "step-result");
+    if (!stepResult) throw new Error("step-result event was not delivered");
+    const text = JSON.stringify(events);
+    expect(text).not.toContain(RAW_SID);
+    const result = (
+      stepResult.data as {
+        result: {
+          request: { headers: Record<string, string> };
+          response: { headers: Record<string, string> };
+        };
+      }
+    ).result;
+    expect(result.request.headers.Cookie).toBe("sid=***");
+    expect(result.response.headers["set-cookie"]).toBe("sid=***; Path=/");
+    expect(result.response.headers["x-plain"]).toBe("visible");
+  });
+
+  it("POST /api/request の結果も Cookie・Set-Cookie の値が ***", async () => {
+    const res = await post("/api/request", {
+      request: {
+        method: "GET",
+        url: `${urls.target}/login`,
+        headers: { Cookie: `sid=${RAW_SID}` },
+      },
+    });
+    const text = await res.text();
+    expect(text).not.toContain(RAW_SID);
+    const payload = JSON.parse(text) as {
+      result: { response: { headers: Record<string, string> } };
+    };
+    expect(payload.result.response.headers["set-cookie"]).toBe("sid=***; Path=/");
+  });
+});

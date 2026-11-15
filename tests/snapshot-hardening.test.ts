@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { join } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -13,7 +13,10 @@ import {
   acceptSnapshot,
   findSnapshotKeyProblem,
   findUnsafeSnapshotPath,
+  LOCK_STALE_MS,
+  LOCK_TIMEOUT_MS,
   listSnapshotMismatches,
+  withFileLock,
 } from "../src/core/snapshot.js";
 import { closeServer, listenEphemeral } from "./support/net.js";
 
@@ -370,3 +373,50 @@ async function writeHistory(cwd: string, file: string, candidate: unknown): Prom
     "utf-8",
   );
 }
+
+describe("スナップショットのロック(withFileLock)", () => {
+  const tmpRoot = join(process.cwd(), "tmp");
+  let dir: string;
+
+  beforeAll(async () => {
+    await mkdir(tmpRoot, { recursive: true });
+  });
+  afterEach(async () => {
+    if (dir) await rm(dir, { recursive: true, force: true });
+  });
+
+  async function lockPathInNewDir() {
+    dir = await mkdtemp(join(tmpRoot, "klaus-snapshot-lock-"));
+    return join(dir, "snap.json.lock");
+  }
+
+  it("待ち時間の上限は stale の閾値より長い(クラッシュで残ったロックは必ず待ち切って奪える)", () => {
+    expect(LOCK_STALE_MS).toBe(30_000);
+    expect(LOCK_TIMEOUT_MS).toBe(35_000);
+    expect(LOCK_TIMEOUT_MS).toBeGreaterThan(LOCK_STALE_MS);
+  });
+
+  it("他の実行がロックを持ち続けていると、ロックファイルのパスと削除してよい旨を添えてタイムアウトする", async () => {
+    const lockPath = await lockPathInNewDir();
+    await writeFile(lockPath, "");
+    await expect(
+      withFileLock(lockPath, async () => "never", {
+        timeoutMs: 80,
+        displayPath: "flows/__snapshots__/x.snap.json.lock",
+      }),
+    ).rejects.toThrow(
+      /timed out waiting for another run.*"flows\/__snapshots__\/x\.snap\.json\.lock".*remove the lock file/,
+    );
+    // 取れなかったロックは消さない
+    await stat(lockPath);
+  });
+
+  it("stale より古いロックはクラッシュの残りとして奪って実行し、終わったら削除する", async () => {
+    const lockPath = await lockPathInNewDir();
+    await writeFile(lockPath, "");
+    const old = new Date(Date.now() - LOCK_STALE_MS - 1000);
+    await utimes(lockPath, old, old);
+    await expect(withFileLock(lockPath, async () => "done")).resolves.toBe("done");
+    await expect(stat(lockPath)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+});

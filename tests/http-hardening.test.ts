@@ -7,6 +7,7 @@ import {
 import { connect as netConnect, type Socket } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
 import type { HistoryEntry } from "../src/core/history.js";
+import { findHostHeaderMismatch } from "../src/core/http-session.js";
 import { executeFlow } from "../src/core/runner.js";
 import { flowSchema } from "../src/core/schema.js";
 import { closeServer, listenEphemeral } from "./support/net.js";
@@ -175,6 +176,112 @@ describe("Host ヘッダー", () => {
     );
     expect(result.steps[0]?.status).toBe("passed");
     expect(target.requests[0]?.headers.host).toBe(`127.0.0.1:${target.port}`);
+  });
+
+  it.each([
+    ["フラグメント", (port: number) => `127.0.0.1:${port}#evil.example`],
+    ["パス", (port: number) => `127.0.0.1:${port}/..`],
+    ["クエリ", (port: number) => `127.0.0.1:${port}?x`],
+    ["userinfo", (port: number) => `evil.example@127.0.0.1:${port}`],
+    ["先頭の @", (port: number) => `@127.0.0.1:${port}`],
+    ["パーセントエスケープ", (port: number) => `127.0.0.1%2e:${port}`],
+    ["バックスラッシュ", (port: number) => `127.0.0.1:${port}\\evil.example`],
+    ["タブ", (port: number) => `127.0.0.1:${port}\t`],
+    ["前後の空白", (port: number) => ` 127.0.0.1:${port}`],
+    ["空のポート", () => "127.0.0.1:"],
+    ["空", () => ""],
+  ])(
+    "許可リストがあるとき、文法に合わない Host(%s)は URL と同じ権威を指していても拒否して履歴に残す",
+    async (_label, hostOf) => {
+      const target = await startHttp((_req, res) => res.end("ok"));
+      const { result, entries } = await run(
+        flowOf([get(`${target.baseUrl}/x`, { headers: { Host: hostOf(target.port) } })]),
+        { guard: { allowedHosts: [`127.0.0.1:${target.port}`] } },
+      );
+      expect(result.steps[0]?.status).toBe("error");
+      expect(result.steps[0]?.error).toContain("Host header that differs");
+      expect(entries[0]?.status).toBe("error");
+      expect(target.requests).toHaveLength(0);
+    },
+  );
+
+  it("proxy 設定時も、文法に合わない Host は拒否し proxy へは何も送らない", async () => {
+    const proxyRequests: string[] = [];
+    const proxy = createHttpServer((req, res) => {
+      proxyRequests.push(req.url ?? "");
+      res.end("via-proxy");
+    });
+    servers.push(proxy);
+    const { baseUrl: proxyUrl } = await listenEphemeral(proxy);
+    const target = await startHttp((_req, res) => res.end("direct"));
+    const { result } = await run(
+      flowOf([
+        get(`${target.baseUrl}/x`, { headers: { Host: `127.0.0.1:${target.port}#evil.example` } }),
+      ]),
+      { http: { proxy: proxyUrl } },
+    );
+    expect(result.steps[0]?.status).toBe("error");
+    expect(result.steps[0]?.error).toContain("Host header that differs");
+    expect(proxyRequests).toHaveLength(0);
+  });
+
+  it("キーの大文字小文字だけが違う Host の二重指定は undici が拒否し、ステップは error になる(送信しない)", async () => {
+    const target = await startHttp((_req, res) => res.end("ok"));
+    const host = `127.0.0.1:${target.port}`;
+    const { result } = await run(
+      flowOf([get(`${target.baseUrl}/x`, { headers: { Host: host, host } })]),
+      { guard: { allowedHosts: [host] } },
+    );
+    expect(result.steps[0]?.status).toBe("error");
+    expect(result.steps[0]?.error).toMatch(/duplicate host header/i);
+    expect(target.requests).toHaveLength(0);
+  });
+
+  describe("findHostHeaderMismatch(Host の文法)", () => {
+    const mismatch = (url: string, host: string) => findHostHeaderMismatch(url, { Host: host });
+
+    it("同じ権威なら、大文字・明示的な既定ポート・IPv6(長い形を含む)・IDN(Unicode / punycode)も通る", () => {
+      expect(mismatch("http://api.example.com/x", "API.Example.COM")).toBeUndefined();
+      expect(mismatch("http://api.example.com/x", "api.example.com:80")).toBeUndefined();
+      expect(mismatch("https://api.example.com/x", "api.example.com:443")).toBeUndefined();
+      expect(mismatch("http://[::1]:8080/x", "[::1]:8080")).toBeUndefined();
+      expect(mismatch("http://[::1]:8080/x", "[0:0:0:0:0:0:0:1]:8080")).toBeUndefined();
+      expect(
+        mismatch("http://[::1]/x", "[0000:0000:0000:0000:0000:0000:0000:0001]"),
+      ).toBeUndefined();
+      expect(mismatch("http://münchen.example/x", "xn--mnchen-3ya.example")).toBeUndefined();
+      expect(mismatch("http://münchen.example/x", "münchen.example")).toBeUndefined();
+    });
+
+    it("別の権威、禁止文字を含む値(# / ? @ % \\ 空白・制御文字)は、URL が同じ権威でも拒否する(値を返す)", () => {
+      expect(mismatch("http://api.example.com/x", "evil.example")).toBe("evil.example");
+      expect(mismatch("http://api.example.com/x", "api.example.com:8080")).toBe(
+        "api.example.com:8080",
+      );
+      for (const bad of [
+        "api.example.com#x",
+        "api.example.com/..",
+        "api.example.com?",
+        "@api.example.com",
+        "x@api.example.com",
+        "api.example.com%2e",
+        "api.example.com\\x",
+        "api.example.com\t",
+        "api.example.com\r\nX: 1",
+        "api.example.com\u00a0",
+        "api.example.com ",
+        "api.example.com:",
+        "api.example.com:123456",
+        "[::1",
+        "",
+      ]) {
+        expect(mismatch("http://api.example.com/x", bad), JSON.stringify(bad)).toBe(bad);
+      }
+      expect(mismatch("http://münchen.example/x", "münchen.example#x")).toBe("münchen.example#x");
+      expect(mismatch("http://münchen.example/x", "münchen.example\u0085")).toBe(
+        "münchen.example\u0085",
+      );
+    });
   });
 
   it("許可リストも proxy も無いときは従来どおり Host をそのまま送る", async () => {

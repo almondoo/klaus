@@ -10,7 +10,7 @@ import {
   parseTokenResponse,
   tokenCacheKey,
 } from "./auth.js";
-import { CookieJar, splitSetCookieHeader } from "./cookie-jar.js";
+import { CookieJar, MIN_COOKIE_SECRET_LENGTH, splitSetCookieHeader } from "./cookie-jar.js";
 import { GuardRefusalError, RuntimeError } from "./errors.js";
 import type { HttpRequestOptions, HttpResponse } from "./http.js";
 import { DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_TIMEOUT_MS } from "./http.js";
@@ -156,10 +156,25 @@ function portOf(url: URL): string {
   return url.protocol === "https:" || url.protocol === "wss:" ? "443" : "80";
 }
 
+/** Host ヘッダーの値の文法: reg-name / IPv4(ポート任意)と、角括弧つきの IPv6(ポート任意) */
+const HOST_REG_NAME_PATTERN = /^[A-Za-z0-9.-]+(:\d{1,5})?$/;
+const HOST_IPV6_PATTERN = /^\[[0-9A-Fa-f:.]+\](:\d{1,5})?$/;
+/** 非 ASCII(IDN をそのまま書いた)ホスト。ASCII 側で許す文字に加えて非 ASCII だけを許す(# / ? @ % \ や空白・制御文字は含まない) */
+const HOST_IDN_PATTERN = /^[A-Za-z0-9.\u0080-\uffff-]+(:\d{1,5})?$/;
+/** 非 ASCII の範囲に含まれる空白・制御文字(C1 制御文字・NBSP・Unicode 空白など) */
+const HOST_IDN_FORBIDDEN_PATTERN = /[\s\u0080-\u009f]/;
+
+/** Host ヘッダーの生の値が、許可する文法に合っているか(URL パーサーに通す前の厳密な検査) */
+function isValidHostHeaderValue(raw: string): boolean {
+  if (HOST_REG_NAME_PATTERN.test(raw) || HOST_IPV6_PATTERN.test(raw)) return true;
+  return HOST_IDN_PATTERN.test(raw) && !HOST_IDN_FORBIDDEN_PATTERN.test(raw);
+}
+
 /**
  * フローが指定した Host ヘッダーが URL の権威(ホスト:ポート)と一致するか。
  * 一致しない Host は、proxy や Host ルーティングのフロントエンドを通じて、許可リスト外の仮想ホストへ
- * 到達するために使える。
+ * 到達するために使える。URL パーサーは `host#x` や `host/..` のような値も寛容に受け付けてしまうため、
+ * 比較の前に、生の値が Host の文法(isValidHostHeaderValue)に合っていることを要求する(合わなければ拒否)。
  */
 export function findHostHeaderMismatch(
   url: string,
@@ -168,7 +183,9 @@ export function findHostHeaderMismatch(
   if (!headers) return undefined;
   const key = Object.keys(headers).find((name) => name.toLowerCase() === "host");
   if (key === undefined) return undefined;
-  const value = (headers[key] ?? "").trim().toLowerCase();
+  const raw = headers[key] ?? "";
+  if (!isValidHostHeaderValue(raw)) return raw;
+  const value = raw.toLowerCase();
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -420,9 +437,10 @@ export class HttpSession {
   }
 
   /**
-   * レスポンスの Set-Cookie を jar に取り込む(cookies: false なら何もしない)。cookie の値は部分一致の秘密値には
-   * しない(`json` や `true` のような短い値が無関係な出力を壊すため)。表示側は Cookie / Set-Cookie ヘッダーを
-   * 位置でマスクする(cookie-jar.ts の maskCookieHeaders)。
+   * レスポンスの Set-Cookie を jar に取り込む(cookies: false なら何もしない)。cookie の値のうち
+   * MIN_COOKIE_SECRET_LENGTH 文字以上のものは秘密値として登録し、ボディや他のヘッダーにエコーされても
+   * マスクされるようにする。それより短い値(`json` や `true` のような、無関係な出力を壊すもの)は登録せず、
+   * 表示側が Cookie / Set-Cookie ヘッダーを位置でマスクする(cookie-jar.ts の maskCookieHeaders)だけにする。
    */
   private absorb(url: string, response: HopResponse): void {
     if (!this.jar) return;
@@ -438,18 +456,23 @@ export class HttpSession {
     } catch {
       return;
     }
-    this.jar.store(parsed, lines);
+    for (const value of this.jar.store(parsed, lines)) {
+      if (value.length >= MIN_COOKIE_SECRET_LENGTH) this.secretSink?.add(value);
+    }
   }
 
   /**
    * url に対して jar が送る cookie の値(capture の cookie 用)。cookies: false なら undefined。
-   * 明示的に取り出した値は、後続のヘッダー等に入っても表示でマスクされるよう、秘密値として登録する。
+   * 明示的に取り出した値は、後続のヘッダー等に入っても表示でマスクされるよう、MIN_COOKIE_SECRET_LENGTH 文字以上なら
+   * 秘密値として登録する(短い値の登録は無関係な出力を壊すため行わない)。
    */
   cookieValue(name: string, url: string): string | undefined {
     if (!this.jar) return undefined;
     try {
       const value = this.jar.valueFor(name, new URL(url));
-      if (value !== undefined) this.secretSink?.add(value);
+      if (value !== undefined && value.length >= MIN_COOKIE_SECRET_LENGTH) {
+        this.secretSink?.add(value);
+      }
       return value;
     } catch {
       return undefined;

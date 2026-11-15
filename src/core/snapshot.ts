@@ -13,6 +13,7 @@
 import { constants, lstatSync } from "node:fs";
 import { lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
+import { maskCookieHeaders } from "./cookie-jar.js";
 import { GuardRefusalError, ParseError } from "./errors.js";
 import type { HistoryEntry } from "./history.js";
 import { expandSecretVariants, maskDeep, maskString } from "./history.js";
@@ -197,7 +198,10 @@ export function buildSnapshotCandidate(
     const headers: Record<string, string> = {};
     for (const name of [...spec.headers].sort()) {
       const value = lower.get(name);
-      if (value !== undefined) headers[name] = maskString(value, variants);
+      // Cookie / Set-Cookie の値は、秘密値の登録に関わらず位置で *** にしてから(基準・候補とも)保存する
+      if (value !== undefined) {
+        headers[name] = maskString(maskCookieHeaders({ [name]: value })[name] ?? value, variants);
+      }
     }
     entry.headers = headers;
   }
@@ -480,15 +484,33 @@ async function writeSnapshotFile(
   }
 }
 
-/** ロックを待つ最長時間(ms)と、これより古いロックファイルを放置されたものとして扱う時間(ms) */
-const LOCK_TIMEOUT_MS = 10_000;
-const LOCK_STALE_MS = 30_000;
+/** これより古いロックファイルを、クラッシュで残ったものとして奪う時間(ms) */
+export const LOCK_STALE_MS = 30_000;
+/**
+ * ロックを待つ最長時間(ms)。stale の閾値より長くして、クラッシュで残ったロックは必ず待ち切って奪えるようにする
+ * (これが閾値以下だと、残ったロックに当たった実行が奪う前にタイムアウトしてしまう)
+ */
+export const LOCK_TIMEOUT_MS = LOCK_STALE_MS + 5_000;
+
+/** withFileLock の待ち時間の設定(テストで短い値を渡すために公開する) */
+export interface FileLockOptions {
+  timeoutMs?: number;
+  staleMs?: number;
+  /** タイムアウトのメッセージに載せるロックファイルのパス(未指定なら lockPath) */
+  displayPath?: string;
+}
 
 /**
  * ロックファイル(`<スナップショット>.lock`。O_EXCL で作る)を取って fn を実行する。
  * 別の実行(UI サーバーの同時実行など)が同じファイルを書き換えている間は待つ。
  */
-async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
+export async function withFileLock<T>(
+  lockPath: string,
+  fn: () => Promise<T>,
+  options: FileLockOptions = {},
+): Promise<T> {
+  const timeoutMs = options.timeoutMs ?? LOCK_TIMEOUT_MS;
+  const staleMs = options.staleMs ?? LOCK_STALE_MS;
   const started = Date.now();
   for (;;) {
     try {
@@ -503,15 +525,17 @@ async function withFileLock<T>(lockPath: string, fn: () => Promise<T>): Promise<
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       try {
         const info = await lstat(lockPath);
-        if (Date.now() - info.mtimeMs > LOCK_STALE_MS) {
+        if (Date.now() - info.mtimeMs > staleMs) {
           await unlink(lockPath).catch(() => {});
           continue;
         }
       } catch {
         continue;
       }
-      if (Date.now() - started > LOCK_TIMEOUT_MS) {
-        throw new Error("timed out waiting for another run to finish writing the snapshot file");
+      if (Date.now() - started > timeoutMs) {
+        throw new Error(
+          `timed out waiting for another run to finish writing the snapshot file (lock file: "${options.displayPath ?? lockPath}"); if no other run is writing, remove the lock file and run again`,
+        );
       }
       await new Promise((done) => setTimeout(done, 15 + Math.random() * 30));
     }
@@ -543,10 +567,14 @@ async function updateSnapshotFile(
       `snapshot path resolves outside the current directory: "${toRelative(root, absPath)}"`,
     );
   }
-  await withFileLock(`${absPath}.lock`, async () => {
-    const next = mutate(await loadSnapshotFile(absPath));
-    if (next !== undefined) await writeSnapshotFile(root, absPath, next);
-  });
+  await withFileLock(
+    `${absPath}.lock`,
+    async () => {
+      const next = mutate(await loadSnapshotFile(absPath));
+      if (next !== undefined) await writeSnapshotFile(root, absPath, next);
+    },
+    { displayPath: `${toRelative(root, absPath)}.lock` },
+  );
 }
 
 /** SnapshotStore のオプション */

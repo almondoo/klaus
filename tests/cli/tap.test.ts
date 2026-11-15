@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { formatTap } from "../../src/cli/reporters/tap.js";
+import { assertHeaders } from "../../src/core/index.js";
 import { buildFlow, buildRunResult, buildStep } from "./reporters-fixtures.js";
 
 describe("formatTap", () => {
@@ -209,5 +210,18 @@ describe("formatTap", () => {
 
     expect(tap.endsWith("\n")).toBe(true);
     expect(tap.endsWith("\n\n")).toBe(false);
+  });
+
+  it("Set-Cookie のヘッダーアサーションが失敗しても、秘密値が未登録で cookie の値が出力に残らない", () => {
+    const assertions = assertHeaders([{ name: "set-cookie", regex: "^nomatch" }], {
+      "set-cookie": "sid=SESSION-RAW-VALUE; Path=/",
+    });
+    const flow = buildFlow({
+      steps: [buildStep({ name: "login", status: "failed", assertions })],
+    });
+    const output = formatTap(buildRunResult([flow]));
+
+    expect(output).not.toContain("SESSION-RAW-VALUE");
+    expect(output).toContain("sid=***; Path=/");
   });
 });

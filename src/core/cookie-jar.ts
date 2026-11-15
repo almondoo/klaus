@@ -25,6 +25,13 @@ interface StoredCookie {
   seq: number;
 }
 
+/**
+ * cookie の値を秘密値(部分一致マスクの対象)として登録する最小の文字数。履歴の MIN_SECRET_LENGTH(4)のままだと
+ * `json` や `true` のような短い値が無関係な出力(Accept や content-type)を壊すため、cookie だけ長くする。
+ * これより短い値は登録せず、Cookie / Set-Cookie ヘッダー内の位置によるマスクだけが掛かる。
+ */
+export const MIN_COOKIE_SECRET_LENGTH = 16;
+
 /** jar に保持する cookie の上限(超えたら古いものから捨てる。メモリ枯渇の防止) */
 const MAX_COOKIES = 1000;
 /** name=value 部分の最大バイト数(RFC 6265 の推奨に合わせる) */
@@ -112,7 +119,7 @@ export class CookieJar {
   /**
    * レスポンスの Set-Cookie 群を url のレスポンスとして取り込む。
    * 保存(または更新)した cookie の値を返す。拒否した cookie の値も含む(呼び出し側が必要なら使う。
-   * HttpSession は cookie 値を部分一致の秘密値にはせず、ヘッダーの構造(位置)でマスクする)。
+   * HttpSession は MIN_COOKIE_SECRET_LENGTH 文字以上の値を秘密値として登録する)。
    */
   store(responseUrl: URL, setCookieLines: readonly string[], now: number = Date.now()): string[] {
     const url = toCookieUrl(responseUrl);

@@ -10,6 +10,7 @@ import {
   formatZodError,
   type GuardOptions,
   type HttpConfig,
+  maskCookieHeadersDeep,
 } from "../../core/index.js";
 import { requestSchema } from "../../core/schema.js";
 import { parseJsonBody } from "../json-body.js";
@@ -52,6 +53,7 @@ export async function handleSingleRequest(
     actor: { kind: "human" },
   });
 
-  const payload: SingleRequestResultPayload = { result };
+  // 実行時の結果は生の Set-Cookie / Cookie を持つため、返す前に履歴と同じく位置でマスクする
+  const payload: SingleRequestResultPayload = { result: maskCookieHeadersDeep(result) };
   return c.json(payload);
 }

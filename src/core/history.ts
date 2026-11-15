@@ -159,7 +159,7 @@ export function maskDeep<T>(value: T, secrets: readonly string[]): T {
  * `headers` オブジェクトの Cookie / Set-Cookie の値を位置で *** にする(秘密値の登録に依存しない構造的なマスク)。
  * 値の中身を探さないので、短い cookie 値でも他の出力を壊さない。元の value は変異させない。
  */
-function maskCookieHeadersDeep<T>(value: T): T {
+export function maskCookieHeadersDeep<T>(value: T): T {
   if (Array.isArray(value)) {
     return value.map((item) => maskCookieHeadersDeep(item)) as unknown as T;
   }
