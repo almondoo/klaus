@@ -4,6 +4,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import type { RunStepView } from "@/hooks/useRun";
 import { cn } from "@/lib/utils";
 import { formatDuration } from "@/utils/format";
+import { ErrorExplanation } from "./ErrorExplanation";
 import { JsonBlock } from "./JsonBlock";
 import { AssertionList, RedirectNotes } from "./ResultDetails";
 import { StatusBadge } from "./StatusBadge";
@@ -69,7 +70,11 @@ export function StepRow({ step }: StepRowProps) {
         </CollapsibleTrigger>
 
         <CollapsibleContent className="flex flex-col gap-3 border-t border-border px-3 pb-3">
-          {result?.error && <p className="mt-2 text-sm text-fail">{result.error}</p>}
+          {result?.error && (
+            <div className="mt-2">
+              <ErrorExplanation message={result.error} source={result} />
+            </div>
+          )}
 
           {result && <AssertionList assertions={result.assertions} />}
 

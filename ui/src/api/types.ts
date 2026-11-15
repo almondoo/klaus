@@ -140,6 +140,8 @@ export interface HistoryEntry {
   status?: "passed" | "failed" | "skipped" | "error";
   /** status が "error"(安全柵による送信拒否)のエントリのみ入る拒否理由 */
   error?: string;
+  /** error の機械可読な分類(guard.allowed-hosts など)。旧エントリ・分類の無いエラーには無い */
+  errorCode?: string;
   /** 監査項目(いずれも旧エントリには無い)。src/core/history.ts の同名フィールドと同一契約 */
   env?: string;
   file?: string;

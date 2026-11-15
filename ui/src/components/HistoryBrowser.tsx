@@ -15,11 +15,13 @@ import {
 } from "@/components/ui/table";
 import { useHistory } from "@/hooks/useHistory";
 import { cn } from "@/lib/utils";
+import { errorCodeOf, explainError } from "@/utils/errorExplain";
 import { formatDateTime, formatDuration } from "@/utils/format";
 import { groupHistoryByRun, type HistoryRunGroup, resolveStepStatus } from "@/utils/history";
 import { formatActor, pickAudit } from "@/utils/historyEvents";
 import { hasPendingSnapshot } from "@/utils/results";
 import { commonFlow, findPreviousRun, isSingleGroup, orderRunPair } from "@/utils/runDiff";
+import { ErrorExplanation } from "./ErrorExplanation";
 import { JsonBlock } from "./JsonBlock";
 import { PromoteDialog } from "./PromoteDialog";
 import { AssertionList, RedirectNotes } from "./ResultDetails";
@@ -62,6 +64,12 @@ const stopRowToggle = {
   onClick: (e: React.MouseEvent) => e.stopPropagation(),
   onKeyDown: (e: React.KeyboardEvent) => e.stopPropagation(),
 };
+
+/**
+ * 狭い画面(lg 未満)では副次列(開始時刻・所要時間・ステップ数・実行者・環境)を隠し、
+ * フロー列の2行目に畳んで表示する。操作列が横スクロールで画面外に出ないようにするため。
+ */
+const WIDE_ONLY = "hidden lg:table-cell";
 
 /** 開いている比較(a: 古い方 / b: 新しい方) */
 interface DiffTarget {
@@ -235,16 +243,19 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                 </TableHead>
                 <TableHead>状態</TableHead>
                 <TableHead>フロー</TableHead>
-                <TableHead>開始時刻</TableHead>
+                <TableHead className={WIDE_ONLY}>開始時刻</TableHead>
                 {/* run 行は全ステップの durationMs 合計、ステップ行は単一ステップの durationMs。
                     実行画面のサマリー(FlowResult.durationMs)はステップ間のオーバーヘッドも含む
                     wall-clock 時間のため、run 行の値とは意味が異なる場合がある旨を title で補足する */}
-                <TableHead title="run 行は全ステップの所要時間の合計です(実行画面のサマリー時間とは計測範囲が異なる場合があります)">
+                <TableHead
+                  className={WIDE_ONLY}
+                  title="run 行は全ステップの所要時間の合計です(実行画面のサマリー時間とは計測範囲が異なる場合があります)"
+                >
                   所要時間
                 </TableHead>
-                <TableHead>ステップ数</TableHead>
-                <TableHead>実行者</TableHead>
-                <TableHead>環境</TableHead>
+                <TableHead className={WIDE_ONLY}>ステップ数</TableHead>
+                <TableHead className={WIDE_ONLY}>実行者</TableHead>
+                <TableHead className={WIDE_ONLY}>環境</TableHead>
                 <TableHead>操作</TableHead>
               </TableRow>
             </TableHeader>
@@ -277,17 +288,26 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                       <TableCell>
                         <StatusBadge status={group.status} />
                       </TableCell>
-                      <TableCell className="font-medium">{group.flow}</TableCell>
-                      <TableCell className="font-mono text-muted-foreground">
+                      <TableCell className="font-medium max-lg:break-all max-lg:whitespace-normal">
+                        {group.flow}
+                        {/* lg 未満: 副次列をここに畳む */}
+                        <span className="block font-mono text-xs font-normal text-muted-foreground lg:hidden">
+                          {formatDateTime(group.startedAt)} / {formatDuration(group.durationMs)} /{" "}
+                          {group.steps.length} ステップ
+                          {actorLabel ? ` / ${actorLabel}` : ""}
+                          {audit.env ? ` / ${audit.env}` : ""}
+                        </span>
+                      </TableCell>
+                      <TableCell className={cn(WIDE_ONLY, "font-mono text-muted-foreground")}>
                         {formatDateTime(group.startedAt)}
                       </TableCell>
-                      <TableCell className="font-mono text-muted-foreground">
+                      <TableCell className={cn(WIDE_ONLY, "font-mono text-muted-foreground")}>
                         {formatDuration(group.durationMs)}
                       </TableCell>
-                      <TableCell className="font-mono text-muted-foreground">
+                      <TableCell className={cn(WIDE_ONLY, "font-mono text-muted-foreground")}>
                         {group.steps.length}
                       </TableCell>
-                      <TableCell className="font-mono">
+                      <TableCell className={cn(WIDE_ONLY, "font-mono")}>
                         {actorLabel ? (
                           // agent / ci を human と見分けやすいよう、human 以外は強調表示する
                           <Badge variant={audit.actor?.kind === "human" ? "outline" : "running"}>
@@ -297,11 +317,11 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                           <span className="text-muted-foreground">-</span>
                         )}
                       </TableCell>
-                      <TableCell className="font-mono text-muted-foreground">
+                      <TableCell className={cn(WIDE_ONLY, "font-mono text-muted-foreground")}>
                         {audit.env ?? "-"}
                       </TableCell>
                       <TableCell {...stopRowToggle}>
-                        <div className="flex flex-wrap gap-1.5">
+                        <div className="flex flex-wrap gap-1.5 lg:flex-nowrap">
                           {comparingFrom === null ? (
                             <Button
                               type="button"
@@ -360,13 +380,17 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                         if (step.response) stepDetail.response = step.response;
                         if (step.events) stepDetail.events = step.events;
                         // 安全柵に拒否された(error)エントリは拒否理由を詳細に出す
-                        if (step.error) stepDetail.error = step.error;
+                        // errorCode が既知なら日本語の説明で出すため、JSON からは外す(未知・未指定は従来どおり JSON)
+                        const explainable =
+                          Boolean(step.error) && explainError(errorCodeOf(step)) !== null;
+                        if (step.error && !explainable) stepDetail.error = step.error;
                         // 監査項目(誰が・どこで・どのコミットで実行したか)
                         if (step.actor) stepDetail.actor = step.actor;
                         if (step.env) stepDetail.env = step.env;
                         if (step.file) stepDetail.file = step.file;
                         if (step.git) stepDetail.git = step.git;
                         const hasStepDetail = Object.keys(stepDetail).length > 0;
+                        const hasAnyDetail = hasStepDetail || explainable;
                         return (
                           <Fragment key={stepKey}>
                             <TableRow
@@ -379,14 +403,26 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                               <TableCell>
                                 <StatusBadge status={stepStatus} />
                               </TableCell>
-                              <TableCell className="pl-8 font-mono">{step.step}</TableCell>
-                              <TableCell className="font-mono text-muted-foreground">
+                              <TableCell className="pl-8 font-mono max-lg:break-all max-lg:whitespace-normal">
+                                {step.step}
+                                <span className="block text-xs text-muted-foreground lg:hidden">
+                                  {formatDateTime(step.startedAt)} /{" "}
+                                  {formatDuration(step.durationMs)}
+                                </span>
+                              </TableCell>
+                              <TableCell
+                                className={cn(WIDE_ONLY, "font-mono text-muted-foreground")}
+                              >
                                 {formatDateTime(step.startedAt)}
                               </TableCell>
-                              <TableCell className="font-mono text-muted-foreground">
+                              <TableCell
+                                className={cn(WIDE_ONLY, "font-mono text-muted-foreground")}
+                              >
                                 {formatDuration(step.durationMs)}
                               </TableCell>
-                              <TableCell className="font-mono text-muted-foreground">
+                              <TableCell
+                                className={cn(WIDE_ONLY, "font-mono text-muted-foreground")}
+                              >
                                 {/* skipped は HTTP レスポンスを持たないため、ステータスコードの代わりにその旨を表示する */}
                                 {step.response
                                   ? step.response.status
@@ -394,8 +430,8 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                                     ? "エラー"
                                     : "スキップ"}
                               </TableCell>
-                              <TableCell />
-                              <TableCell />
+                              <TableCell className={WIDE_ONLY} />
+                              <TableCell className={WIDE_ONLY} />
                               <TableCell />
                             </TableRow>
                             {stepExpanded && (
@@ -410,9 +446,14 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                                     redirects={step.redirects}
                                     droppedHeaders={step.droppedHeaders}
                                   />
+                                  {explainable && step.error && (
+                                    <div className="mb-3">
+                                      <ErrorExplanation message={step.error} source={step} />
+                                    </div>
+                                  )}
                                   {hasStepDetail ? (
                                     <JsonBlock value={stepDetail} />
-                                  ) : (
+                                  ) : hasAnyDetail ? null : (
                                     <p className="text-sm text-muted-foreground">
                                       スキップされたステップのため詳細はありません
                                     </p>

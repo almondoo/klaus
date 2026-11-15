@@ -100,7 +100,8 @@ export function App() {
         flows={flows}
         loading={flowsLoading}
         error={flowsError}
-        selectedPath={selectedPath}
+        // 履歴・単発リクエスト画面ではフローの選択ハイライトを外す(実行画面に戻ると復帰する)
+        selectedPath={activeTab === "runner" ? selectedPath : null}
         onSelect={(path) => {
           setSelectedPath(path);
           setActiveTab("runner");
