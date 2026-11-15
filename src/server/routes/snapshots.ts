@@ -63,6 +63,10 @@ export async function findAcceptRefusal(
       return `the environment "${name}" of this run could not be read to verify that it is not protected; accept it with \`klaus snapshot accept\` instead`;
     }
   }
+  // 環境の今の状態に依らず、履歴に「保護された環境で書かれた」と記録されていれば拒否する(後から保護が外されても承認させない)
+  if (entries.some((entry) => entry.envProtection !== undefined)) {
+    return "this run was recorded against a protected environment; snapshots from it cannot be accepted via the UI (use `klaus snapshot accept`)";
+  }
   return undefined;
 }
 

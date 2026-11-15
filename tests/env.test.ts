@@ -450,6 +450,28 @@ describe("protectedEnvironmentSecretValues", () => {
     }
   });
 
+  it("絶対 URL の値は、host・hostname・origin も返す(URL でない値・ホストを持たない値には足さない)", () => {
+    const values = protectedEnvironmentSecretValues(
+      environment({
+        $protected: true,
+        baseUrl: "https://api.prod.example.com:8443/v1",
+        plainHost: "db.internal:5432",
+        mail: "mailto:ops@example.com",
+      }),
+    );
+
+    expect([...values].sort()).toEqual(
+      [
+        "https://api.prod.example.com:8443/v1",
+        "https://api.prod.example.com:8443",
+        "api.prod.example.com:8443",
+        "api.prod.example.com",
+        "db.internal:5432",
+        "mailto:ops@example.com",
+      ].sort(),
+    );
+  });
+
   it("入れ子のオブジェクト・配列に含まれる文字列と数値も、深さに関わらず(スタックを使わずに)すべて拾う", () => {
     let deep: unknown = "deepest-value";
     for (let i = 0; i < 5000; i++) deep = { child: [deep] };

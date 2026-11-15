@@ -144,6 +144,8 @@ export interface HistoryEntry {
   errorCode?: string;
   /** 監査項目(いずれも旧エントリには無い)。src/core/history.ts の同名フィールドと同一契約 */
   env?: string;
+  /** 保護された環境($protected)で書かれたエントリにだけ付く。旧エントリ・保護されていない実行には無い */
+  envProtection?: "protected" | "readonly";
   file?: string;
   actor?: HistoryActor;
   git?: HistoryGit;

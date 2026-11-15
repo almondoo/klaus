@@ -16,6 +16,7 @@ import type { DataRow } from "./data.js";
 import {
   getProtectedMode,
   loadEnvironment,
+  type ProtectedMode,
   protectedEnvironmentSecretValues,
   toTemplateVariables,
 } from "./env.js";
@@ -145,6 +146,11 @@ export interface RunFlowOptions {
    * (CLI・UI は従来どおり登録しない)。4 文字未満の値は他の秘密値と同じく置換されない
    */
   maskProtectedEnvironmentValues?: boolean | undefined;
+  /**
+   * 追加で秘密値として登録する文字列(履歴・onSecrets 経由のマスクに載る)。読み込んだ環境とは別の、保護された環境の値が
+   * 応答などに現れても隠すために klaus mcp が渡す。4 文字未満の値は他の秘密値と同じく置換されない
+   */
+  extraSecrets?: readonly string[] | undefined;
   /**
    * 送信先ホストの許可リストなどの安全柵。呼び出し元(CLI・server)が klaus.config.yaml の `guard` を
    * 読んで渡す(core は設定ファイルを読まない)。未指定なら制限なし。--allow-protected のような
@@ -1335,11 +1341,18 @@ function buildAuditFields(
   envFilePath: string | undefined,
   actor: HistoryActor | undefined,
   git: HistoryGit | undefined,
-): Pick<HistoryEntry, "env" | "file" | "actor" | "git"> {
+  /** 読み込んだ環境の保護モード(保護されていた事実を、履歴エントリの envProtection に残す) */
+  protection: ProtectedMode,
+): Pick<HistoryEntry, "env" | "envProtection" | "file" | "actor" | "git"> {
   const env = envFilePath !== undefined ? basename(envFilePath) : envName;
   const file = filePath !== undefined ? toHistoryFilePath(cwd, filePath) : undefined;
   return {
     ...(env !== undefined ? { env } : {}),
+    ...(protection === true
+      ? { envProtection: "protected" as const }
+      : protection === "readonly"
+        ? { envProtection: "readonly" as const }
+        : {}),
     ...(file !== undefined ? { file } : {}),
     ...(actor ? { actor } : {}),
     ...(git ? { git } : {}),
@@ -1394,6 +1407,7 @@ export async function executeFlow(
     options.envFilePath,
     options.actor,
     options.git,
+    getProtectedMode(environment),
   );
   const historySink = resolveHistorySink(cwd, options.history);
 
@@ -1474,6 +1488,7 @@ export async function executeFlow(
   if (options.maskProtectedEnvironmentValues === true) {
     for (const value of protectedEnvironmentSecretValues(environment)) secrets.add(value);
   }
+  for (const value of options.extraSecrets ?? []) secrets.add(value);
   // onSecrets で既に通知済みの値(重複通知を避けるため、ステップをまたいで蓄積する)
   const notifiedSecrets = new Set<string>();
   const steps: StepResult[] = [];
@@ -1955,6 +1970,8 @@ export interface ExecuteSingleRequestOptions {
   entryPoint?: EntryPoint | undefined;
   /** 保護された環境の値すべてを秘密値として登録する(RunFlowOptions.maskProtectedEnvironmentValues と同じ) */
   maskProtectedEnvironmentValues?: boolean | undefined;
+  /** 追加で秘密値として登録する文字列(RunFlowOptions.extraSecrets と同じ) */
+  extraSecrets?: readonly string[] | undefined;
   /** 履歴エントリの actor に記録する実行主体(RunFlowOptions.actor と同じ) */
   actor?: HistoryActor | undefined;
   /** 履歴エントリの git に記録する実行時点の git の状態(RunFlowOptions.git と同じ) */
@@ -2009,6 +2026,7 @@ export async function executeSingleRequest(
   if (options.maskProtectedEnvironmentValues === true) {
     for (const value of protectedEnvironmentSecretValues(environment)) secrets.add(value);
   }
+  for (const value of options.extraSecrets ?? []) secrets.add(value);
   const templateContext: TemplateContext = {
     captures,
     // 追加変数(--var)は環境ファイルの値を上書きする(executeFlow と同じ優先順位)
@@ -2046,6 +2064,7 @@ export async function executeSingleRequest(
       options.envFilePath,
       options.actor,
       options.git,
+      getProtectedMode(environment),
     );
     const maskedEntry = maskHistoryEntry(
       { ...outcome.historyEntry, source: "single", ...auditFields },

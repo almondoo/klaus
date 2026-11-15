@@ -2900,6 +2900,11 @@ describe("GET /api/snapshots/mismatches と POST /api/snapshots/accept", () => {
       snapshotEntry("run-prod", "get", snap, "get", "mismatch", { env: "prod" }),
       snapshotEntry("run-stg", "get", snap, "get", "mismatch", { env: "stg" }),
       snapshotEntry("run-ghost", "get", snap, "get", "mismatch", { env: "ghost" }),
+      // 記録時は保護された環境だった(いまの dev は保護されていない)run は、履歴の envProtection で拒否する
+      snapshotEntry("run-was-protected", "get", snap, "get", "mismatch", {
+        env: "dev",
+        envProtection: "protected",
+      }),
       snapshotEntry("run-envfile", "get", snap, "get", "mismatch", { env: "../x.yaml" }),
       snapshotEntry("run-corrupt", "get", "bad/__snapshots__/c.snap.json", "get", "mismatch"),
       snapshotEntry("run-link", "get", "__snapshots__/link.snap.json", "get", "mismatch"),
@@ -3010,7 +3015,7 @@ describe("GET /api/snapshots/mismatches と POST /api/snapshots/accept", () => {
       expect(res.status).toBe(400);
     });
 
-    it.each(["run-prod", "run-stg", "run-ghost", "run-envfile"])(
+    it.each(["run-prod", "run-stg", "run-ghost", "run-envfile", "run-was-protected"])(
       "%s: 保護環境の run(または環境を判定できない run)は承認を拒否する理由を返す",
       async (runId) => {
         const body = (await (await list(runId)).json()) as {
@@ -3169,7 +3174,7 @@ describe("GET /api/snapshots/mismatches と POST /api/snapshots/accept", () => {
       }
     });
 
-    it.each(["run-prod", "run-stg", "run-ghost", "run-envfile"])(
+    it.each(["run-prod", "run-stg", "run-ghost", "run-envfile", "run-was-protected"])(
       "403: %s は保護環境(または判定不能)のため承認できず、何も書かれない",
       async (runId) => {
         const res = await accept({

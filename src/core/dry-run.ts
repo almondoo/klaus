@@ -33,6 +33,8 @@ export interface DryRunOptions {
   entryPoint?: EntryPoint | undefined;
   /** 保護された環境の値すべてを秘密値として登録する(RunFlowOptions.maskProtectedEnvironmentValues と同じ。onSecrets に載る) */
   maskProtectedEnvironmentValues?: boolean | undefined;
+  /** 追加で秘密値として登録する文字列(RunFlowOptions.extraSecrets と同じ。onSecrets に載る) */
+  extraSecrets?: readonly string[] | undefined;
   /** 送信先ホストの許可リスト(実行時と同じ判定を通す) */
   guard?: GuardOptions | undefined;
   /** klaus.config.yaml の http(RunFlowOptions.http と同じ意味。dry-run では http.auth の展開にだけ使い、何も送信しない) */
@@ -287,6 +289,7 @@ export async function dryRunFlow(
   if (options.maskProtectedEnvironmentValues === true) {
     for (const value of protectedEnvironmentSecretValues(environment)) secrets.add(value);
   }
+  for (const value of options.extraSecrets ?? []) secrets.add(value);
   // --var は環境ファイルの値を上書きする(executeFlow と同じ優先順位)
   const baseContext = {
     env: { ...toTemplateVariables(environment), ...options.variables },

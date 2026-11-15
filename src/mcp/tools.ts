@@ -13,7 +13,7 @@
 import { z } from "zod";
 import { detectActor, MAX_ACTOR_NAME_LENGTH, resolveGitState } from "../cli/audit.js";
 import { loadCliConfig, loadHttpOptions, resolveGuardOptions } from "../cli/config.js";
-import { getProtectedMode, protectedEnvironmentSecretValues } from "../core/env.js";
+import { getProtectedMode } from "../core/env.js";
 import {
   DEFAULT_IGNORED_HEADERS,
   type DryRunResult,
@@ -70,6 +70,13 @@ import {
   parseHistoryPath,
   selectHistoryPath,
 } from "./history-path.js";
+import {
+  type GuardedEntry,
+  guardEntries,
+  loadProtectionView,
+  maskValues,
+  withholdReason,
+} from "./protection.js";
 import { ToolError, type ToolOutcome, toFailure } from "./result.js";
 
 /** ハンドラが受け取る呼び出しごとの文脈 */
@@ -295,48 +302,6 @@ async function loadFlowOrFail(abs: string, cwd: string) {
 }
 
 // ---------------------------------------------------------------------------
-// 保護された環境の値の秘匿
-// ---------------------------------------------------------------------------
-
-/**
- * 現在保護されている($protected: true / "readonly")すべての環境ファイルの、名前と値(秘密として扱う文字列)。
- * エージェントへ返す出力に、保護された環境の値(接続先のホスト・認証情報など)を残さないために使う。
- * 読めない環境ファイルは保護状態を判定できないので対象にできない(klaus_list_environments が unknown として示す)。
- */
-async function loadProtectedEnvironments(
-  cwd: string,
-): Promise<{ names: Set<string>; values: string[] }> {
-  const names = new Set<string>();
-  const values: string[] = [];
-  for (const { name } of await listEnvironments(cwd)) {
-    try {
-      const environment = await loadEnvironmentFile(resolveEnvironmentPath(cwd, name));
-      const secrets = protectedEnvironmentSecretValues(environment);
-      if (getProtectedMode(environment) !== false) names.add(name);
-      values.push(...secrets);
-    } catch {
-      // 読めない環境は判定できないため飛ばす
-    }
-  }
-  return { names, values };
-}
-
-/** values を秘密として、value の文字列をすべて *** にした複製を返す(values が空なら元のまま) */
-function maskValues<T>(value: T, values: readonly string[]): T {
-  return values.length === 0 ? value : maskDeep(value, expandSecretVariants(values));
-}
-
-/**
- * 履歴を読むツールの出力から、現在保護されている環境の値を隠す。履歴は CLI や UI が書いたもので、
- * 環境ファイルの値(接続先のホスト・認証情報など)が保存されたまま入っていることがあるため。
- * 記録された env(名前の変更・--env-file・--var で同じ値を渡した実行など)に頼ると取りこぼすので、
- * エントリの env に関わらず、現在保護されているすべての環境の値を対象にする。
- */
-async function maskForAgent<T>(cwd: string, value: T): Promise<T> {
-  return maskValues(value, (await loadProtectedEnvironments(cwd)).values);
-}
-
-// ---------------------------------------------------------------------------
 // 結果の整形
 // ---------------------------------------------------------------------------
 
@@ -423,7 +388,7 @@ function summarizeDryRun(result: DryRunResult, cwd: string) {
   };
 }
 
-function summarizeHistoryEntry(entry: HistoryEntry) {
+function summarizeHistoryEntry(entry: GuardedEntry) {
   const failedAssertions = entry.assertions.filter((assertion) => !assertion.ok).length;
   return {
     startedAt: entry.startedAt,
@@ -441,8 +406,10 @@ function summarizeHistoryEntry(entry: HistoryEntry) {
     ...(entry.error !== undefined ? { error: entry.error } : {}),
     ...(entry.errorCode !== undefined ? { errorCode: entry.errorCode } : {}),
     ...(entry.env !== undefined ? { env: entry.env } : {}),
+    ...(entry.envProtection !== undefined ? { envProtection: entry.envProtection } : {}),
     ...(entry.file !== undefined ? { file: entry.file } : {}),
     ...(entry.actor !== undefined ? { actor: entry.actor } : {}),
+    ...(entry.withheld !== undefined ? { withheld: entry.withheld } : {}),
   };
 }
 
@@ -578,8 +545,10 @@ const dryRunTool: ToolDefinition<typeof dryRunSchema> = {
       variables: args.variables,
       // allowProtected は渡さない: klaus mcp は保護環境の拒否を上書きできない
       entryPoint: "mcp",
-      // 保護された環境の値(展開後の URL・ヘッダーなど)はエージェントへ見せない
+      // 保護された環境の値(展開後の URL・ヘッダーなど)はエージェントへ見せない。読み込んだ環境に限らず、
+      // 現在保護されているすべての環境の値を隠す(別の環境の値が応答に現れても出さない)
       maskProtectedEnvironmentValues: true,
+      extraSecrets: (await loadProtectionView(ctx.cwd)).values,
       guard: settings.guard,
       http: settings.http,
       onSecrets: (secrets) => {
@@ -629,8 +598,9 @@ const runFlowTool: ToolDefinition<typeof runFlowSchema> = {
         variables: args.variables,
         // allowProtected は渡さない: klaus mcp は保護環境の拒否を上書きできない(拒否メッセージも mcp 向けの案内になる)
         entryPoint: "mcp",
-        // 保護された環境の値は結果にも、この呼び出しが書く履歴にも残さない
+        // 保護された環境の値は結果にも、この呼び出しが書く履歴にも残さない(読み込んだ環境に限らず、現在保護されているすべての環境)
         maskProtectedEnvironmentValues: true,
+        extraSecrets: (await loadProtectionView(ctx.cwd)).values,
         guard: settings.guard,
         http: settings.http,
         actor: resolveMcpActor(ctx.clientName),
@@ -749,8 +719,9 @@ const requestTool: ToolDefinition<typeof requestToolSchema> = {
       http: settings.http,
       // allowProtected を受け取らない単発実行に、mcp 向けの拒否の案内を出させる
       entryPoint: "mcp",
-      // 保護された環境の値は結果にも、この呼び出しが書く履歴にも残さない
+      // 保護された環境の値は結果にも、この呼び出しが書く履歴にも残さない(読み込んだ環境に限らず、現在保護されているすべての環境)
       maskProtectedEnvironmentValues: true,
+      extraSecrets: (await loadProtectionView(ctx.cwd)).values,
       actor: resolveMcpActor(ctx.clientName),
       git,
       onWarning: (message) => {
@@ -819,7 +790,7 @@ const historyListTool: ToolDefinition<typeof historyListSchema> = {
     const flow = validateFlowName(args.flow);
     const limit = Math.min(Math.max(args.limit ?? DEFAULT_HISTORY_LIMIT, 1), MAX_HISTORY_LIMIT);
     const page = await getHistoryPage(ctx.cwd, { flow, limit, statuses: args.statuses });
-    const entries = await maskForAgent(ctx.cwd, page.entries);
+    const entries = await guardEntries(ctx.cwd, page.entries);
     return ok({
       entries: entries.map(summarizeHistoryEntry),
       hasMore: page.nextBefore !== undefined,
@@ -902,7 +873,7 @@ function selectByPath(entry: HistoryEntry, segments: PathSegment[]): unknown[] {
 const historyShowTool: ToolDefinition<typeof historyShowSchema> = {
   name: "klaus_history_show",
   description:
-    "Return the recorded entries of one run in execution order: request, response (status, headers, body), assertions, error, actor. Secrets are masked as stored, and the values of protected environments are masked too. Pass step to narrow to one step; only then are snapshot candidates included. When the result exceeds 256 KiB, large values are cut with a marker; to read such a value, pass step and path (a path into the entry such as $.response.body or $.response.body.items[0]; only $, .name, ['name'] and [n] are supported) to get only that value, and for a long string add offset and length to read it in windows (each window result carries totalLength and nextOffset). A body nested deeper than 200 levels is stored as text. Read-only.",
+    "Return the recorded entries of one run in execution order: request, response (status, headers, body), assertions, error, actor. Secrets are masked as stored, and the values of protected environments are masked too; an entry recorded against a protected environment whose values cannot be obtained here is returned as metadata with a withheld note instead of its request and response. Pass step to narrow to one step; only then are snapshot candidates included. When the result exceeds 256 KiB, large values are cut with a marker; to read such a value, pass step and path (a path into the entry such as $.response.body or $.response.body.items[0]; only $, .name, ['name'] and [n] are supported) to get only that value, and for a long string add offset and length to read it in windows (each window result carries totalLength and nextOffset). A body nested deeper than 200 levels is stored as text. Read-only.",
   inputSchema: historyShowSchema,
   annotations: READ_ONLY_LOCAL,
   write: false,
@@ -932,7 +903,7 @@ const historyShowTool: ToolDefinition<typeof historyShowSchema> = {
     const selectedEntries = selectRunEntries(await readAllHistoryEntries(ctx.cwd), runId).filter(
       (entry) => args.step === undefined || entry.step === args.step,
     );
-    const entries = await maskForAgent(ctx.cwd, selectedEntries);
+    const entries = await guardEntries(ctx.cwd, selectedEntries);
     if (entries.length === 0) {
       const suffix = args.step !== undefined ? ` (step "${args.step}")` : "";
       throw new ToolError(`no history entries found for runId "${runId}"${suffix}`);
@@ -954,6 +925,8 @@ const historyShowTool: ToolDefinition<typeof historyShowSchema> = {
         ...(entry.iteration !== undefined ? { iteration: entry.iteration } : {}),
         matchCount: matches.length,
       };
+      // 中身を出さないエントリは、path が当たらないだけでなく、理由を添えて返す(窓の指定でも失敗にしない)
+      if (entry.withheld !== undefined) return { ...label, matches, withheld: entry.withheld };
       if (!windowed) return { ...label, matches };
       const [value] = matches;
       if (matches.length !== 1 || typeof value !== "string") {
@@ -997,7 +970,7 @@ const diffRunsSchema = z.object({
 const diffRunsTool: ToolDefinition<typeof diffRunsSchema> = {
   name: "klaus_diff_runs",
   description:
-    "Compare two recorded runs step by step: status, HTTP status, response headers, request changes and body differences (at most 50 per step and section). Use it to find what changed between two runs of the same flow, for example before and after a deployment. Secrets are stored masked, so a changed secret value is not visible. Read-only.",
+    "Compare two recorded runs step by step: status, HTTP status, response headers, request changes and body differences (at most 50 per step and section). Use it to find what changed between two runs of the same flow, for example before and after a deployment. Secrets are stored masked, so a changed secret value is not visible. Steps whose entries are withheld (protected environment whose values cannot be obtained) are listed in notComparable (status is then partial rather than same). Read-only.",
   inputSchema: diffRunsSchema,
   annotations: READ_ONLY_LOCAL,
   write: false,
@@ -1027,24 +1000,45 @@ const diffRunsTool: ToolDefinition<typeof diffRunsSchema> = {
     if (!resolvedA.ok) throw new ToolError(resolvedA.message);
     const resolvedB = resolveRunRef(entries, refB, flow);
     if (!resolvedB.ok) throw new ToolError(resolvedB.message);
-    // 保護された環境の値は、差分を取る前に隠す(差分にも値が現れないように)
-    const entriesA = await maskForAgent(ctx.cwd, selectRunEntries(entries, resolvedA.runId, flow));
-    const entriesB = await maskForAgent(ctx.cwd, selectRunEntries(entries, resolvedB.runId, flow));
-    if (entriesA.length === 0 || entriesB.length === 0) {
-      const missing = entriesA.length === 0 ? resolvedA.runId : resolvedB.runId;
+    // 保護された環境の値は、差分を取る前に隠す(差分にも値が現れないように)。値を隠せないエントリは中身を出さず、
+    // そのステップは比較できないものとして両側から外す(中身を差分にしない)
+    const guardedA = await guardEntries(ctx.cwd, selectRunEntries(entries, resolvedA.runId, flow));
+    const guardedB = await guardEntries(ctx.cwd, selectRunEntries(entries, resolvedB.runId, flow));
+    const stepKey = (entry: HistoryEntry) =>
+      `${entry.flow}\u0000${entry.step}\u0000${entry.iteration ?? ""}`;
+    const withheldSteps = new Map<string, GuardedEntry>();
+    for (const entry of [...guardedA, ...guardedB]) {
+      if (entry.withheld !== undefined) withheldSteps.set(stepKey(entry), entry);
+    }
+    const entriesA = guardedA.filter((entry) => !withheldSteps.has(stepKey(entry)));
+    const entriesB = guardedB.filter((entry) => !withheldSteps.has(stepKey(entry)));
+    if (guardedA.length === 0 || guardedB.length === 0) {
+      const missing = guardedA.length === 0 ? resolvedA.runId : resolvedB.runId;
       throw new ToolError(`run "${missing}" has no entries for flow "${flow}"`);
     }
-    return ok(
-      diffRuns(
-        { runId: resolvedA.runId, entries: entriesA },
-        { runId: resolvedB.runId, entries: entriesB },
-        {
-          ignoreHeaders: [...DEFAULT_IGNORED_HEADERS, ...(args.ignoreHeaders ?? [])],
-          ignorePaths,
-          maxDifferences: MAX_DIFFERENCES,
-        },
-      ),
+    const diff = diffRuns(
+      { runId: resolvedA.runId, entries: entriesA },
+      { runId: resolvedB.runId, entries: entriesB },
+      {
+        ignoreHeaders: [...DEFAULT_IGNORED_HEADERS, ...(args.ignoreHeaders ?? [])],
+        ignorePaths,
+        maxDifferences: MAX_DIFFERENCES,
+      },
     );
+    if (withheldSteps.size === 0) return ok(diff);
+    // 比較できなかったステップは、差分の「同じ」に紛れないよう理由つきで別に示す
+    return ok({
+      ...diff,
+      // 比較できたステップに差が無くても「同じ」とは言えないため、status は partial にする
+      status: diff.status === "same" ? "partial" : diff.status,
+      notComparable: [...withheldSteps.values()].map((entry) => ({
+        flow: entry.flow,
+        step: entry.step,
+        ...(entry.iteration !== undefined ? { iteration: entry.iteration } : {}),
+        reason: entry.withheld,
+      })),
+      note: "Steps listed in notComparable were left out of this comparison because their recorded request and response cannot be shown here; the counts and status above cover only the other steps.",
+    });
   }),
 };
 
@@ -1054,7 +1048,7 @@ const snapshotListSchema = z.object({
 const snapshotListTool: ToolDefinition<typeof snapshotListSchema> = {
   name: "klaus_snapshot_list",
   description:
-    "List the snapshot assertions of a run that are waiting for approval (a mismatch against the stored baseline, or a missing baseline that was not written) with their differences, and acceptRefusal when they cannot be accepted through klaus mcp (protected environment). Accepting a mismatch replaces a baseline that a human may rely on, so ask the user before calling klaus_snapshot_accept. Read-only.",
+    "List the snapshot assertions of a run that are waiting for approval (a mismatch against the stored baseline, or a missing baseline that was not written) with their differences, and acceptRefusal when they cannot be accepted through klaus mcp (protected environment); mismatches of withheld steps are listed under withheld without their differences. Accepting a mismatch replaces a baseline that a human may rely on, so ask the user before calling klaus_snapshot_accept. Read-only.",
   inputSchema: snapshotListSchema,
   annotations: READ_ONLY_LOCAL,
   write: false,
@@ -1065,14 +1059,45 @@ const snapshotListTool: ToolDefinition<typeof snapshotListSchema> = {
     if (entries.length === 0) {
       throw new ToolError(`no history entries found for runId "${runId}"`);
     }
-    const mismatches = await listSnapshotMismatches(ctx.cwd, runId);
-    const refusal = mismatches.length > 0 ? await findAcceptRefusal(ctx.cwd, entries) : undefined;
+    const allMismatches = await listSnapshotMismatches(ctx.cwd, runId);
+    // 値を隠せないエントリのステップは、差分(応答の値を含む)を出さず、理由だけを返す
+    const guarded = await guardEntries(ctx.cwd, entries);
+    const withheldKeys = new Map<string, string>();
+    for (const entry of guarded) {
+      if (entry.withheld !== undefined) {
+        withheldKeys.set(
+          `${entry.flow}\u0000${entry.step}\u0000${entry.iteration ?? ""}`,
+          entry.withheld,
+        );
+      }
+    }
+    const mismatches = allMismatches.filter(
+      (item) => !withheldKeys.has(`${item.flow}\u0000${item.step}\u0000${item.iteration ?? ""}`),
+    );
+    const withheld = allMismatches
+      .map((item) => ({
+        flow: item.flow,
+        step: item.step,
+        ...(item.iteration !== undefined ? { iteration: item.iteration } : {}),
+        reason: withheldKeys.get(`${item.flow}\u0000${item.step}\u0000${item.iteration ?? ""}`),
+      }))
+      .filter((item) => item.reason !== undefined);
+    const refusal =
+      allMismatches.length > 0 ? await findAcceptRefusal(ctx.cwd, entries) : undefined;
+    const view = await loadProtectionView(
+      ctx.cwd,
+      entries.map((entry) => entry.env),
+    );
     return ok(
-      await maskForAgent(ctx.cwd, {
-        runId,
-        mismatches,
-        ...(refusal !== undefined ? { acceptRefusal: refusal } : {}),
-      }),
+      maskValues(
+        {
+          runId,
+          mismatches,
+          ...(withheld.length > 0 ? { withheld } : {}),
+          ...(refusal !== undefined ? { acceptRefusal: refusal } : {}),
+        },
+        view.values,
+      ),
     );
   }),
 };
@@ -1096,7 +1121,7 @@ const promoteSchema = z.object({
 const promoteTool: ToolDefinition<typeof promoteSchema> = {
   name: "klaus_promote",
   description:
-    "Write a NEW flow file from recorded runs (the request/response pairs in history), with status and response-schema assertions. Secrets and token-like values are replaced by TODO_* placeholders read from OS environment variables ({{env.TODO_...}}); the result lists them so the user can fill them in. Refuses: existing files (never overwritten), locations outside api/, flows/ or a flow directory, non-.yaml names, recorded values containing a literal {{, masked values it cannot reproduce. Not available with --read-only.",
+    "Write a NEW flow file from recorded runs (the request/response pairs in history), with status and response-schema assertions. Secrets and token-like values are replaced by TODO_* placeholders read from OS environment variables ({{env.TODO_...}}); the result lists them so the user can fill them in. Refuses: runs recorded against a protected environment or one whose protection cannot be determined, existing files (never overwritten), locations outside api/, flows/ or a flow directory, non-.yaml names, recorded values containing a literal {{, masked values it cannot reproduce. Not available with --read-only.",
   inputSchema: promoteSchema,
   annotations: {
     readOnlyHint: false,
@@ -1119,19 +1144,31 @@ const promoteTool: ToolDefinition<typeof promoteSchema> = {
       }
     }
     // 保護された環境に対して記録された run は、環境の値(接続先・認証情報)を含むため昇格しない。
-    // 記録された env が分からない run(--var で同じ値を渡した実行など)にも備え、保護された環境の値は
-    // 昇格の前に隠す(maskValues。生成物では TODO_* のプレースホルダーになる)
+    // 履歴に envProtection がある run、記録された環境が今も保護されている run、環境が読めない・名前として
+    // 使えない(--env-file のファイル名)ために保護の有無を確かめられない run をすべて拒否する(失敗は閉じる)。
+    // --var で同じ値を渡した実行などに備え、現在保護されているすべての環境の値は昇格の前に隠す
+    // (maskValues。生成物では TODO_* のプレースホルダーになる)
     const history = await readAllHistoryEntries(ctx.cwd);
-    const protectedEnvironments = await loadProtectedEnvironments(ctx.cwd);
+    const runEntries = runIds.flatMap((runId) => selectRunEntries(history, runId));
+    const view = await loadProtectionView(
+      ctx.cwd,
+      runEntries.map((entry) => entry.env),
+    );
     for (const runId of runIds) {
-      const recordedEnv = selectRunEntries(history, runId).find(
+      const blocked = selectRunEntries(history, runId).find(
         (entry) =>
-          entry.env !== undefined &&
-          protectedEnvironments.names.has(entry.env.replace(/\.ya?ml$/, "")),
-      )?.env;
-      if (recordedEnv !== undefined) {
+          entry.envProtection !== undefined ||
+          (entry.env !== undefined && view.statusOf(entry.env) === "protected") ||
+          withholdReason(entry, view) !== undefined,
+      );
+      if (blocked !== undefined) {
+        const undetermined =
+          blocked.envProtection === undefined &&
+          (blocked.env === undefined || view.statusOf(blocked.env) !== "protected");
         throw new ToolError(
-          `run "${runId}" was recorded against the protected environment "${recordedEnv}" and cannot be promoted through klaus mcp`,
+          undetermined
+            ? `run "${runId}" was recorded against the environment "${blocked.env}", whose protection cannot be determined here, and cannot be promoted through klaus mcp`
+            : `run "${runId}" was recorded against the protected environment "${blocked.env ?? "unknown"}" and cannot be promoted through klaus mcp`,
           {
             errorCode: "guard.protected",
             hint: "Tell the user; they can run `klaus promote` in a terminal and review the result for sensitive values.",
@@ -1141,7 +1178,7 @@ const promoteTool: ToolDefinition<typeof promoteSchema> = {
     }
     const outcome = await promoteHistoryToFile(ctx.cwd, {
       runIds,
-      maskValues: protectedEnvironments.values,
+      maskValues: view.values,
       assert: "schema",
       chain: true,
       ...(args.name !== undefined ? { name: args.name } : {}),

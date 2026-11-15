@@ -28,6 +28,20 @@ export function isProtectedEnvironment(environment: Environment): boolean {
   return getProtectedMode(environment) !== false;
 }
 
+/** 値が絶対 URL(ホストを持つもの)なら、その host・hostname・origin。そうでなければ空 */
+function urlParts(value: string): string[] {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return [];
+  }
+  if (url.host === "") return [];
+  const parts = [url.host, url.hostname];
+  if (url.origin !== "null") parts.push(url.origin);
+  return parts.filter((part) => part !== "" && part !== value);
+}
+
 /**
  * 保護された環境($protected が true / "readonly")のファイル由来の値(変数の値すべて)を、
  * 秘密値として登録するための文字列の一覧にする。保護されていない環境では空。
@@ -35,6 +49,9 @@ export function isProtectedEnvironment(environment: Environment): boolean {
  * - 文字列と数値を文字列にして返す。真偽値と null は秘密になり得ず、"true" のような語を出力のあちこちで
  *   塗りつぶしてしまうため含めない
  * - 予約キー($protected)は対象外
+ * - 値が絶対 URL として解釈できるときは、その host・hostname・origin も加える(許可リストの拒否メッセージ・Host ヘッダー・
+ *   Location・エラーメッセージにホスト名だけが現れても隠すため)。`localhost` や `127.0.0.1` のような値もこの規則で隠れる
+ *   (その呼び出しの MCP の出力のどこに現れても *** になる)
  * 4 文字未満の値の扱いは、マスクの機構(MIN_SECRET_LENGTH)に従う: 短すぎる値は出力を壊すため登録されても置換されない。
  * 深い入れ子でスタックを使わないよう、反復で辿る。
  */
@@ -47,8 +64,9 @@ export function protectedEnvironmentSecretValues(environment: Environment): stri
   }
   while (stack.length > 0) {
     const current = stack.pop();
-    if (typeof current === "string") values.push(current);
-    else if (typeof current === "number") values.push(String(current));
+    if (typeof current === "string") {
+      values.push(current, ...urlParts(current));
+    } else if (typeof current === "number") values.push(String(current));
     else if (Array.isArray(current)) stack.push(...current);
     else if (current !== null && typeof current === "object") stack.push(...Object.values(current));
   }

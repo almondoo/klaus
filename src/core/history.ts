@@ -55,6 +55,13 @@ export interface HistoryEntry {
    * 実行した環境名(--env-file 指定時はそのファイル名)。環境を使わない実行では省略する
    */
   env?: string;
+  /**
+   * このエントリを書いたとき、読み込んだ環境が保護されていた($protected: true なら "protected"、"readonly" なら "readonly")ことの記録。
+   * 環境を名前で選んだ場合も --env-file で選んだ場合も(拒否のエントリも含め)、すべての呼び出し元で core が付ける。
+   * 保護されていない・環境を使わない実行、およびこの項目が無かった頃の旧エントリでは省略する(旧エントリは保護の有無が分からない)。
+   * 事実を書き込み時に残すので、後から環境ファイルを探し直さなくても(別の場所の --env-file でも)保護された実行だったと分かる
+   */
+  envProtection?: "protected" | "readonly";
   /** フロー定義ファイルの cwd からの相対パス(POSIX 区切り)。絶対パスは入れない。単発実行では省略する */
   file?: string;
   /** 実行主体。core は計算せず、呼び出し元(CLI・server)が RunFlowOptions.actor 等で渡した値を記録する */
