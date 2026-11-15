@@ -423,6 +423,13 @@ describe("promoteRuns", () => {
         response: undefined,
       }),
       entry({
+        step: "capture-error",
+        status: "error",
+        error: 'capture "t" failed',
+        request: { method: "GET", url: "http://h/c", headers: {} },
+        response: { status: 200, headers: {}, body: { ok: true } },
+      }),
+      entry({
         step: "ws",
         request: { method: "WS", url: "ws://h/socket", headers: {} },
         response: { status: 101, headers: {}, body: [] },
@@ -446,7 +453,11 @@ describe("promoteRuns", () => {
       ["skipped-step", "skipped step (no request was recorded)"],
       [
         "refused",
-        'step ended in error (host "x" is not in guard.allowedHosts); there is no response to promote',
+        'step ended in error (host "x" is not in guard.allowedHosts); steps that ended in error are not promoted',
+      ],
+      [
+        "capture-error",
+        'step ended in error (capture "t" failed); steps that ended in error are not promoted',
       ],
       ["ws", "WebSocket steps are not promoted"],
     ]);

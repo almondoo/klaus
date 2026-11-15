@@ -774,6 +774,41 @@ describe("runLoadedFlows との統合", () => {
     }
   });
 
+  it("応答を受け取った後に capture で失敗して error になったステップは、検証もカバーも数えない(履歴には応答つきで残る)", async () => {
+    const { server, base } = await fixture();
+    try {
+      const path = await writeSpec(
+        spec30({ "/users/{id}": { get: { responses: { "200": jsonResponse(userSchema) } } } }),
+      );
+      const openapi = await OpenApiValidator.load([path], { cwd: dir });
+      const flow: Flow = flowSchema.parse({
+        name: "api",
+        steps: [
+          {
+            name: "get user",
+            request: { method: "GET", url: `${base}/users/1` },
+            capture: { missing: "$.does.not.exist" },
+          },
+        ],
+      });
+
+      const result = await runLoadedFlows([{ filePath: join(dir, "api.yaml"), flow }], {
+        history: false,
+        openapi,
+      });
+
+      expect(result.flows[0]?.steps[0]).toMatchObject({
+        status: "error",
+        response: { status: 200 },
+      });
+      const summary = openapi.summarize({ partial: false, planned: false });
+      expect(summary.operations.covered).toBe(0);
+      expect(summary.violations).toBe(0);
+    } finally {
+      await closeServer(server);
+    }
+  });
+
   it("--jobs と --data(複数反復)でも検証・集計でき、リダイレクトを追ったステップは対象外にする", async () => {
     const { server, base } = await fixture();
     try {

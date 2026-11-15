@@ -943,7 +943,9 @@ function skipReason(entry: HistoryEntry): string | undefined {
   const status = resolveHistoryEntryStatus(entry);
   if (status === "skipped" || !entry.request) return "skipped step (no request was recorded)";
   if (status === "error") {
-    return `step ended in error${entry.error ? ` (${entry.error})` : ""}; there is no response to promote`;
+    // 応答つきで error になったステップ(capture の失敗など)も含め、error のステップからはアサーションを作らず昇格しない
+    // (失敗した検査の応答を「正しい基準」として固定してしまうのを避ける)
+    return `step ended in error${entry.error ? ` (${entry.error})` : ""}; steps that ended in error are not promoted`;
   }
   if (entry.request.method === "WS") return "WebSocket steps are not promoted";
   if (!entry.response) return "no response was recorded";

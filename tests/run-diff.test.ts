@@ -79,6 +79,26 @@ describe("diffRuns", () => {
     });
   });
 
+  it("応答つきの error ステップ(capture の失敗など)と passed のステップは、ステータスとエラーの変化として比較できる", () => {
+    const result = compare(
+      [entry({ runId: "A", step: "s" })],
+      [
+        entry({
+          runId: "B",
+          step: "s",
+          status: "error",
+          error: 'capture "t": JSONPath "$.t" matched no value',
+        }),
+      ],
+    );
+    expect(result.steps[0]).toMatchObject({
+      change: "different",
+      status: { a: "passed", b: "error" },
+      error: { b: 'capture "t": JSONPath "$.t" matched no value' },
+    });
+    expect(result.steps[0]?.httpStatus).toBeUndefined();
+  });
+
   it("status フィールドが無い旧エントリは assertions から導出して比較する", () => {
     const legacy = entry({ runId: "A", step: "s" });
     delete legacy.status;

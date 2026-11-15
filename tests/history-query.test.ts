@@ -105,6 +105,26 @@ describe("getHistoryPage / readAllHistoryEntries", () => {
     expect(page.entries.map((e) => e.step)).toEqual(["failed-step"]);
   });
 
+  it('応答つきの error エントリ(capture の失敗など)は failed: true には入らず、statuses: ["error"] には入る', async () => {
+    await writeHistoryFile(dir, "2026-08-07.jsonl", [
+      entry({ step: "failed-step", status: "failed" }),
+      entry({
+        step: "capture-error",
+        status: "error",
+        error: 'capture "t": JSONPath "$.t" matched no value',
+        request: { method: "GET", url: "http://x/", headers: {} },
+        response: { status: 200, headers: {}, body: { ok: true } },
+      }),
+    ]);
+
+    const failed = await getHistoryPage(dir, { failed: true });
+    const errors = await getHistoryPage(dir, { statuses: ["error"] });
+
+    expect(failed.entries.map((e) => e.step)).toEqual(["failed-step"]);
+    expect(errors.entries.map((e) => e.step)).toEqual(["capture-error"]);
+    expect(errors.entries[0]?.response?.status).toBe(200);
+  });
+
   it("failed: true は status フィールドが無い旧エントリも assertions から導出して判定する", async () => {
     await writeHistoryFile(dir, "2026-08-07.jsonl", [
       entry({

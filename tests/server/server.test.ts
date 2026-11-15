@@ -1432,6 +1432,52 @@ describe("klaus server", () => {
     });
   });
 
+  describe("応答を受け取った後に失敗したステップの履歴", () => {
+    it("capture に失敗したステップは、応答つきの error として GET /api/history から返る", async () => {
+      await writeFile(
+        join(workDir, "capture-fail.yaml"),
+        [
+          "name: capture fail flow",
+          "steps:",
+          "  - name: fetch",
+          "    request:",
+          "      method: GET",
+          `      url: "${fixture.baseUrl}/step1"`,
+          "    capture:",
+          '      missing: "$.does.not.exist"',
+          "",
+        ].join("\n"),
+        "utf-8",
+      );
+      const runRes = await fetch(`${base}/api/runs`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Klaus-Token": klaus.token,
+          Cookie: `klaus_token=${klaus.token}`,
+        },
+        body: JSON.stringify({ path: "capture-fail.yaml" }),
+      });
+      await collectSseEvents(runRes);
+
+      const res = await fetch(
+        `${base}/api/history?flow=${encodeURIComponent("capture fail flow")}`,
+        {
+          headers: { "X-Klaus-Token": klaus.token },
+        },
+      );
+      const page = (await res.json()) as {
+        entries: Array<{ status: string; error?: string; response?: { status: number } }>;
+      };
+      expect(page.entries).toHaveLength(1);
+      expect(page.entries[0]).toMatchObject({
+        status: "error",
+        response: { status: 200 },
+        error: expect.stringContaining("missing"),
+      });
+    });
+  });
+
   describe("GET /api/flows(走査時のエッジケース)", () => {
     // 一覧テスト(GET /api/flows: 正常なフローとパースエラーのフローが混在)へ影響しないよう、専用の workDir・server を使う
     let dir: string;
