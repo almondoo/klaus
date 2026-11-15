@@ -7,6 +7,26 @@ The current spec lives in the respective references ([CLI](../../guide/cli.md) /
 
 From 0.15.0 on, each release was written by checking its commit range with `git log` (everything from one bump commit up to the next belongs to the later version). The exception is 0.23.0 through 0.25.0: their bump commits landed before the feature commits (`99d8002` mock, `0a35c3e` reports, `fac3194` diff / promote), so versions are assigned by content: 0.23.0 = `klaus mock`, 0.24.0 = HTML / GitHub reports, 0.25.0 = `klaus diff` / `klaus promote`.
 
+## 0.29.1
+
+Fixed a regression in the `Set-Cookie` masking from 0.28.2, restored secret registration for cookie values, and tightened the Host header grammar, the snapshot lock, and the `$ref` message (fixes from an adjudicated adversarial review).
+
+- **Fix: `Set-Cookie` is raw at run time and masked only on output.** 0.28.2 masked the response header at receive time, so `capture: { x: { header: set-cookie } }`, header assertions on `set-cookie`, and the cookie jar's intake on replay all saw `sid=***`. The receive-time masking is gone; every output path (history, cassettes, snapshot baselines and candidates, the live results sent to the UI, reports, stdout) now masks the value of `Cookie` / `Set-Cookie` headers by position whether or not any secret is registered. The `message` / `actual` of a failed assertion are free strings that `maskDeep` cannot see, so for the `cookie` / `set-cookie` headers the evaluator puts the masked value there (the comparison uses the raw value). As a result the assertion messages of those two headers stay `***` even with `--no-mask`. On replay the cassette's masked `Set-Cookie` is replayed as is (the jar stores `***`, and behaviour is unchanged)
+- **Fix: cookie values of 16 or more characters received by the jar are registered as secrets again.** After the 0.28.2 change, a session ID echoed in a response body or another header was written in plain text to history, baselines, cassettes, and reports. The old rule (the global minimum of 4) corrupted output for values such as `json` or `true`, so there is now a cookie-specific minimum of 16 (`MIN_COOKIE_SECRET_LENGTH`) and the global minimum is unchanged. Shorter values are masked only by position inside Cookie / Set-Cookie headers. `capture: { x: { cookie: name } }` follows the same rule (it used to register anything of 4 or more characters)
+- **Fix: the `Host` header grammar is strict.** Before the comparison made when `guard.allowedHosts` or a proxy is set, the raw value must match `^[A-Za-z0-9.-]+(:\d{1,5})?# Changelog
+
+Records what changed in each release, plus **the decisions behind it and the pitfalls I hit along the way**.
+The current spec lives in the respective references ([CLI](../../guide/cli.md) / [Flow definition](../../guide/flow-definition.md) / [Architecture](architecture.md)) — this is the place I keep "why it ended up this way."
+
+0.2.0 through 0.14.4 were reconstructed after the fact from the git history (taking the `chore: vX.Y.Z` version-bump commits as boundaries: everything between the previous bump and a given bump belongs to that version). Only user-visible changes (feat / fix) are summarized, briefly; internal refactors, tests, and dependency-update details are left out.
+
+From 0.15.0 on, each release was written by checking its commit range with `git log` (everything from one bump commit up to the next belongs to the later version). The exception is 0.23.0 through 0.25.0: their bump commits landed before the feature commits (`99d8002` mock, `0a35c3e` reports, `fac3194` diff / promote), so versions are assigned by content: 0.23.0 = `klaus mock`, 0.24.0 = HTML / GitHub reports, 0.25.0 = `klaus diff` / `klaus promote`.
+
+ or a bracketed IPv6 address (the URL parser had accepted `host#x`, `host/..`, `@host`, percent escapes, backslashes, and tabs). A non-ASCII IDN is accepted only when it contains none of the forbidden characters (`# / ? @ % \`, whitespace, control characters) and equals the URL's host. Two keys that differ only in case are rejected by undici (pinned by a test)
+- Snapshot lock: the wait timeout (10 s to 35 s) is now longer than the stale threshold (30 s), so a lock left behind by a crash is always waited out and taken over. The timeout error names the lock file and says it can be removed if no other run is writing
+- The message for an unresolvable OpenAPI `$ref` now says what to do (place the referenced files under the document's directory, or bundle the document into one file). It is still the same text for missing, outside, and linked targets, and still shows no path
+- Documentation: the cookie section now says that a cookie set on `http://` is not sent after a redirect to `https://` (the effective port differs) and describes the 16-character rule; the snapshot and record/replay pages warn that a short session value echoed in a body is not masked
+
 ## 0.29.0
 
 Tidied masking and a few UI / CLI details (fixes from the final review, plus documentation consistency).

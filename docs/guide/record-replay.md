@@ -25,6 +25,7 @@ A cassette is always a single file at `<dir>/cassette.jsonl` (JSON Lines). Each 
 - `url` is masked using the resolved secrets at record time before being written, so plaintext secrets never end up in the cassette file. The masking rules match the [Execution History](history.md) and `--report junit` (values resolved via <code v-pre>{{env.X}}</code>, including their URL-encoded, form-urlencoded, and JSON-escaped forms).
 - `bodyText` is masked the same way before being written.
 - The same masking (maskDeep) is applied to the whole entry, including `headers` (the response headers), so secrets found in response headers are masked too.
+- `Set-Cookie` / `Cookie` header values are always recorded as `***`, even when no secret is registered. A short session value (under 16 characters) that the server echoes in a response body is not masked, so review a cassette before committing it. On replay the recorded `Set-Cookie` is the masked one, so a captured `Set-Cookie` or a cookie in the jar holds `***`.
 - During replay, `bodyText` is re-parsed as JSON only when the recorded Content-Type includes `application/json` (otherwise it's returned as text); parse failures also fall back to text.
 
 ## Matching rule

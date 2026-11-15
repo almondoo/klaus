@@ -25,6 +25,7 @@
 - `url` は record 時点で secrets によりマスクされたうえで保存されるため、平文のシークレットはカセットファイルに残らない。マスク規則は[実行履歴](history.md)や `--report junit` と同じ(<code v-pre>{{env.X}}</code> で解決した値と、その URL エンコード形・form-urlencoded 形・JSON エスケープ形が対象)。
 - `bodyText` も同様にマスクしてから保存する。
 - `headers`(レスポンスヘッダー)も含め、エントリ全体に同じマスク処理(maskDeep)を適用するため、レスポンスヘッダーに含まれるシークレットも同様にマスクされる。
+- `Set-Cookie` / `Cookie` ヘッダーの値は、秘密値が登録されていなくても常に `***` で記録する。サーバーがレスポンスボディにエコーした短いセッション値(16 文字未満)はマスクされないので、コミット前にカセットを確認すること。replay で再生される `Set-Cookie` はマスク済みのため、capture した `Set-Cookie` や jar の cookie は `***` になる。
 - replay 時は `bodyText` の Content-Type が `application/json` を含む場合のみ JSON としてパースし直す(それ以外はテキストのまま返す)。パースに失敗した場合もテキストのままフォールバックする。
 
 ## マッチング規則
