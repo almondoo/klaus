@@ -46,6 +46,7 @@ import type {
   Step,
 } from "./schema.js";
 import { requestSchema } from "./schema.js";
+import { nonCookieSecrets, SecretSet } from "./secret-set.js";
 import {
   buildSnapshotKey,
   findSnapshotKeyProblem,
@@ -288,7 +289,14 @@ async function resolveHttpResponse(
   onResponse?.(response);
   // onResponse で増えた secrets(cookie 値など)を含めるため、送信後に一覧を取る
   const secretList = secrets ? [...secrets] : [];
-  const entry = buildCassetteEntry(requestOptions.method, requestOptions.url, response, secretList);
+  // 構造的ヘッダーの復元判定には、cookie 由来ではない秘密値だけを使う(cassette.ts の buildCassetteEntry)
+  const entry = buildCassetteEntry(
+    requestOptions.method,
+    requestOptions.url,
+    response,
+    secretList,
+    nonCookieSecrets(secrets),
+  );
   await appendCassetteEntry(recording.dir, entry);
   return response;
 }
@@ -1391,7 +1399,7 @@ export async function executeFlow(
 
   const captures: Record<string, unknown> = {};
   // {{env.X}} で解決した値をフロー実行全体で蓄積する(履歴に書き込む前のマスクに使う)
-  const secrets = new Set<string>();
+  const secrets = new SecretSet();
   // onSecrets で既に通知済みの値(重複通知を避けるため、ステップをまたいで蓄積する)
   const notifiedSecrets = new Set<string>();
   const steps: StepResult[] = [];
@@ -1916,7 +1924,7 @@ export async function executeSingleRequest(
   const runId = randomUUID();
   const flowName = "(single)";
   const captures: Record<string, unknown> = {};
-  const secrets = new Set<string>();
+  const secrets = new SecretSet();
   const templateContext: TemplateContext = {
     captures,
     // 追加変数(--var)は環境ファイルの値を上書きする(executeFlow と同じ優先順位)

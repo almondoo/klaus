@@ -20,6 +20,7 @@ import { GuardRefusalError, RuntimeError } from "./errors.js";
 import type { HttpRequestOptions, HttpResponse } from "./http.js";
 import { DEFAULT_MAX_RESPONSE_BYTES, DEFAULT_TIMEOUT_MS } from "./http.js";
 import type { AuthDef, FlowHttpConfig, HttpConfig } from "./schema.js";
+import { addCookieSecret } from "./secret-set.js";
 import { renderString, type TemplateContext } from "./template.js";
 
 /** リダイレクトを追う既定の最大ホップ数 */
@@ -489,7 +490,7 @@ export class HttpSession {
         : []);
     if (lines.length === 0) return;
     for (const value of setCookieValues(lines)) {
-      if (value.length >= MIN_COOKIE_SECRET_LENGTH) this.secretSink?.add(value);
+      if (value.length >= MIN_COOKIE_SECRET_LENGTH) addCookieSecret(this.secretSink, value);
     }
     if (!this.jar) return;
     let parsed: URL;
@@ -511,7 +512,7 @@ export class HttpSession {
     try {
       const value = this.jar.valueFor(name, new URL(url));
       if (value !== undefined && value.length >= MIN_COOKIE_SECRET_LENGTH) {
-        this.secretSink?.add(value);
+        addCookieSecret(this.secretSink, value);
       }
       return value;
     } catch {

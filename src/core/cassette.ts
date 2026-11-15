@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { RuntimeError } from "./errors.js";
-import { expandSecretVariants, maskDeep } from "./history.js";
+import { expandSecretVariants, maskDeep, maskString } from "./history.js";
 import type { HttpResponse } from "./http.js";
 import { parseJsonBody } from "./http.js";
 import { appendPrivateLine } from "./private-file.js";
@@ -35,9 +35,10 @@ function buildCassetteKey(method: string, url: string): string {
 
 /**
  * replay・mock の動作が値そのものに依存する構造的なレスポンスヘッダー(小文字)。
- * 秘密値の部分一致マスクの対象にせず、記録した値のままカセットへ書く(`ct=application/json` のような cookie 値が
- * 秘密値として登録されると、content-type が *** になり、replay で本文を JSON として読めなくなるため)。
- * location は秘密値を運び得るので含めない。
+ * `ct=application/json` のような cookie 値が秘密値として登録されると content-type が *** になり、
+ * replay で本文を JSON として読めなくなるため、cookie 由来の秘密値ではマスクせず、記録した値のままカセットへ書く。
+ * ただし env・認証トークンなど cookie 由来ではない秘密値を含む値は、他のヘッダーと同じくマスクのままにする
+ * (buildCassetteEntry の structuralSecrets)。location は秘密値を運び得るので含めない。
  */
 const STRUCTURAL_HEADERS = new Set([
   "content-type",
@@ -52,12 +53,16 @@ const STRUCTURAL_HEADERS = new Set([
  * URL・ヘッダー・bodyText に含まれる {{env.X}} 解決値を "***" に置換してからカセットへ渡す。
  * Cookie / Set-Cookie ヘッダーの値は、secrets が空でも maskDeep が位置で *** にする
  * (実行時のレスポンスは生の Set-Cookie を持つため、カセットに残す前に必ずマスクする)。
+ * structuralSecrets は secrets のうち cookie 由来ではないもの。構造的ヘッダー(STRUCTURAL_HEADERS)は、
+ * これでマスクしても値が変わらない(cookie 由来の秘密値とだけ一致している)場合に限り、元の値へ戻す。
+ * 省略時は secrets の全件を対象にする(構造的ヘッダーも通常どおりマスクされる安全側の既定)。
  */
 export function buildCassetteEntry(
   method: string,
   url: string,
   response: Pick<HttpResponse, "status" | "headers" | "bodyText">,
   secrets: readonly string[],
+  structuralSecrets: readonly string[] = secrets,
 ): CassetteEntry {
   const entry: CassetteEntry = {
     v: 1,
@@ -68,9 +73,16 @@ export function buildCassetteEntry(
     bodyText: response.bodyText,
   };
   const masked = maskDeep(entry, expandSecretVariants(secrets));
-  // 構造的ヘッダーだけは、部分一致マスクの前の値に戻す(Cookie / Set-Cookie は構造的ヘッダーではないのでマスクのまま)
+  // 構造的ヘッダーは、cookie 由来ではない秘密値を含まない場合に限り、部分一致マスクの前の値に戻す
+  // (Cookie / Set-Cookie は構造的ヘッダーではないのでマスクのまま)
+  const structuralVariants = expandSecretVariants(structuralSecrets);
   for (const [name, value] of Object.entries(entry.headers)) {
-    if (STRUCTURAL_HEADERS.has(name.toLowerCase())) masked.headers[name] = value;
+    if (
+      STRUCTURAL_HEADERS.has(name.toLowerCase()) &&
+      maskString(value, structuralVariants) === value
+    ) {
+      masked.headers[name] = value;
+    }
   }
   return masked;
 }

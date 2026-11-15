@@ -53,6 +53,14 @@ describe("Set-Cookie は実行時に生の値、出力ではマスク", () => {
         res.end(JSON.stringify({ ok: true }));
         return;
       }
+      // env の秘密値を構造的ヘッダー(content-type)にエコーする
+      if (path === "/ct-echo") {
+        res.writeHead(200, {
+          "Content-Type": `text/plain; note=${req.headers["x-token"] ?? ""}`,
+        });
+        res.end("ok");
+        return;
+      }
       if (path === "/plain" || path.startsWith("/plain?")) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ ok: true, accept: req.headers.accept ?? null }));
@@ -259,6 +267,36 @@ describe("Set-Cookie は実行時に生の値、出力ではマスク", () => {
     const replayed = await run(flow, { recording: { mode: "replay", dir: cassetteDir } });
     expect(replayed.result.status).toBe("passed");
     expect(replayed.result.steps[0]?.response?.body).toEqual({ ok: true });
+  });
+
+  it("構造的ヘッダーに env の秘密値が含まれるときは、カセットでもマスクされたまま残る", async () => {
+    await setup();
+    const KEY = "KLAUS_TEST_CT_SECRET";
+    process.env[KEY] = "env-secret-ct-value-9876";
+    try {
+      const flow = flowSchema.parse({
+        name: "snap",
+        steps: [
+          {
+            name: "echo",
+            request: {
+              method: "GET",
+              url: `${baseUrl}/ct-echo`,
+              headers: { "X-Token": `{{env.${KEY}}}` },
+            },
+            assert: { status: 200 },
+          },
+        ],
+      });
+      const recorded = await run(flow, { recording: { mode: "record", dir: cassetteDir } });
+      expect(recorded.result.status).toBe("passed");
+      const raw = await readFile(cassetteFilePath(cassetteDir), "utf-8");
+      expect(raw).not.toContain("env-secret-ct-value-9876");
+      const entry = JSON.parse(raw.trim());
+      expect(entry.headers["content-type"]).toBe("text/plain; note=***");
+    } finally {
+      delete process.env[KEY];
+    }
   });
 
   describe("capture した Set-Cookie を別の場所に入れても、長い cookie 値は秘密値として登録されている", () => {
