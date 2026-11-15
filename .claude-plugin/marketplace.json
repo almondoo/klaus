@@ -1,0 +1,12 @@
+{
+  "name": "klaus",
+  "owner": { "name": "almondoo", "url": "https://github.com/almondoo" },
+  "description": "Marketplace for the klaus plugin.",
+  "plugins": [
+    {
+      "name": "klaus",
+      "source": "./",
+      "description": "klaus MCP server and skill for running YAML-defined HTTP request flows with guardrails."
+    }
+  ]
+}

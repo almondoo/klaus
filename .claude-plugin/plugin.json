@@ -1,0 +1,12 @@
+{
+  "name": "klaus",
+  "description": "The klaus MCP server (run YAML-defined HTTP request flows with guardrails) and the klaus skill.",
+  "author": { "name": "almondoo", "url": "https://github.com/almondoo" },
+  "homepage": "https://almondoo.github.io/klaus/",
+  "repository": "https://github.com/almondoo/klaus",
+  "license": "Elastic-2.0",
+  "keywords": ["api", "testing", "http", "mcp"],
+  "mcpServers": {
+    "klaus": { "command": "npx", "args": ["-y", "@almondoo/klaus@latest", "mcp"] }
+  }
+}
