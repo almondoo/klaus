@@ -24,7 +24,7 @@ klaus run <files...> [options]
 | `--report <list>` | 生成するレポート形式のカンマ区切りリスト: `junit`、`tap`、`html`、`github`(例: `junit,html`) | — |
 | `--report-file <path>` | `--report` で指定したレポート形式の出力先(繰り返し指定可。詳細は後述) | フォーマットごとの既定値(後述) |
 | `--no-history` | 履歴 JSONL への書き込みを無効化 | 履歴有効 |
-| `--no-mask` | stdout(JSON/text 出力とも)へのシークレットマスキングを無効化 | マスク有効 |
+| `--no-mask` | stdout(JSON/text 出力とも)へのシークレットマスキングを無効化。表示されるヘッダーの `Cookie` / `Set-Cookie` の値はマスクされなくなるが、`cookie` / `set-cookie` ヘッダーに対する失敗したアサーションの `message` と `actual` は常にマスクされる | マスク有効 |
 | `--record <dir>` | record モード: 実際に HTTP リクエストを送信し、マスク済みの request/response ペアを `<dir>` のカセットに保存する | — |
 | `--replay <dir>` | replay モード: 実ネットワークではなく `<dir>` のカセットから HTTP レスポンスを再生する(記録外リクエストは exit code 3 で失敗する)。`--record` とは併用不可 | — |
 | `--allow-protected` | `$protected: true` / `$protected: readonly` の環境ファイルへの実行を許可する(未指定時は exit code 3 で拒否。後述の「保護環境」を参照) | — |

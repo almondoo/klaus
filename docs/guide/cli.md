@@ -24,7 +24,7 @@ Passing multiple files runs them in sequence (glob expansion is left to the shel
 | `--report <list>` | Comma-separated list of report formats to generate: `junit`, `tap`, `html`, `github` (e.g. `junit,html`) | — |
 | `--report-file <path>` | Output path for the report format(s) given via `--report` (repeatable; see below) | per-format default (see below) |
 | `--no-history` | Disables writing to the history JSONL | history enabled |
-| `--no-mask` | Disables secret masking in stdout output (JSON/text) | masking enabled |
+| `--no-mask` | Disables secret masking in stdout output (JSON/text). `Cookie` / `Set-Cookie` header values stay unmasked in the printed headers, but the `message` and `actual` of a failed assertion on the `cookie` / `set-cookie` header are always masked | masking enabled |
 | `--record <dir>` | Record mode: sends real HTTP requests and saves masked request/response pairs to a cassette in `<dir>` | — |
 | `--replay <dir>` | Replay mode: serves HTTP responses from the cassette in `<dir>` instead of the network (unrecorded requests fail with exit code 3). Cannot be combined with `--record` | — |
 | `--allow-protected` | Allow running against an environment file marked `$protected: true` or `$protected: readonly` (otherwise refused with exit code 3; see "Protected environments" below) | — |

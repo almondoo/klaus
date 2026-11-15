@@ -7,6 +7,15 @@ The current spec lives in the respective references ([CLI](../../guide/cli.md) /
 
 From 0.15.0 on, each release was written by checking its commit range with `git log` (everything from one bump commit up to the next belongs to the later version). The exception is 0.23.0 through 0.25.0: their bump commits landed before the feature commits (`99d8002` mock, `0a35c3e` reports, `fac3194` diff / promote), so versions are assigned by content: 0.23.0 = `klaus mock`, 0.24.0 = HTML / GitHub reports, 0.25.0 = `klaus diff` / `klaus promote`.
 
+## 0.29.2
+
+Fixed three issues found by the final review of 0.29.1.
+
+- **Fix: the Host grammar now allows `_`.** Docker network names such as `my_service:8080` were refused even when identical to the URL (`guard.allowedHosts` accepts such names). `# / ? @ % \`, whitespace, and control characters are still refused (including the `%` of a zone-ID IPv6 address). A refusal caused by the grammar now says the Host value contains characters that are not allowed instead of "differs from the request URL" (same guard-refusal path; the `--dry-run` `guard.reason` carries the same text)
+- **Fix: replay broke when a long cookie value equalled ordinary content.** `Set-Cookie: ct=application/json` (16 characters) was registered as a secret, `--record` stored `content-type` as `***`, and `--replay` could no longer parse the body as JSON. The cassette writer now exempts the headers that replay and mock depend on (`content-type`, `content-encoding`, `content-length`, `transfer-encoding`) from substring masking and writes their recorded values. `location` is not exempt because it can carry secrets. Masking of what history and snapshots display is unchanged (both sides of a comparison are masked the same way, so comparison is not affected)
+- **Fix: a captured `Set-Cookie` leaked when interpolated elsewhere.** Without the jar, `capture: { sc: { header: set-cookie } }` used in a query, a header, or a body left the value in history, cassettes, reports, and `promote` output. `Set-Cookie` values of 16 or more characters are now registered as secrets on receipt, whether or not the jar is on (registering on receipt is simpler than registering in the capture step, and covers the jar-enabled and non-capture paths with one rule). The variable itself stays raw for use in requests. Capturing a response `Cookie` header (which servers do not normally send) is not covered
+- Documentation: the cookie exception to "captured values are not masked", and that assertion messages for `cookie` / `set-cookie` stay masked even with `--no-mask`
+
 ## 0.29.1
 
 Fixed a regression in the `Set-Cookie` masking from 0.28.2, restored secret registration for cookie values, and tightened the Host header grammar, the snapshot lock, and the `$ref` message (fixes from an adjudicated adversarial review).
