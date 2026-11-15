@@ -46,6 +46,7 @@ export const DEFAULT_MAX_RESPONSE_BYTES = 100 * 1024 * 1024;
 function responseTooLarge(limit: number): RuntimeError {
   return new RuntimeError(
     `response body exceeds the limit of ${limit} bytes (raise http.maxResponseBytes if this is expected)`,
+    "response-too-large",
   );
 }
 

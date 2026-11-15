@@ -273,7 +273,37 @@ describe("リダイレクト", () => {
           () => {},
           false,
         ),
-      ).rejects.toThrow(GuardRefusalError);
+      ).rejects.toMatchObject({ errorCode: "guard.readonly" });
+    } finally {
+      await session.close();
+    }
+  });
+
+  it("追従先のホップの拒否がコードを持たないときだけ guard.redirect になる", async () => {
+    const target = await startHttp((_req, res) => res.end("ok"));
+    const origin = await startHttp((_req, res) => {
+      res.writeHead(307, { Location: `${target.baseUrl}/t` });
+      res.end();
+    });
+    const session = new HttpSession({ followRedirects: true });
+    try {
+      await expect(
+        session.send(
+          { method: "GET", url: `${origin.baseUrl}/o`, headers: {} },
+          { captures: {}, env: {} },
+          (_method, url) => {
+            if (url.startsWith(target.baseUrl)) throw new GuardRefusalError("refused");
+          },
+          async (options, onResponse) => {
+            const response = await fetch(options.url, { redirect: "manual" });
+            const r = { status: response.status, headers: Object.fromEntries(response.headers) };
+            onResponse(r);
+            return r;
+          },
+          () => {},
+          false,
+        ),
+      ).rejects.toMatchObject({ errorCode: "guard.redirect" });
     } finally {
       await session.close();
     }

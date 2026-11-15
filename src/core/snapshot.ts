@@ -447,7 +447,7 @@ async function writeSnapshotFile(
 ): Promise<void> {
   const root = resolve(cwd);
   const unsafe = findUnsafeSnapshotPath(root, absPath);
-  if (unsafe) throw new GuardRefusalError(unsafe);
+  if (unsafe) throw new GuardRefusalError(unsafe, "guard.path");
   if (entries.size === 0) {
     try {
       await unlink(absPath);
@@ -463,6 +463,7 @@ async function writeSnapshotFile(
   if (!isPathWithinDir(realRoot, realParent)) {
     throw new GuardRefusalError(
       `snapshot path resolves outside the current directory: "${toRelative(root, absPath)}"`,
+      "guard.path",
     );
   }
   const temp = `${absPath}.tmp-${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
@@ -559,12 +560,13 @@ async function updateSnapshotFile(
 ): Promise<void> {
   const root = resolve(cwd);
   const unsafe = findUnsafeSnapshotPath(root, absPath);
-  if (unsafe) throw new GuardRefusalError(unsafe);
+  if (unsafe) throw new GuardRefusalError(unsafe, "guard.path");
   await mkdir(dirname(absPath), { recursive: true });
   const realParent = await realpath(dirname(absPath));
   if (!isPathWithinDir(await realpath(root), realParent)) {
     throw new GuardRefusalError(
       `snapshot path resolves outside the current directory: "${toRelative(root, absPath)}"`,
+      "guard.path",
     );
   }
   await withFileLock(
@@ -695,7 +697,7 @@ export class SnapshotStore {
   /** 1 ステップの応答をスナップショットと比べ、必要なら(実行終了時に)書き込む内容を記録して、結果を返す */
   evaluate(input: SnapshotEvaluateInput): AssertionResult {
     const state = this.stateFor(input.flowFilePath);
-    if (state.unsafe !== undefined) throw new GuardRefusalError(state.unsafe);
+    if (state.unsafe !== undefined) throw new GuardRefusalError(state.unsafe, "guard.path");
     const { key } = input;
     state.seen.add(key);
     const detail = (

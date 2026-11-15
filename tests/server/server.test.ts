@@ -1283,11 +1283,20 @@ describe("klaus server", () => {
 
       const events = await collectSseEvents(res);
       const runResult = events.at(-1)?.data as {
-        flow: { status: string; steps: Array<{ status: string; error?: string }> };
+        flow: {
+          status: string;
+          steps: Array<{ status: string; error?: string; errorCode?: string }>;
+        };
       };
       expect(runResult.flow.status).toBe("error");
       expect(runResult.flow.steps[0]?.status).toBe("error");
       expect(runResult.flow.steps[0]?.error).toContain("guard.allowedHosts");
+      // errorCode は step-result と run-result の両方のイベントにそのまま載る
+      expect(runResult.flow.steps[0]?.errorCode).toBe("guard.allowed-hosts");
+      const stepResult = events.find((e) => e.event === "step-result")?.data as {
+        result: { errorCode?: string };
+      };
+      expect(stepResult.result.errorCode).toBe("guard.allowed-hosts");
     });
 
     it("POST /api/request: 許可リストに無いホストへの単発リクエストは error になる", async () => {
@@ -1296,9 +1305,12 @@ describe("klaus server", () => {
       });
       expect(res.status).toBe(200);
 
-      const payload = (await res.json()) as { result: { status: string; error?: string } };
+      const payload = (await res.json()) as {
+        result: { status: string; error?: string; errorCode?: string };
+      };
       expect(payload.result.status).toBe("error");
       expect(payload.result.error).toContain("guard.allowedHosts");
+      expect(payload.result.errorCode).toBe("guard.allowed-hosts");
     });
 
     it('POST /api/request: $protected: "readonly" の環境でも guard は独立に効き、POST は readonly 側の理由で拒否される', async () => {
@@ -1314,8 +1326,11 @@ describe("klaus server", () => {
         request: { method: "POST", url: "{{baseUrl}}/step1" },
         env: "stg",
       });
-      const postPayload = (await postRes.json()) as { result: { error?: string } };
+      const postPayload = (await postRes.json()) as {
+        result: { error?: string; errorCode?: string };
+      };
       expect(postPayload.result.error).toContain("refusing POST");
+      expect(postPayload.result.errorCode).toBe("guard.readonly");
     });
   });
 
@@ -2037,6 +2052,36 @@ describe("保護環境の拒否メッセージ(UI 起点のフロー実行)", ()
       }
     },
   );
+
+  it("errorCode が step-result・run-result・GET /api/history の詳細に載る", async () => {
+    const res = await fetch(`http://127.0.0.1:${server.port}/api/runs`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Klaus-Token": server.token,
+        Cookie: `klaus_token=${server.token}`,
+      },
+      body: JSON.stringify({ path: "readonly-post.yaml" }),
+    });
+    const events = await collectSseEvents(res);
+    const stepResult = events.find((e) => e.event === "step-result")?.data as {
+      result: { errorCode?: string };
+    };
+    const runResult = events.at(-1)?.data as { flow: { steps: Array<{ errorCode?: string }> } };
+    expect(stepResult.result.errorCode).toBe("guard.readonly");
+    expect(runResult.flow.steps[0]?.errorCode).toBe("guard.readonly");
+
+    const history = await fetch(`http://127.0.0.1:${server.port}/api/history?limit=50`, {
+      headers: { "X-Klaus-Token": server.token, Cookie: `klaus_token=${server.token}` },
+    });
+    const page = (await history.json()) as {
+      entries: Array<{ flow: string; errorCode?: string }>;
+    };
+    expect(page.entries.find((e) => e.flow === "blocked.yaml")?.errorCode).toBe("guard.protected");
+    expect(page.entries.find((e) => e.flow === "readonly-post.yaml")?.errorCode).toBe(
+      "guard.readonly",
+    );
+  });
 
   it("履歴に記録される拒否理由も、利用者が実際に見た UI 向けの案内になる", async () => {
     const entries = await readAllHistoryEntries(dir);

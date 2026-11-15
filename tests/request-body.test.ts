@@ -256,6 +256,7 @@ describe("ファイル入力は cwd 配下に限る", () => {
         const { step, entry } = await run(flowOf({ url: `${api.baseUrl}/x`, ...request }));
         expect(step?.status, JSON.stringify(request)).toBe("error");
         expect(step?.error).toContain("outside the current directory");
+        expect(step?.errorCode).toBe("guard.path");
         expect(entry?.status).toBe("error");
       }
       expect(api.requests).toHaveLength(0);

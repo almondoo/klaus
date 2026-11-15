@@ -73,6 +73,7 @@ export async function receiveSse(
         raw.bodyStream.destroy();
         throw new RuntimeError(
           `SSE stream exceeds the limit of ${maxBytes} bytes (raise http.maxResponseBytes if this is expected)`,
+          "response-too-large",
         );
       }
       parser.feed(decoder.decode(chunk as Buffer, { stream: true }));

@@ -164,7 +164,9 @@ describe("Host ヘッダー", () => {
     );
     expect(result.steps[0]?.status).toBe("error");
     expect(result.steps[0]?.error).toContain("Host header that differs");
+    expect(result.steps[0]?.errorCode).toBe("guard.host-header");
     expect(entries[0]?.status).toBe("error");
+    expect(entries[0]?.errorCode).toBe("guard.host-header");
     expect(target.requests).toHaveLength(0);
   });
 
@@ -358,6 +360,7 @@ describe("Host ヘッダー", () => {
         );
         expect(result.steps[0]?.status).toBe("error");
         expect(result.steps[0]?.error).toContain("hop-by-hop");
+        expect(result.steps[0]?.errorCode).toBe("guard.proxy-header");
         expect(proxy.forwarded).toHaveLength(0);
       },
     );
@@ -424,6 +427,8 @@ describe("リダイレクトの Location の形式", () => {
       );
       expect(result.steps[0]?.status).toBe("error");
       expect(result.steps[0]?.error).toContain("redirect hop 1");
+      // ホップ自身の拒否の具体的なコードを残す(guard.redirect に置き換えない)
+      expect(result.steps[0]?.errorCode).toBe("guard.allowed-hosts");
       expect(entries[0]?.status).toBe("error");
       expect(origin.requests.map((r) => r.url)).toEqual(["/start"]);
     },
@@ -458,6 +463,7 @@ describe("レスポンスサイズの上限(http.maxResponseBytes)", () => {
       expect(result.steps[0]?.error).toBe(
         "response body exceeds the limit of 1000 bytes (raise http.maxResponseBytes if this is expected)",
       );
+      expect(result.steps[0]?.errorCode).toBe("response-too-large");
     }
   });
 
@@ -491,5 +497,6 @@ describe("レスポンスサイズの上限(http.maxResponseBytes)", () => {
     );
     expect(result.steps[0]?.status).toBe("error");
     expect(result.steps[0]?.error).toContain("SSE stream exceeds the limit of 1000 bytes");
+    expect(result.steps[0]?.errorCode).toBe("response-too-large");
   });
 });

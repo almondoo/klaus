@@ -118,6 +118,7 @@ export function checkHostAllowed(
   } catch {
     return new GuardRefusalError(
       "request URL could not be parsed while guard.allowedHosts is set; refusing to send the request.",
+      "guard.allowed-hosts",
     );
   }
   const hostname = url.hostname;
@@ -138,6 +139,7 @@ export function checkHostAllowed(
   const hostLabel = rawHost !== undefined ? `host "${rawHost}"` : "request host";
   return new GuardRefusalError(
     `${hostLabel} is not in guard.allowedHosts (klaus.config.yaml); refusing to send the request.`,
+    "guard.allowed-hosts",
   );
 }
 

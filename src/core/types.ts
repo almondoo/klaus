@@ -171,6 +171,11 @@ export interface StepResult {
   assertions: AssertionResult[];
   /** runtime エラー・パースエラー時のメッセージ(skip 理由もここに入る) */
   error?: string;
+  /**
+   * status が "error" で原因を識別できるときだけ設定する安定したコード(例: `guard.allowed-hosts`)。
+   * 値の一覧は ErrorCode(errors.ts)を参照。該当するコードが無いエラーでは省略する
+   */
+  errorCode?: string;
   /** retry 設定がある場合のみ設定。実際に実行された試行回数(1 以上) */
   attempts?: number;
   /**

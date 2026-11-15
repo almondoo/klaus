@@ -387,6 +387,12 @@ export const jsonStepReportSchema = z.strictObject({
     .string()
     .optional()
     .describe("Runtime error message, or the reason the step was skipped."),
+  errorCode: z
+    .string()
+    .optional()
+    .describe(
+      "Stable machine-readable code for the error (e.g. `guard.allowed-hosts`, `response-too-large`). Present only when status is error and the cause has a code; see the history guide for the list.",
+    ),
 });
 export type JsonStepReport = z.infer<typeof jsonStepReportSchema>;
 
@@ -571,6 +577,7 @@ function buildStep(
     wsMessages: buildWsMessages(step.wsMessages),
     assertions: step.assertions.map(toJsonAssertion),
     error: step.error,
+    errorCode: step.errorCode,
   };
 }
 

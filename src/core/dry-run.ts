@@ -64,7 +64,7 @@ export interface DryRunStepResult {
   /** `if` の条件式のテキスト(conditional のときのみ) */
   if?: string;
   /** 実行時と同じ安全柵の判定結果。refused の場合 reason に拒否理由が入る */
-  guard: { status: DryRunGuardStatus; reason?: string };
+  guard: { status: DryRunGuardStatus; reason?: string; errorCode?: string };
   /**
    * 実行時にも必ず失敗する展開エラー(前段の capture でも環境でもない変数の参照、未定義の OS 環境変数)。
    * 実行時と同じメッセージになる
@@ -178,7 +178,11 @@ function evaluateGuard(
     );
   } catch (error) {
     if (error instanceof GuardRefusalError) {
-      return { status: "refused", reason: error.message };
+      return {
+        status: "refused",
+        reason: error.message,
+        ...(error.errorCode !== undefined ? { errorCode: error.errorCode } : {}),
+      };
     }
     throw error;
   }

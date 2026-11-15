@@ -2137,6 +2137,7 @@ describe("安全柵(guard.allowedHosts / $protected: readonly)と履歴の監査
       expect(result.steps[0]?.status).toBe("error");
       expect(result.steps[0]?.error).toContain('host "127.0.0.1"');
       expect(result.steps[0]?.error).toContain("guard.allowedHosts");
+      expect(result.steps[0]?.errorCode).toBe("guard.allowed-hosts");
       expect(received).toEqual([]);
     });
 
@@ -2280,6 +2281,7 @@ describe("安全柵(guard.allowedHosts / $protected: readonly)と履歴の監査
         expect(result.steps[0]?.error).toContain('environment "stg"');
         expect(result.steps[0]?.error).toContain(`refusing ${method}`);
         expect(result.steps[0]?.error).toContain("--allow-protected");
+        expect(result.steps[0]?.errorCode).toBe("guard.readonly");
       }
       expect(received).toEqual([]);
     });
@@ -2354,6 +2356,7 @@ describe("安全柵(guard.allowedHosts / $protected: readonly)と履歴の監査
 
       expect(result.steps[0]?.status).toBe("error");
       expect(result.steps[0]?.error).toContain("($protected: true)");
+      expect(result.steps[0]?.errorCode).toBe("guard.protected");
       expect(received).toEqual([]);
     });
 
@@ -2507,6 +2510,7 @@ describe("安全柵(guard.allowedHosts / $protected: readonly)と履歴の監査
         expect(result.steps[0]?.status).toBe("error");
         expect(result.steps[0]?.error).toContain(header.toLowerCase());
         expect(result.steps[0]?.error).toContain("--allow-protected");
+        expect(result.steps[0]?.errorCode).toBe("guard.method-override");
         expect(received).toEqual([]);
       },
     );
@@ -2646,6 +2650,7 @@ describe("安全柵(guard.allowedHosts / $protected: readonly)と履歴の監査
         actor: { kind: "agent", name: "claude-code" },
       });
       expect(entries[0]?.error).toContain("guard.allowedHosts");
+      expect(entries[0]?.errorCode).toBe("guard.allowed-hosts");
       expect(entries[0]).not.toHaveProperty("response");
     });
 
@@ -2664,12 +2669,14 @@ describe("安全柵(guard.allowedHosts / $protected: readonly)と履歴の監査
         request: { method: "GET" },
       });
       expect(blocked[0]?.error).toContain("$protected: true");
+      expect(blocked[0]?.errorCode).toBe("guard.protected");
       expect(readonly[0]).toMatchObject({
         status: "error",
         env: "stg",
         request: { method: "POST" },
       });
       expect(readonly[0]?.error).toContain("refusing POST");
+      expect(readonly[0]?.errorCode).toBe("guard.readonly");
       expect(received).toEqual([]);
     });
 

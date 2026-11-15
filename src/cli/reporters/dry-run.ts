@@ -69,6 +69,12 @@ const dryRunStepSchema = z.strictObject({
         .string()
         .optional()
         .describe("Why the step would be refused, or why the check is undetermined."),
+      errorCode: z
+        .string()
+        .optional()
+        .describe(
+          "Stable machine-readable code for the refusal (e.g. `guard.allowed-hosts`). Present only when status is refused.",
+        ),
     })
     .describe("What the guards would decide for this step if it ran now."),
   error: z

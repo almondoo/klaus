@@ -44,6 +44,7 @@ function resolveInputFile(cwd: string, rawPath: string, label: string): InputFil
   ) {
     throw new GuardRefusalError(
       `${label} file resolves outside the current directory: "${rawPath}" (files sent in a request must be inside the cwd)`,
+      "guard.path",
     );
   }
   let size: number;
@@ -184,6 +185,7 @@ async function readInputFile(
   const changed = () =>
     new GuardRefusalError(
       `${label} file changed while it was being read: "${checked.display}" (files sent in a request must be inside the cwd)`,
+      "guard.path",
     );
   if (!isPathWithinDir(resolvedCwd, real) || !isRealPathWithinDir(resolvedCwd, real)) {
     throw changed();

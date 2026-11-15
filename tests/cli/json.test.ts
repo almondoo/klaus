@@ -85,6 +85,12 @@ describe("formatJson", () => {
       steps: [
         buildStep({ name: "ping", status: "error", error: "connect ECONNREFUSED" }),
         buildStep({
+          name: "blocked",
+          status: "error",
+          error: "refused",
+          errorCode: "guard.allowed-hosts",
+        }),
+        buildStep({
           name: "skip-me",
           status: "skipped",
           error: "skipped because a previous step failed",
@@ -94,7 +100,11 @@ describe("formatJson", () => {
     const parsed = JSON.parse(formatJson(buildRunResult([flow]), { historyEnabled: false }));
 
     expect(parsed.flows[0].steps[0].error).toBe("connect ECONNREFUSED");
-    expect(parsed.flows[0].steps[1].error).toBe("skipped because a previous step failed");
+    expect(parsed.flows[0].steps[2].error).toBe("skipped because a previous step failed");
+    // errorCode はコードを持つ error ステップにだけ出る
+    expect(parsed.flows[0].steps[0]).not.toHaveProperty("errorCode");
+    expect(parsed.flows[0].steps[1].errorCode).toBe("guard.allowed-hosts");
+    expect(parsed.flows[0].steps[2]).not.toHaveProperty("errorCode");
   });
 
   it("request/response ボディが 500 文字を超えると truncate される", () => {

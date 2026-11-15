@@ -416,12 +416,14 @@ export class HttpSession {
     if (problem !== undefined) {
       throw new GuardRefusalError(
         `${hostHeaderRefusalMessage(problem, "http.proxy is set")}; it could reach a virtual host outside guard.allowedHosts`,
+        "guard.host-header",
       );
     }
     for (const name of Object.keys(headers)) {
       if (PROXY_FORBIDDEN_HEADERS.has(name.toLowerCase())) {
         throw new GuardRefusalError(
           `refusing the "${name}" header while http.proxy is set (hop-by-hop headers can alter how the proxy forwards the request)`,
+          "guard.proxy-header",
         );
       }
     }
@@ -552,6 +554,8 @@ export class HttpSession {
         if (hop > 0 && error instanceof GuardRefusalError) {
           throw new GuardRefusalError(
             `redirect hop ${hop} (after ${previousStatus}) refused: ${error.message}`,
+            // ホップ自身の拒否が具体的なコードを持つならそれを残し、無いときだけ guard.redirect にする
+            error.errorCode ?? "guard.redirect",
           );
         }
         throw error;
@@ -701,7 +705,10 @@ export class HttpSession {
       );
     } catch (error) {
       if (error instanceof GuardRefusalError) {
-        throw new GuardRefusalError(`oauth2 token request refused: ${error.message}`);
+        throw new GuardRefusalError(
+          `oauth2 token request refused: ${error.message}`,
+          error.errorCode,
+        );
       }
       throw error;
     }

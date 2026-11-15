@@ -213,6 +213,7 @@ describe("reqCommand", () => {
     const report = readJson();
     expect(report.status).toBe("error");
     expect(report.error).toContain("request failed");
+    expect(report).not.toHaveProperty("errorCode");
     expect(report).not.toHaveProperty("response");
   });
 
@@ -357,6 +358,7 @@ describe("reqCommand", () => {
     const report = readJson();
     expect(report.status).toBe("error");
     expect(report.error).toContain("guard.allowedHosts");
+    expect(report.errorCode).toBe("guard.allowed-hosts");
     expect(report.historyRef).toBeDefined();
     const entry = JSON.parse((await readFile(historyFilePath(workDir), "utf-8")).trim());
     expect(entry).toMatchObject({ source: "single", status: "error" });

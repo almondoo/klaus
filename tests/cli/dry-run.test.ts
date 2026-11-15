@@ -180,6 +180,7 @@ steps:
     expect(report.summary.refused).toBe(2);
     expect(report.flows[0]?.steps[0]?.guard.status).toBe("refused");
     expect(report.flows[0]?.steps[0]?.guard.reason).toContain("guard.allowedHosts");
+    expect(report.flows[0]?.steps[0]?.guard.errorCode).toBe("guard.allowed-hosts");
     expect(fixture.count()).toBe(0);
   });
 

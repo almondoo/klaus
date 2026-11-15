@@ -383,6 +383,7 @@ steps:
 
       expect(dry.steps[0]?.guard.status).toBe("refused");
       expect(dry.steps[0]?.guard.reason).toContain("guard.allowedHosts");
+      expect(dry.steps[0]?.guard.errorCode).toBe("guard.allowed-hosts");
       expect(dry.steps[0]?.guard.reason).toBe(real.steps[0]?.error);
       expect(fixture.count()).toBe(0);
     });
@@ -577,7 +578,9 @@ steps:
 
         expect(refused.steps[0]?.guard.status).toBe("refused");
         expect(refused.steps[0]?.guard.reason).toContain("$protected: true");
+        expect(refused.steps[0]?.guard.errorCode).toBe("guard.protected");
         expect(allowed.steps[0]?.guard.status).toBe("allowed");
+        expect(allowed.steps[0]?.guard.errorCode).toBeUndefined();
       });
 
       it('$protected: "readonly" は GET が allowed、POST・WebSocket・メソッド上書きヘッダーつきの GET が refused', async () => {
@@ -608,6 +611,12 @@ steps:
           "refused",
         ]);
         expect(result.steps[1]?.guard.reason).toContain("refusing POST");
+        expect(result.steps.map((s) => s.guard.errorCode)).toEqual([
+          undefined,
+          "guard.readonly",
+          "guard.method-override",
+          "guard.readonly",
+        ]);
       });
 
       it("ホストが未解決でも、ホストに依存しない拒否(readonly の POST)は refused のまま", async () => {

@@ -50,6 +50,12 @@ export const reqReportSchema = z
         "Received SSE events, in order. Present only when the request carried `Accept: text/event-stream`.",
       ),
     error: z.string().optional().describe("Runtime error message or guard refusal reason."),
+    errorCode: z
+      .string()
+      .optional()
+      .describe(
+        "Stable machine-readable code for the error (e.g. `guard.allowed-hosts`, `response-too-large`). Present only when status is error and the cause has a code; see the history guide for the list.",
+      ),
     historyRef: historyRefSchema
       .optional()
       .describe(
@@ -80,6 +86,7 @@ export function buildReqReport(result: StepResult, history?: ReqHistoryLink): Re
     response: buildResponse(result.response),
     events: buildEvents(result.events),
     error: result.error,
+    errorCode: result.errorCode,
     historyRef: history
       ? {
           date: historyDateFromTimestamp(result.startedAt),

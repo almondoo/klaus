@@ -14,7 +14,7 @@ import {
 import { evaluateCondition } from "./condition.js";
 import type { DataRow } from "./data.js";
 import { getProtectedMode, loadEnvironment, toTemplateVariables } from "./env.js";
-import { GuardRefusalError, KlausError, ParseError, RuntimeError } from "./errors.js";
+import { errorCodeOf, GuardRefusalError, KlausError, ParseError, RuntimeError } from "./errors.js";
 import {
   checkHostAllowed,
   findMethodOverrideHeader,
@@ -699,6 +699,7 @@ export function assertSendAllowed(
       `environment "${stepGuard.readonlyEnvName}" is protected ($protected: readonly) and only allows GET, HEAD, and OPTIONS by default; ` +
         `refusing ${method === "WS" ? "WebSocket" : method}. ` +
         protectionHint(stepGuard.singleRequest, stepGuard.entryPoint),
+      "guard.readonly",
     );
   }
   // 安全メソッドの GET でも、サーバー側のメソッド上書きヘッダーで書き込みに化けさせられるため拒否する
@@ -708,13 +709,17 @@ export function assertSendAllowed(
     throw new GuardRefusalError(
       `environment "${stepGuard.readonlyEnvName}" is protected ($protected: readonly) and refuses requests carrying the ${overrideHeader} header, which can turn a read into a write. ` +
         protectionHint(stepGuard.singleRequest, stepGuard.entryPoint),
+      "guard.method-override",
     );
   }
   // 許可リストの指定時は、URL と違う Host ヘッダーを拒否する(Host ルーティングで許可リスト外の仮想ホストへ到達できるため)
   if (!skipHostCheck && stepGuard.options?.allowedHosts !== undefined) {
     const problem = findHostHeaderProblem(url, headers);
     if (problem !== undefined) {
-      throw new GuardRefusalError(hostHeaderRefusalMessage(problem, "guard.allowedHosts is set"));
+      throw new GuardRefusalError(
+        hostHeaderRefusalMessage(problem, "guard.allowedHosts is set"),
+        "guard.host-header",
+      );
     }
   }
   if (!skipHostCheck) {
@@ -1129,6 +1134,7 @@ async function executeStep(
   } catch (error) {
     // runtime エラー(接続不能・タイムアウト・テンプレート未解決等)はここに集約する
     const message = error instanceof KlausError ? error.message : String(error);
+    const errorCode = errorCodeOf(error);
     const stepResult: StepResult = {
       name: step.name,
       status: "error",
@@ -1137,6 +1143,7 @@ async function executeStep(
       request: requestSnapshot,
       assertions: [],
       error: message,
+      ...(errorCode !== undefined ? { errorCode } : {}),
     };
     // 安全柵による拒否は監査のため履歴にも残す(送信しようとした内容は masked 済みで request に入る)。
     // それ以外の実行時エラー(接続不能・タイムアウト等)は従来どおり履歴に書かない
@@ -1149,6 +1156,7 @@ async function executeStep(
           ...(requestSnapshot ? { request: requestSnapshot } : {}),
           assertions: [],
           error: message,
+          ...(errorCode !== undefined ? { errorCode } : {}),
         },
       };
     }
@@ -1198,6 +1206,7 @@ function checkEnvironmentAllowed(
   return new GuardRefusalError(
     `environment "${envName}" is protected ($protected: true) and refuses execution by default. ` +
       protectionHint(singleRequest, entryPoint),
+    "guard.protected",
   );
 }
 

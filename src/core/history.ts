@@ -48,6 +48,8 @@ export interface HistoryEntry {
    * 追加のみの後方互換な変更のため v は 1 のまま
    */
   error?: string;
+  /** error と同じく status が "error" のエントリのみ。StepResult.errorCode と同じ値(追加のみの後方互換な変更のため v は 1 のまま) */
+  errorCode?: string;
   /**
    * 監査項目(以下 4 つはすべて省略可能。追加のみの後方互換な変更のため v は 1 のまま)。
    * 実行した環境名(--env-file 指定時はそのファイル名)。環境を使わない実行では省略する
