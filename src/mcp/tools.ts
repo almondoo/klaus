@@ -75,7 +75,8 @@ import {
   guardEntries,
   loadProtectionView,
   maskValues,
-  withholdReason,
+  promoteBlockedKind,
+  recordedEnvironmentNames,
 } from "./protection.js";
 import { ToolError, type ToolOutcome, toFailure } from "./result.js";
 
@@ -407,6 +408,7 @@ function summarizeHistoryEntry(entry: GuardedEntry) {
     ...(entry.errorCode !== undefined ? { errorCode: entry.errorCode } : {}),
     ...(entry.env !== undefined ? { env: entry.env } : {}),
     ...(entry.envProtection !== undefined ? { envProtection: entry.envProtection } : {}),
+    ...(entry.envSource !== undefined ? { envSource: entry.envSource } : {}),
     ...(entry.file !== undefined ? { file: entry.file } : {}),
     ...(entry.actor !== undefined ? { actor: entry.actor } : {}),
     ...(entry.withheld !== undefined ? { withheld: entry.withheld } : {}),
@@ -1084,10 +1086,7 @@ const snapshotListTool: ToolDefinition<typeof snapshotListSchema> = {
       .filter((item) => item.reason !== undefined);
     const refusal =
       allMismatches.length > 0 ? await findAcceptRefusal(ctx.cwd, entries) : undefined;
-    const view = await loadProtectionView(
-      ctx.cwd,
-      entries.map((entry) => entry.env),
-    );
+    const view = await loadProtectionView(ctx.cwd, recordedEnvironmentNames(entries));
     return ok(
       maskValues(
         {
@@ -1150,25 +1149,22 @@ const promoteTool: ToolDefinition<typeof promoteSchema> = {
     // (maskValues。生成物では TODO_* のプレースホルダーになる)
     const history = await readAllHistoryEntries(ctx.cwd);
     const runEntries = runIds.flatMap((runId) => selectRunEntries(history, runId));
-    const view = await loadProtectionView(
-      ctx.cwd,
-      runEntries.map((entry) => entry.env),
-    );
+    const view = await loadProtectionView(ctx.cwd, recordedEnvironmentNames(runEntries));
     for (const runId of runIds) {
-      const blocked = selectRunEntries(history, runId).find(
-        (entry) =>
-          entry.envProtection !== undefined ||
-          (entry.env !== undefined && view.statusOf(entry.env) === "protected") ||
-          withholdReason(entry, view) !== undefined,
-      );
-      if (blocked !== undefined) {
-        const undetermined =
-          blocked.envProtection === undefined &&
-          (blocked.env === undefined || view.statusOf(blocked.env) !== "protected");
+      let blockedEntry: HistoryEntry | undefined;
+      let kind: "protected" | "undetermined" | undefined;
+      for (const entry of selectRunEntries(history, runId)) {
+        kind = promoteBlockedKind(entry, view);
+        if (kind !== undefined) {
+          blockedEntry = entry;
+          break;
+        }
+      }
+      if (blockedEntry !== undefined) {
         throw new ToolError(
-          undetermined
-            ? `run "${runId}" was recorded against the environment "${blocked.env}", whose protection cannot be determined here, and cannot be promoted through klaus mcp`
-            : `run "${runId}" was recorded against the protected environment "${blocked.env ?? "unknown"}" and cannot be promoted through klaus mcp`,
+          kind === "undetermined"
+            ? `run "${runId}" was recorded against the environment "${blockedEntry.env}", whose protection cannot be determined here, and cannot be promoted through klaus mcp`
+            : `run "${runId}" was recorded against the protected environment "${blockedEntry.env ?? "unknown"}" and cannot be promoted through klaus mcp`,
           {
             errorCode: "guard.protected",
             hint: "Tell the user; they can run `klaus promote` in a terminal and review the result for sensitive values.",

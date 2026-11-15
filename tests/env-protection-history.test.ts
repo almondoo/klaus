@@ -76,6 +76,8 @@ describe("履歴エントリの envProtection", () => {
 
     const [entry] = await readAllHistoryEntries(base);
     expect(entry).toMatchObject({ env: "ro", envProtection: "readonly", status: "passed" });
+    // 名前で選んだ環境は envSource を持たない
+    expect(entry).not.toHaveProperty("envSource");
   });
 
   it("--env-file(秘密のディレクトリ)の保護環境でのフロー実行に記録される(allowProtected で通した true も)", async () => {
@@ -91,6 +93,7 @@ describe("履歴エントリの envProtection", () => {
     const [entry] = await readAllHistoryEntries(base);
     expect(entry).toMatchObject({
       env: "vault.yaml",
+      envSource: "file",
       envProtection: "protected",
       status: "passed",
     });
@@ -150,5 +153,27 @@ describe("履歴エントリの envProtection", () => {
     const entries = await readAllHistoryEntries(base);
     expect(entries).toHaveLength(3);
     for (const entry of entries) expect(entry).not.toHaveProperty("envProtection");
+    // 保護されていない --env-file でも、出どころ(file)は記録される。名前付き環境・環境なしには付かない
+    expect(entries.map((entry) => entry.envSource ?? "named-or-none").sort()).toEqual([
+      "file",
+      "named-or-none",
+      "named-or-none",
+    ]);
+  });
+
+  it("拡張子の無い --env-file(記録名が名前の形式になる)と environments/ 内のファイルの指定も file として記録する", async () => {
+    const bare = await writeEnv("secrets/ro", "$protected: readonly\n");
+    const inEnvironments = await writeEnv("environments/ro.yaml", "$protected: readonly\n");
+
+    await runLoadedFlows(loadedFlow(), { cwd: base, envFilePath: bare, history: true });
+    await runLoadedFlows(loadedFlow(), { cwd: base, envFilePath: inEnvironments, history: true });
+
+    const entries = await readAllHistoryEntries(base);
+    expect(
+      entries.map((entry) => [entry.env, entry.envSource, entry.envProtection]).sort(),
+    ).toEqual([
+      ["ro", "file", "readonly"],
+      ["ro.yaml", "file", "readonly"],
+    ]);
   });
 });

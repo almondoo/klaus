@@ -62,6 +62,13 @@ export interface HistoryEntry {
    * 事実を書き込み時に残すので、後から環境ファイルを探し直さなくても(別の場所の --env-file でも)保護された実行だったと分かる
    */
   envProtection?: "protected" | "readonly";
+  /**
+   * 環境が --env-file のパスから読み込まれたこと("file")の記録。環境を名前(environments/<name>.yaml)で選んだ場合は省略する。
+   * env にはファイルのベース名が入り、拡張子の無いファイル(secrets/ro)や名前に使える文字だけのファイルでは、同名の名前付き環境と
+   * 見分けがつかない。読む側(klaus mcp)が env を名前として解決して別のファイルの値で隠してしまわないよう、書き込み時に出どころを残す。
+   * environments/ro.yaml のように名前付き環境と同じファイルを --env-file で指した場合も "file" とする(env は "ro.yaml")。旧エントリには無い
+   */
+  envSource?: "file";
   /** フロー定義ファイルの cwd からの相対パス(POSIX 区切り)。絶対パスは入れない。単発実行では省略する */
   file?: string;
   /** 実行主体。core は計算せず、呼び出し元(CLI・server)が RunFlowOptions.actor 等で渡した値を記録する */

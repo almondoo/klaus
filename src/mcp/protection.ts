@@ -3,6 +3,9 @@
  *
  * - 値の集め方: environments/ にある環境ファイルの一覧に加えて、履歴エントリに記録された環境名も、core が実行時に使うのと同じ解決
  *   (core の loadEnvironment: 上方探索・シンボリックリンクの規則を含む)で読む。保護されていれば全変数の値を秘密として扱う
+ * - --env-file で読み込んだ実行(envSource: "file")は、記録された env(ファイルのベース名)を環境名として解決しない。
+ *   ベース名が名前付き環境と同名(拡張子の無い secrets/ro など)でも別のファイルなので、その値では隠せない。
+ *   envProtection があれば常に中身を出さず、無ければ(保護されていない環境ファイル)通常どおり、現在保護されている値を隠して返す
  * - 値が得られないとき(失敗は閉じる): 履歴に envProtection(保護された環境で書かれた事実)があるのに、記録された環境名が
  *   現在も保護された名前付き環境として読めない(場所が違う --env-file・削除・改名)エントリは、値を隠せないので
  *   リクエスト・レスポンスの中身を出さない(メタデータと withheld の理由だけを返す)。envProtection が無い旧エントリでも、
@@ -50,6 +53,11 @@ async function statusAndValues(
   }
 }
 
+/** 履歴エントリに記録された環境名のうち、名前付き環境として解決してよいもの(--env-file 由来は除く) */
+export function recordedEnvironmentNames(entries: readonly HistoryEntry[]): (string | undefined)[] {
+  return entries.map((entry) => (entry.envSource === "file" ? undefined : entry.env));
+}
+
 /**
  * environments/ の一覧と recordedNames(履歴に記録された環境名)から、現在保護されている環境の値と状態を集める。
  * 名前として使えないもの(--env-file のファイル名など)は解決せず、状態は undefined のまま。
@@ -75,6 +83,12 @@ export async function loadProtectionView(
 
 /** 値を持たない(隠せない)ためにエントリの中身を出さない理由。出してよければ undefined */
 export function withholdReason(entry: HistoryEntry, view: ProtectionView): string | undefined {
+  // --env-file 由来は名前で解決しない。保護されていた(envProtection)なら値を得られないので出さず、
+  // 保護されていなければ(書き込み時に envProtection が付かなかった)現在の保護された値を隠して返す
+  if (entry.envSource === "file") {
+    if (entry.envProtection === undefined) return undefined;
+    return `this entry was recorded against a protected environment file (${entry.envProtection}, --env-file "${entry.env ?? ""}"), whose values cannot be obtained here for masking`;
+  }
   const name = entry.env;
   const named = name !== undefined && ENV_NAME_PATTERN.test(name);
   if (entry.envProtection !== undefined) {
@@ -92,6 +106,25 @@ export function withholdReason(entry: HistoryEntry, view: ProtectionView): strin
   return undefined;
 }
 
+/**
+ * klaus_promote が run を拒否すべきエントリか。保護された環境で書かれた(envProtection)・記録された名前付き環境が今も保護されている・
+ * 保護の有無を確かめられない(withholdReason)のいずれか。--env-file 由来のエントリは名前で解決しない
+ */
+export function promoteBlockedKind(
+  entry: HistoryEntry,
+  view: ProtectionView,
+): "protected" | "undetermined" | undefined {
+  if (entry.envProtection !== undefined) return "protected";
+  if (
+    entry.envSource !== "file" &&
+    entry.env !== undefined &&
+    view.statusOf(entry.env) === "protected"
+  ) {
+    return "protected";
+  }
+  return withholdReason(entry, view) !== undefined ? "undetermined" : undefined;
+}
+
 /** エントリの中身(リクエスト・レスポンス・アサーション・エラー・スナップショットの候補)を外し、メタデータと理由だけにする */
 function withhold(entry: HistoryEntry, reason: string): GuardedEntry {
   return {
@@ -106,6 +139,7 @@ function withhold(entry: HistoryEntry, reason: string): GuardedEntry {
     ...(entry.errorCode !== undefined ? { errorCode: entry.errorCode } : {}),
     ...(entry.env !== undefined ? { env: entry.env } : {}),
     ...(entry.envProtection !== undefined ? { envProtection: entry.envProtection } : {}),
+    ...(entry.envSource !== undefined ? { envSource: entry.envSource } : {}),
     ...(entry.file !== undefined ? { file: entry.file } : {}),
     ...(entry.actor !== undefined ? { actor: entry.actor } : {}),
     assertions: [],
@@ -123,10 +157,7 @@ export function maskValues<T>(value: T, values: readonly string[]): T {
  * すべての環境の値を隠す。履歴は CLI や UI が書いたもので、環境の値が保存されたまま入っていることがあるため
  */
 export async function guardEntries(cwd: string, entries: HistoryEntry[]): Promise<GuardedEntry[]> {
-  const view = await loadProtectionView(
-    cwd,
-    entries.map((entry) => entry.env),
-  );
+  const view = await loadProtectionView(cwd, recordedEnvironmentNames(entries));
   return entries.map((entry) => {
     const reason = withholdReason(entry, view);
     return reason !== undefined ? withhold(entry, reason) : maskValues(entry, view.values);

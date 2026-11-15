@@ -146,6 +146,8 @@ export interface HistoryEntry {
   env?: string;
   /** 保護された環境($protected)で書かれたエントリにだけ付く。旧エントリ・保護されていない実行には無い */
   envProtection?: "protected" | "readonly";
+  /** 環境が --env-file から読み込まれたときだけ "file"。名前付き環境・旧エントリには無い(表示には使わない) */
+  envSource?: "file";
   file?: string;
   actor?: HistoryActor;
   git?: HistoryGit;

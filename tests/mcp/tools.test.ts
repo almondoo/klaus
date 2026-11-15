@@ -647,6 +647,147 @@ describe("保護された環境で書かれた履歴の読み出し(値を隠せ
     await expect(stat(join(cwd, "flows", "vault.yaml"))).rejects.toThrow();
   });
 
+  describe("--env-file の記録名が、同名の名前付き環境と衝突する場合", () => {
+    const NAMED_SECRET = "named-ro-secret-1111";
+    const FILE_SECRET = "file-ro-secret-2222";
+
+    /** CLI と同じ経路で、envFilePath の環境ファイルを使った run を 1 回記録する */
+    async function recordWithEnvFile(envFile: string): Promise<string> {
+      const { runId } = await runLoadedFlows(
+        [
+          {
+            filePath: join(cwd, "api", "collide.yaml"),
+            flow: flowSchema.parse({
+              name: "collide flow",
+              steps: [
+                {
+                  name: "get",
+                  request: {
+                    method: "GET",
+                    url: "{{baseUrl}}/echo-auth",
+                    headers: { Authorization: "Bearer {{dbPassword}}" },
+                  },
+                },
+              ],
+            }),
+          },
+        ],
+        { cwd, envFilePath: join(cwd, envFile), allowProtected: true, history: true },
+      );
+      return runId;
+    }
+
+    async function writeCollidingEnvironments(): Promise<void> {
+      // 名前付きの ro(別の値)と、拡張子の無い secrets/ro(記録される env は "ro" で、名前の形式に合う)
+      await writeProjectFile(
+        "environments/ro.yaml",
+        `$protected: readonly\nbaseUrl: http://named.example.invalid:1\ndbPassword: ${NAMED_SECRET}\n`,
+      );
+      await writeProjectFile(
+        "secrets/ro",
+        `$protected: true\nbaseUrl: ${baseUrl}\ndbPassword: ${FILE_SECRET}\n`,
+      );
+    }
+
+    function expectNeitherSecret(text: string): void {
+      for (const value of [FILE_SECRET, NAMED_SECRET, baseUrl, new URL(baseUrl).host]) {
+        expect(text).not.toContain(value);
+      }
+    }
+
+    it("secrets/ro(保護)の run は、environments/ro.yaml の値で隠された結果にならず、中身を出さない。show・list・diff・promote のいずれも", async () => {
+      await writeCollidingEnvironments();
+      const runA = await recordWithEnvFile("secrets/ro");
+      const runB = await recordWithEnvFile("secrets/ro");
+      const [recorded] = await readAllHistoryEntries(cwd);
+      expect(recorded).toMatchObject({ env: "ro", envProtection: "protected", envSource: "file" });
+      expect(await historyText()).toContain(FILE_SECRET);
+
+      const shown = await call("klaus_history_show", { runId: runA });
+      const shownPath = await call("klaus_history_show", {
+        runId: runA,
+        step: "get",
+        path: "$.response.body",
+      });
+      const list = await call("klaus_history_list", {});
+      const diff = await call("klaus_diff_runs", { a: runA, b: runB });
+      const promote = await call("klaus_promote", { runIds: [runA], out: "flows/collide.yaml" });
+
+      for (const outcome of [shown, shownPath, list, diff, promote]) {
+        expectNeitherSecret(serializeOutcome(outcome).text);
+      }
+      expect(serializeOutcome(shown).text).toContain("withheld");
+      expect(data(shown).entries[0].response).toBeUndefined();
+      expect(data(list).entries[0].withheld).toContain("klaus history show");
+      expect(data(diff).notComparable).toHaveLength(1);
+      expect(failure(promote).errorCode).toBe("guard.protected");
+      await expect(stat(join(cwd, "flows", "collide.yaml"))).rejects.toThrow();
+    });
+
+    it("environments/ro.yaml そのものを --env-file で指した run も、ファイル由来として扱い、中身を出さない", async () => {
+      await writeProjectFile(
+        "environments/ro.yaml",
+        `$protected: readonly\nbaseUrl: ${baseUrl}\ndbPassword: ${NAMED_SECRET}\n`,
+      );
+      const runId = await recordWithEnvFile("environments/ro.yaml");
+      const [recorded] = await readAllHistoryEntries(cwd);
+      expect(recorded).toMatchObject({
+        env: "ro.yaml",
+        envSource: "file",
+        envProtection: "readonly",
+      });
+
+      const shown = await call("klaus_history_show", { runId });
+
+      expect(serializeOutcome(shown).text).toContain("withheld");
+      expect(serializeOutcome(shown).text).not.toContain("echo-auth");
+      expect(
+        failure(await call("klaus_promote", { runIds: [runId], out: "flows/x.yaml" })).errorCode,
+      ).toBe("guard.protected");
+    });
+
+    it("保護されていない --env-file の run は、名前付き環境が衝突していても読め(保護された値は隠れ)、promote もできる", async () => {
+      await writeProjectFile(
+        "environments/ro.yaml",
+        `$protected: readonly\nbaseUrl: http://named.example.invalid:1\ndbPassword: ${NAMED_SECRET}\n`,
+      );
+      // 記録名が ro(名前付きの ro と同名)の、保護されていない環境ファイル
+      await writeProjectFile("secrets/ro", `baseUrl: ${baseUrl}\ndbPassword: visible-open-3333\n`);
+      const runId = await recordWithEnvFile("secrets/ro");
+      const [recorded] = await readAllHistoryEntries(cwd);
+      expect(recorded).toMatchObject({ env: "ro", envSource: "file" });
+      expect(recorded).not.toHaveProperty("envProtection");
+
+      const shown = data(await call("klaus_history_show", { runId }));
+
+      expect(shown.entries[0].withheld).toBeUndefined();
+      expect(shown.entries[0].request.headers.Authorization).toBe("Bearer visible-open-3333");
+      const promoted = await call("klaus_promote", { runIds: [runId], out: "flows/open.yaml" });
+      expect(data(promoted)).toMatchObject({ written: true });
+    });
+
+    it("名前付き環境の run は envSource を持たず、従来どおり名前で解決して読める", async () => {
+      await writeProjectFile(
+        "environments/ro.yaml",
+        `$protected: readonly\nbaseUrl: ${baseUrl}\ndbPassword: ${NAMED_SECRET}\n`,
+      );
+      const { runId } = await executeSingleRequest({
+        request: { method: "GET", url: "{{baseUrl}}/ok" },
+        cwd,
+        envName: "ro",
+        history: true,
+      });
+      const [recorded] = await readAllHistoryEntries(cwd);
+      expect(recorded).toMatchObject({ env: "ro", envProtection: "readonly" });
+      expect(recorded).not.toHaveProperty("envSource");
+
+      const shown = data(await call("klaus_history_show", { runId }));
+
+      expect(shown.entries[0].withheld).toBeUndefined();
+      expect(shown.entries[0].request.url).toBe("***/ok");
+    });
+  });
+
   it("名前付きの保護環境の run は、その環境が今も保護されていれば値を隠して読める。保護が外された・環境が消えたときは中身を出さない", async () => {
     await writeProtectedEnvironments();
     const recorded = async () => {
@@ -704,8 +845,19 @@ describe("保護された環境で書かれた履歴の読み出し(値を隠せ
       }).then((result) => result.runId);
     const named = await record({ envName: "dev" });
     const viaFile = await record({ envFilePath: join(cwd, "secrets", "plain.yaml") });
+    // envSource が導入される前の旧エントリを再現する(出どころの記録を取り除く)
+    const historyDir = join(cwd, ".klaus", "history");
+    for (const name of await readdir(historyDir)) {
+      const lines = (await readFile(join(historyDir, name), "utf-8")).split("\n").filter(Boolean);
+      const stripped = lines.map((line) => {
+        const { envSource: _envSource, ...rest } = JSON.parse(line);
+        return JSON.stringify(rest);
+      });
+      await writeFile(join(historyDir, name), `${stripped.join("\n")}\n`, "utf-8");
+    }
     for (const entry of await readAllHistoryEntries(cwd)) {
       expect(entry).not.toHaveProperty("envProtection");
+      expect(entry).not.toHaveProperty("envSource");
     }
 
     // 読める保護なしの環境: 従来どおり(値は一致する部分だけ現在の保護とは無関係に、そのまま)
@@ -718,6 +870,12 @@ describe("保護された環境で書かれた履歴の読み出し(値を隠せ
       failure(await call("klaus_promote", { runIds: [viaFile], out: "flows/c.yaml" })).error,
     ).toContain("cannot be determined");
 
+    // 同じ --env-file の新しい run(envSource: file、保護なし)は、保護の有無が記録されているので読める
+    const freshViaFile = await record({ envFilePath: join(cwd, "secrets", "plain.yaml") });
+    expect(
+      data(await call("klaus_history_show", { runId: freshViaFile })).entries[0].withheld,
+    ).toBeUndefined();
+
     // 環境ファイルが壊れた(読めない)ときは、環境名で記録された旧エントリも出さない
     await writeProjectFile("environments/dev.yaml", "baseUrl: [unclosed\n");
     expectWithheld(await call("klaus_history_show", { runId: named }));
@@ -726,7 +884,8 @@ describe("保護された環境で書かれた履歴の読み出し(値を隠せ
     ).toContain("cannot be determined");
     expect(
       data(await call("klaus_history_list", {})).entries.every(
-        (row: { withheld?: string }) => row.withheld !== undefined,
+        (row: { runId: string; withheld?: string }) =>
+          row.runId === freshViaFile || row.withheld !== undefined,
       ),
     ).toBe(true);
   });

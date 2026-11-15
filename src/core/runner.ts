@@ -1343,11 +1343,13 @@ function buildAuditFields(
   git: HistoryGit | undefined,
   /** 読み込んだ環境の保護モード(保護されていた事実を、履歴エントリの envProtection に残す) */
   protection: ProtectedMode,
-): Pick<HistoryEntry, "env" | "envProtection" | "file" | "actor" | "git"> {
+): Pick<HistoryEntry, "env" | "envProtection" | "envSource" | "file" | "actor" | "git"> {
   const env = envFilePath !== undefined ? basename(envFilePath) : envName;
   const file = filePath !== undefined ? toHistoryFilePath(cwd, filePath) : undefined;
   return {
     ...(env !== undefined ? { env } : {}),
+    // 環境を --env-file で読み込んだ出どころ(env のベース名が名前付き環境と同名になっても区別できるように)
+    ...(envFilePath !== undefined ? { envSource: "file" as const } : {}),
     ...(protection === true
       ? { envProtection: "protected" as const }
       : protection === "readonly"
