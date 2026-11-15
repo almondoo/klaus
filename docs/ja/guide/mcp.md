@@ -43,6 +43,27 @@
 
 ### Claude Code
 
+#### プラグインとして
+
+klaus のリポジトリは Claude Code のプラグインマーケットプレイスでもある。次のコマンドでプラグインをインストールする:
+
+```bash
+claude plugin marketplace add almondoo/klaus
+claude plugin install klaus@klaus
+```
+
+Claude Code の中では、同じ手順を `/plugin marketplace add almondoo/klaus` と `/plugin install klaus@klaus` で行う。
+
+- プラグインは `npx -y @almondoo/klaus@latest mcp` でサーバーを起動する。起動時に Node.js と npm へのネットワーク接続が必要で、グローバルにインストールした `klaus` は使われない。
+- プラグインの MCP サーバーには、npm に公開された `@almondoo/klaus` のバージョン 0.31.0 以降が必要になる。`klaus mcp` は 0.31.0 で追加されたもので、プラグインは `@latest` が指すバージョンをそのまま実行するため。
+- klaus の[スキル](/ja/guide/agent-skill)も一緒にインストールされる。Claude Code ではこのスキルが `/klaus:klaus` の名前空間で呼ばれる。
+- ツールは `mcp__plugin_klaus_klaus__klaus_*` の名前で現れる。
+- プラグインは書き込みツールを常に公開する。[`--read-only`](#読み取り専用モード)を使うには、代わりに下の手動登録でサーバーを登録すること。
+
+プラグインと下の手動登録の両方を使うと、ツールが二重に登録されることがある(手動登録の `mcp__klaus__*` と、プラグインの `mcp__plugin_klaus_klaus__*`)。どちらか一方の方法だけを使うこと。
+
+#### 手動で登録する
+
 プロジェクトのディレクトリで実行する:
 
 ```bash

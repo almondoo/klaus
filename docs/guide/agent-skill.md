@@ -21,6 +21,19 @@ The sections below walk through installing for Claude Code and Codex as represen
 
 ## Installing for Claude Code
 
+### As a plugin
+
+The klaus repository is a Claude Code plugin marketplace. Installing the plugin adds the skill (namespaced as `/klaus:klaus`) and the klaus MCP server together:
+
+```bash
+claude plugin marketplace add almondoo/klaus
+claude plugin install klaus@klaus
+```
+
+See [MCP server for AI agents](/guide/mcp#claude-code) for what the plugin starts and its limits.
+
+### By copying
+
 Copy the whole `skills/klaus/` directory into one of the following (keep the directory name and the `SKILL.md` filename unchanged):
 
 - User-wide: `~/.claude/skills/klaus/`

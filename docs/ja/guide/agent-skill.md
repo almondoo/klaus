@@ -21,6 +21,19 @@ klaus はリポジトリ内に [Agent Skill](https://code.claude.com/docs/en/ski
 
 ## Claude Code への配置
 
+### プラグインとして
+
+klaus のリポジトリは Claude Code のプラグインマーケットプレイスになっている。プラグインをインストールすると、スキル(`/klaus:klaus` の名前空間)と klaus の MCP サーバーが一緒に入る:
+
+```bash
+claude plugin marketplace add almondoo/klaus
+claude plugin install klaus@klaus
+```
+
+プラグインが起動するものとその制約は [AI エージェント向けの MCP サーバー](/ja/guide/mcp#claude-code)を参照。
+
+### コピーして配置する
+
 以下のいずれかのディレクトリに `skills/klaus/` を丸ごとコピーする(ディレクトリ名・`SKILL.md` のファイル名は変更しないこと)。
 
 - ユーザー全体: `~/.claude/skills/klaus/`

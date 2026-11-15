@@ -140,6 +140,13 @@ See the [CLI reference](https://almondoo.github.io/klaus/guide/cli) for the full
 
 An Agent Skill document is bundled as `skills/klaus/SKILL.md`. Copy it to `~/.claude/skills/klaus/` (Claude Code) or `~/.agents/skills/klaus/` (Codex) so agents can learn how to write flow YAML and what each exit code means without reading the source. See [Agent Skill (Claude Code / Codex)](https://almondoo.github.io/klaus/guide/agent-skill) for setup instructions.
 
+For Claude Code you can instead install the repository as a plugin, which adds the skill and the klaus MCP server together:
+
+```bash
+claude plugin marketplace add almondoo/klaus
+claude plugin install klaus@klaus
+```
+
 ## Development
 
 ```bash

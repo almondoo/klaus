@@ -7,6 +7,18 @@ The current spec lives in the respective references ([CLI](../../guide/cli.md) /
 
 From 0.15.0 on, each release was written by checking its commit range with `git log` (everything from one bump commit up to the next belongs to the later version). The exception is 0.23.0 through 0.25.0: their bump commits landed before the feature commits (`99d8002` mock, `0a35c3e` reports, `fac3194` diff / promote), so versions are assigned by content: 0.23.0 = `klaus mock`, 0.24.0 = HTML / GitHub reports, 0.25.0 = `klaus diff` / `klaus promote`.
 
+## 0.32.0
+
+Claude Code plugin: the repository is now a Claude Code plugin (and a single-plugin marketplace) that installs the klaus MCP server and the skill in one step.
+
+- **Added: `.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json`.** The plugin root is the repository root, and the existing `skills/klaus/SKILL.md` is picked up by the default `skills/` scan (it was neither moved nor duplicated). The marketplace and the plugin are both named `klaus`. There is no `version` field (the version comes from the git commit SHA, so no per-release bump is needed), and `.claude-plugin/` is not added to the npm package's `files`.
+- **What it provides:** the klaus MCP server (`klaus mcp`) and the klaus skill (`/klaus:klaus`). The tools appear as `mcp__plugin_klaus_klaus__klaus_*`.
+- **Install:** `claude plugin marketplace add almondoo/klaus` and `claude plugin install klaus@klaus` (inside Claude Code: `/plugin marketplace add almondoo/klaus` and `/plugin install klaus@klaus`).
+- **Decision: the launch command is `npx -y @almondoo/klaus@latest mcp`.** It is declared inline under `mcpServers` in `.claude-plugin/plugin.json`. A root `.mcp.json` is deliberately not created, because Claude Code would treat it as a project-scope MCP configuration for everyone who opens this repository. Node.js and network access to npm are needed at startup, and a globally installed `klaus` is not used. The plugin always exposes the write tools, so for `--read-only` register the server manually with `claude mcp add` (using both the plugin and a manual registration can register the tools twice, as `mcp__klaus__*` and `mcp__plugin_klaus_klaus__*`, so use one route).
+- **Prerequisite:** an npm package version that contains `klaus mcp` (0.31.0 or later) must be published.
+- Tests: `tests/plugin-manifest.test.ts` guards that the `license` in `plugin.json` matches `package.json`, that the launch command references the `name` in `package.json`, and that the marketplace entry matches the plugin name.
+- Docs: the MCP guide and the Agent Skill guide describe installing through the plugin, and the READMEs carry the install commands.
+
 ## 0.31.0
 
 `klaus mcp`: a stdio server that exposes klaus as tools to an MCP (Model Context Protocol) client, that is, an AI agent. It lets the agent explore and test an API through klaus's own guardrails instead of `curl`.

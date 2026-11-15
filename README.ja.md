@@ -140,6 +140,13 @@ klaus run api/auth-flow.yaml
 
 `skills/klaus/SKILL.md` として Agent Skill 形式のドキュメントを同梱している。`~/.claude/skills/klaus/`(Claude Code)や `~/.agents/skills/klaus/`(Codex)にコピーすると、フロー YAML の書き方や exit code の意味をエージェントがソースコードを読まずに把握できる。配置手順は [Agent Skill(Claude Code / Codex)](https://almondoo.github.io/klaus/ja/guide/agent-skill) を参照。
 
+Claude Code では、代わりにこのリポジトリをプラグインとしてインストールすると、スキルと klaus の MCP サーバーが一緒に入る:
+
+```bash
+claude plugin marketplace add almondoo/klaus
+claude plugin install klaus@klaus
+```
+
 ## 開発
 
 ```bash

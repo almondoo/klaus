@@ -7,6 +7,18 @@ API の現在の仕様は各リファレンス([CLI](../ja/guide/cli.md) / [フ�
 
 0.15.0 以降は、各リリースのコミット範囲を `git log` で確認して書いている(更新コミットから次の更新コミットまでが後のバージョン)。ただし 0.23.0〜0.25.0 は、更新コミットが機能コミット(`99d8002` mock、`0a35c3e` レポート、`fac3194` diff / promote)より前に入っているため、機能の内容で 0.23.0 = `klaus mock`、0.24.0 = HTML / GitHub レポート、0.25.0 = `klaus diff` / `klaus promote` とした。
 
+## 0.32.0
+
+Claude Code プラグイン: このリポジトリを、klaus の MCP サーバーとスキルを一度に入れられる Claude Code のプラグイン(兼、単一プラグインのマーケットプレイス)にした。
+
+- **追加: `.claude-plugin/plugin.json` と `.claude-plugin/marketplace.json`**。プラグインのルートはリポジトリのルートで、既存の `skills/klaus/SKILL.md` を `skills/` の既定の走査でそのまま拾う(移動も複製もしない)。マーケットプレイス名・プラグイン名はどちらも `klaus`。`version` は書かず(git のコミット SHA から決まるので、リリースごとの更新が要らない)、`.claude-plugin/` は npm パッケージの `files` に入れない
+- **提供するもの**: klaus の MCP サーバー(`klaus mcp`)と klaus スキル(`/klaus:klaus`)。ツールは `mcp__plugin_klaus_klaus__klaus_*` の名前で現れる
+- **インストール**: `claude plugin marketplace add almondoo/klaus` と `claude plugin install klaus@klaus`(Claude Code の中では `/plugin marketplace add almondoo/klaus` と `/plugin install klaus@klaus`)
+- **判断: 起動コマンドは `npx -y @almondoo/klaus@latest mcp`**。`.claude-plugin/plugin.json` の `mcpServers` にインラインで宣言する。ルートに `.mcp.json` を置くと、このリポジトリを開いた全員のプロジェクトスコープの MCP 設定として扱われるため作らない。起動時に Node.js と npm へのネットワーク接続が必要で、グローバルにインストールした `klaus` は使われない。プラグインは常に書き込みツールを公開するので、`--read-only` が要る場合は `claude mcp add` で手動登録する(プラグインと手動登録を併用すると、ツールが `mcp__klaus__*` と `mcp__plugin_klaus_klaus__*` で二重に登録されることがあるので、どちらか一方だけを使う)
+- **前提**: `klaus mcp` を含む npm パッケージのバージョン(0.31.0 以降)が公開されていること
+- テスト: `tests/plugin-manifest.test.ts` が、`plugin.json` の `license` と `package.json` の一致、起動コマンドが `package.json` の `name` を参照すること、マーケットプレイスのエントリとプラグイン名の一致を守る
+- ドキュメント: MCP ガイドと Agent Skill ガイドにプラグインでの導入を、README にインストールコマンドを追加した
+
 ## 0.31.0
 
 `klaus mcp`: klaus を MCP(Model Context Protocol)クライアント、つまり AI エージェントへツールとして提供する stdio サーバー。エージェントが `curl` の代わりに、klaus 自身の安全柵のもとで API を調べ、検証できるようにする。

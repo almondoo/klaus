@@ -43,6 +43,27 @@ Add `"--read-only"` to `args` to leave out the tools that write files (see [Read
 
 ### Claude Code
 
+#### As a plugin
+
+The klaus repository is also a Claude Code plugin marketplace. Install the plugin with:
+
+```bash
+claude plugin marketplace add almondoo/klaus
+claude plugin install klaus@klaus
+```
+
+Inside Claude Code the same steps are `/plugin marketplace add almondoo/klaus` and `/plugin install klaus@klaus`.
+
+- The plugin starts the server with `npx -y @almondoo/klaus@latest mcp`. Node.js and network access to npm are needed at startup, and a globally installed `klaus` is not used.
+- The plugin's MCP server needs a published `@almondoo/klaus` version 0.31.0 or later on npm, because `klaus mcp` was added in 0.31.0 and the plugin runs whatever `@latest` resolves to.
+- It also installs the klaus [skill](/guide/agent-skill), which Claude Code namespaces as `/klaus:klaus`.
+- The tools appear as `mcp__plugin_klaus_klaus__klaus_*`.
+- The plugin always exposes the write tools. To use [`--read-only`](#read-only-mode), register the server manually instead (below).
+
+If you use both the plugin and the manual registration below, the tools can end up registered twice (once as `mcp__klaus__*` from the manual registration and once as `mcp__plugin_klaus_klaus__*` from the plugin), so use one route.
+
+#### Manual registration
+
 Run this in the project directory:
 
 ```bash
