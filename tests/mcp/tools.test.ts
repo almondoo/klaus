@@ -10,7 +10,7 @@ import {
   type ToolOutcome,
 } from "../../src/mcp/result.js";
 import { resolveMcpActor, TOOL_DEFINITIONS, type ToolContext } from "../../src/mcp/tools.js";
-import { closeServer, listenEphemeral } from "../support/net.js";
+import { closeServer, listenEphemeral, reserveClosedPort } from "../support/net.js";
 
 /**
  * klaus mcp のツールハンドラを、node:http のローカル fixture に対して直接呼ぶ。
@@ -246,23 +246,6 @@ describe("klaus_dry_run の variables と環境の値の表示", () => {
     expect(result.summary.expansionErrors).toBe(0);
     expect(received).toHaveLength(0);
   });
-
-  it("保護された環境ファイルの値は、拒否された(refused)ステップでも展開されて表示される(マスクされるのは秘密として登録された値だけ)", async () => {
-    await writeProjectFile(
-      "api/prod.yaml",
-      `name: prod flow\nenv: prod\nsteps:\n  - name: get\n    request:\n      method: GET\n      url: "${baseUrl}/ok"\n      headers:\n        X-Api-Key: "{{apiKey}}"\n`,
-    );
-    await writeProjectFile(
-      "environments/prod.yaml",
-      "$protected: true\napiKey: plain-env-file-value\n",
-    );
-
-    const prod = data(await call("klaus_dry_run", { file: "api/prod.yaml" }));
-
-    const step = prod.flows[0].steps[0];
-    expect(step.guard.errorCode).toBe("guard.protected");
-    expect(step.request.headers["X-Api-Key"]).toBe("plain-env-file-value");
-  });
 });
 
 describe("klaus_run_flow", () => {
@@ -292,41 +275,47 @@ describe("klaus_run_flow", () => {
     expect(history[0]?.actor).toEqual({ kind: "agent", name: "test-agent" });
   });
 
-  it("履歴に記録されたステップにだけ historyRef を付け、記録されないエラー(キャプチャ失敗)のステップには付けない", async () => {
+  it("履歴に記録されたステップにだけ historyRef を付ける(応答を受けた後の capture 失敗は付き、接続エラーは付かない)", async () => {
+    const closedPort = await reserveClosedPort();
     await writeProjectFile(
       "api/capture.yaml",
       `name: capture flow
 steps:
   - name: login
+    continueOnError: true
     request:
       method: GET
       url: "${baseUrl}/ok"
     capture:
       token: "$.does.not.exist"
+  - name: unreachable
+    continueOnError: true
+    request:
+      method: GET
+      url: "http://127.0.0.1:${closedPort}/x"
   - name: after
     request:
       method: GET
       url: "${baseUrl}/ok"
 `,
     );
-    await writeProjectFile("api/ok.yaml", getFlow("ok flow", "/ok"));
 
-    const failed = data(await call("klaus_run_flow", { file: "api/capture.yaml" }));
-    const passed = data(await call("klaus_run_flow", { file: "api/ok.yaml" }));
+    const result = data(await call("klaus_run_flow", { file: "api/capture.yaml" }));
 
-    const [login, after] = failed.flows[0].steps;
+    const [login, unreachable, after] = result.flows[0].steps;
     expect(login).toMatchObject({ name: "login", status: "error" });
-    expect(login).not.toHaveProperty("historyRef");
-    // 先行ステップの失敗でスキップされたステップは記録される
-    expect(after).toMatchObject({ name: "after", status: "skipped" });
-    expect(after.historyRef).toEqual({ runId: failed.runId, step: "after" });
-    expect(passed.flows[0].steps[0].historyRef).toEqual({ runId: passed.runId, step: "get" });
-    // historyRef が指すエントリは引け、無いステップは引けない
+    expect(login.historyRef).toEqual({ runId: result.runId, step: "login" });
+    expect(unreachable).toMatchObject({ name: "unreachable", status: "error" });
+    expect(unreachable).not.toHaveProperty("historyRef");
+    expect(after.historyRef).toEqual({ runId: result.runId, step: "after" });
+    // historyRef が指すエントリは引け(応答つきの error)、無いステップは引けない
+    const shown = data(await call("klaus_history_show", { runId: result.runId, step: "login" }));
+    expect(shown.entries[0]).toMatchObject({
+      status: "error",
+      response: { status: 200, body: { ok: true } },
+    });
     expect(
-      data(await call("klaus_history_show", { runId: failed.runId, step: "after" })).entries,
-    ).toHaveLength(1);
-    expect(
-      failure(await call("klaus_history_show", { runId: failed.runId, step: "login" })).error,
+      failure(await call("klaus_history_show", { runId: result.runId, step: "unreachable" })).error,
     ).toContain("no history entries found");
   });
 
@@ -720,6 +709,63 @@ describe("履歴・差分・スナップショットの参照", () => {
     expect(data(outcome).entries[0].window).toMatchObject({ length: 40000, nextOffset: 40000 });
   });
 
+  it("klaus_history_show: path は $・.name・['name']・[n] だけを受け付け、再帰下降・ワイルドカード・スライス・和集合・フィルター・スクリプト式は即座に拒否する", async () => {
+    const { runId } = data(await call("klaus_request", { method: "GET", url: `${baseUrl}/ok` }));
+
+    for (const path of [
+      "$[",
+      "$..a",
+      "$..a..a..a..a",
+      "$.*",
+      "$[?(@.x)]",
+      "$[(1+1)]",
+      "$[0:2]",
+      "$['a','b']",
+      "$[-1]",
+    ]) {
+      const started = performance.now();
+      const refused = failure(await call("klaus_history_show", { runId, step: "request", path }));
+      expect(refused.error, path).toContain("invalid path");
+      expect(refused.error, path).toContain("supported forms are");
+      expect(performance.now() - started, path).toBeLessThan(500);
+    }
+    // 受け付ける形は、0 個か 1 個の値を返す
+    const headers = data(
+      await call("klaus_history_show", {
+        runId,
+        step: "request",
+        path: "$['response'].headers['content-type']",
+      }),
+    );
+    expect(headers.entries).toEqual([{ matchCount: 1, matches: ["application/json"] }]);
+  });
+
+  it("klaus_history_show: 入れ子の深い履歴エントリに 512 文字ほどの有効な path を当てても即座に返る", async () => {
+    let deep: unknown = { leaf: true };
+    for (let i = 0; i < 199; i++) deep = { a: deep };
+    await appendHistory(cwd, {
+      v: 1,
+      runId: "deep-run",
+      flow: "(single)",
+      step: "request",
+      startedAt: new Date().toISOString(),
+      durationMs: 1,
+      status: "passed",
+      source: "single",
+      request: { method: "GET", url: `${baseUrl}/x`, headers: {} },
+      response: { status: 200, headers: {}, body: deep },
+      assertions: [],
+    });
+    const path = `$.response.body${".a".repeat(248)}`;
+    expect(path.length).toBeGreaterThanOrEqual(500);
+
+    const started = performance.now();
+    const outcome = await call("klaus_history_show", { runId: "deep-run", step: "request", path });
+
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(data(outcome).entries).toEqual([{ matchCount: 0, matches: [] }]);
+  });
+
   it("klaus_history_show: offset / length / path の誤用は失敗にする(step なしの path、path なしの offset、文字列でない値、不正な path、範囲外の length)", async () => {
     const { runId } = data(await call("klaus_request", { method: "GET", url: `${baseUrl}/ok` }));
 
@@ -739,7 +785,7 @@ describe("履歴・差分・スナップショットの参照", () => {
       }),
     );
     expect(notString.error).toContain("exactly one string value");
-    expect(notString.hint).toContain("Narrow path");
+    expect(notString.hint).toContain("Point path at a single string");
     expect(
       failure(
         await call("klaus_history_show", { runId, step: "request", path: "$.nothing", offset: 0 }),

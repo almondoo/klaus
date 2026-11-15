@@ -29,7 +29,7 @@ describe("stringifyWithLimit(結果のサイズ上限)", () => {
     expect(parsed.entries[0].response.body).toContain(`[truncated: ${huge.length} bytes`);
     // 印は、klaus_history_show の step・path・offset・length での読み方を示す
     expect(parsed.entries[0].response.body).toContain(
-      "klaus_history_show: pass step and path (a JSONPath into the history entry, for example $.response.body)",
+      "klaus_history_show: pass step and path (a path into the history entry, for example $.response.body)",
     );
     expect(parsed.entries[0].response.body).toContain("offset and length");
     expect(parsed.resultTruncated).toBe(true);

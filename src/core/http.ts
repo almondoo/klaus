@@ -23,6 +23,11 @@ export interface HttpResponse {
   body: unknown;
   /** 常に取得できる生テキスト */
   bodyText: string;
+  /**
+   * JSON だが入れ子が MAX_JSON_BODY_DEPTH を超えたため、パースせずテキストのまま body に入れたときだけ true。
+   * 文字列の body に JSONPath を当てると誤った値に一致するため、capture・body アサーションはこれを見て明示的に失敗させる
+   */
+  bodyTooDeep?: true;
   durationMs: number;
   /** Set-Cookie の生の値(1 件ずつ)。cookie jar 用。cassette 経由の応答では未設定 */
   setCookies?: string[];
@@ -146,15 +151,27 @@ export function parseJsonBody(
   contentType: string | string[] | undefined,
   bodyText: string,
 ): unknown {
+  return parseJsonBodyChecked(contentType, bodyText).body;
+}
+
+/**
+ * parseJsonBody と同じ判定で、深すぎる JSON をテキストのまま返したか(tooDeep)も返す。
+ * 呼び出し元は tooDeep を応答に引き継ぎ、JSONPath・スキーマの検査を明示的に失敗させる。
+ */
+export function parseJsonBodyChecked(
+  contentType: string | string[] | undefined,
+  bodyText: string,
+): { body: unknown; tooDeep: boolean } {
   const isJson = typeof contentType === "string" && contentType.includes("application/json");
-  if (!isJson || bodyText.length === 0) return bodyText;
+  if (!isJson || bodyText.length === 0) return { body: bodyText, tooDeep: false };
   try {
     const parsed: unknown = JSON.parse(bodyText);
     // 深すぎる JSON は構造化せずテキストのまま扱う
-    return exceedsDepth(parsed, MAX_JSON_BODY_DEPTH) ? bodyText : parsed;
+    if (exceedsDepth(parsed, MAX_JSON_BODY_DEPTH)) return { body: bodyText, tooDeep: true };
+    return { body: parsed, tooDeep: false };
   } catch {
     // JSON として壊れている場合はテキストのまま扱う
-    return bodyText;
+    return { body: bodyText, tooDeep: false };
   }
 }
 
@@ -211,7 +228,7 @@ export async function sendRequest(options: HttpRequestOptions): Promise<HttpResp
     const durationMs = performance.now() - startedAt;
     const headers = normalizeHeaders(response.headers);
     // JSON 判定は正規化前の生ヘッダー値で行う(重複 Content-Type ヘッダーは配列になり JSON とみなさない)
-    const body = parseJsonBody(response.headers["content-type"], bodyText);
+    const { body, tooDeep } = parseJsonBodyChecked(response.headers["content-type"], bodyText);
     const setCookies = extractSetCookies(response.headers);
 
     return {
@@ -219,6 +236,7 @@ export async function sendRequest(options: HttpRequestOptions): Promise<HttpResp
       headers,
       body,
       bodyText,
+      ...(tooDeep ? { bodyTooDeep: true as const } : {}),
       durationMs,
       ...(setCookies ? { setCookies } : {}),
     };

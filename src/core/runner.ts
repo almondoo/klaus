@@ -32,6 +32,7 @@ import {
   hostHeaderRefusalMessage,
   mergeHttpConfig,
 } from "./http-session.js";
+import { BODY_TOO_DEEP_MESSAGE } from "./json-diff.js";
 import { loadFlow } from "./loader.js";
 import type { OpenApiValidator } from "./openapi.js";
 import { type BodyPayload, expandBodyForm, materializePayload } from "./request-body.js";
@@ -508,6 +509,8 @@ export interface CaptureResponse {
   status: number;
   headers: Record<string, string>;
   bodyText: string;
+  /** body が、入れ子が深すぎてテキストのまま保持されたものか。true なら JSONPath の capture は明示的に失敗させる */
+  bodyTooDeep?: boolean | undefined;
   /** run 内の cookie jar から名前で値を引く(jar が無効・該当なしなら undefined) */
   cookie: (name: string) => string | undefined;
 }
@@ -533,6 +536,11 @@ export function captureValues(
   for (const [name, def] of Object.entries(captureDef)) {
     const where = `capture "${name}"`;
     if (typeof def === "string") {
+      // テキストのまま保持した深い JSON に JSONPath を当てると、文字列への添字アクセス(`$[0]` が先頭の文字になる等)で
+      // 誤った値を捕まえてしまうため、評価せずに明示的に失敗させる
+      if (response?.bodyTooDeep === true) {
+        throw new RuntimeError(`${where}: ${BODY_TOO_DEEP_MESSAGE} (step "${stepName}")`);
+      }
       let value: unknown;
       try {
         value = JSONPath({ path: def, json: json as never, wrap: false });
@@ -836,6 +844,15 @@ async function executeStep(
 }> {
   const startedAt = new Date().toISOString();
   let requestSnapshot: RequestSnapshot | undefined;
+  // HTTP の応答を最後まで受け取った後にだけ入る(受信後の処理で失敗したステップを、応答つきで履歴に残すため)
+  let receivedResponse:
+    | {
+        snapshot: ResponseSnapshot;
+        durationMs: number;
+        redirects: string[];
+        droppedHeaders: { hop: number; headers: string[] }[];
+      }
+    | undefined;
 
   // WS/SSE/HTTP 各分岐の結果組み立てを共通化する。キー順は
   // base → request → 分岐固有フィールド(resultExtra / historyExtra)→ assertions を維持する
@@ -1077,11 +1094,26 @@ async function executeStep(
         ? { ...followed.response, durationMs: followed.elapsedMs }
         : followed.response;
 
+    const responseSnapshot: ResponseSnapshot = {
+      status: response.status,
+      headers: response.headers,
+      body: response.body,
+      ...(response.bodyTooDeep === true ? { bodyTooDeep: true as const } : {}),
+    };
+    // これ以降(アサーション・capture・OpenAPI・スナップショット)で失敗しても、応答は履歴に残す
+    receivedResponse = {
+      snapshot: responseSnapshot,
+      durationMs: response.durationMs,
+      redirects,
+      droppedHeaders,
+    };
+
     const assertions = evaluateAssertions(assertDef, {
       status: response.status,
       headers: response.headers,
       body: response.body,
       bodyText: response.bodyText,
+      bodyTooDeep: response.bodyTooDeep,
       durationMs: response.durationMs,
     });
     // cookie は最終ホップの URL に対して jar から引く(リダイレクト途中で付いた cookie も含む)
@@ -1090,14 +1122,10 @@ async function executeStep(
       status: response.status,
       headers: response.headers,
       bodyText: response.bodyText,
+      bodyTooDeep: response.bodyTooDeep,
       cookie: (cookieName) => session.cookieValue(cookieName, finalUrl),
     });
 
-    const responseSnapshot: ResponseSnapshot = {
-      status: response.status,
-      headers: response.headers,
-      body: response.body,
-    };
     const extra = {
       response: responseSnapshot,
       ...(redirects.length > 0 ? { redirects } : {}),
@@ -1149,25 +1177,50 @@ async function executeStep(
     // runtime エラー(接続不能・タイムアウト・テンプレート未解決等)はここに集約する
     const message = error instanceof KlausError ? error.message : String(error);
     const errorCode = errorCodeOf(error);
+    const received = receivedResponse;
+    // 応答を受け取った後の失敗(capture の失敗など)は、応答もステップ結果に載せる
+    const responseFields =
+      received === undefined
+        ? {}
+        : {
+            response: received.snapshot,
+            ...(received.redirects.length > 0 ? { redirects: received.redirects } : {}),
+            ...(received.droppedHeaders.length > 0
+              ? { droppedHeaders: received.droppedHeaders }
+              : {}),
+          };
     const stepResult: StepResult = {
       name: step.name,
       status: "error",
       startedAt,
-      durationMs: 0,
+      durationMs: received?.durationMs ?? 0,
       request: requestSnapshot,
+      ...responseFields,
       assertions: [],
       error: message,
       ...(errorCode !== undefined ? { errorCode } : {}),
     };
-    // 安全柵による拒否は監査のため履歴にも残す(送信しようとした内容は masked 済みで request に入る)。
-    // それ以外の実行時エラー(接続不能・タイムアウト等)は従来どおり履歴に書かない
-    if (error instanceof GuardRefusalError) {
+    // 履歴に残すのは次の 2 つだけ(送信しようとした内容・受け取った応答は masked 済みのものが入る)。
+    // - 安全柵による拒否(監査のため)
+    // - 応答を受け取った後に失敗したステップ(capture の失敗など。応答が履歴から確認できるように)
+    // それ以外の実行時エラー(接続不能・タイムアウト・本文の途中のネットワークエラー・応答サイズ超過・
+    // 送信前のテンプレート展開エラー等)は、使える応答が無いので従来どおり履歴に書かない
+    if (error instanceof GuardRefusalError || received !== undefined) {
       return {
         result: stepResult,
         captured: {},
         historyEntry: {
-          ...buildHistoryBase(runId, flowName, step.name, startedAt, 0, "error", iteration),
+          ...buildHistoryBase(
+            runId,
+            flowName,
+            step.name,
+            startedAt,
+            received?.durationMs ?? 0,
+            "error",
+            iteration,
+          ),
           ...(requestSnapshot ? { request: requestSnapshot } : {}),
+          ...responseFields,
           assertions: [],
           error: message,
           ...(errorCode !== undefined ? { errorCode } : {}),

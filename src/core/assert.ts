@@ -1,7 +1,7 @@
 import Ajv2020 from "ajv/dist/2020";
 import { JSONPath } from "jsonpath-plus";
 import { maskCookieRequestHeader, maskSetCookieHeader } from "./cookie-jar.js";
-import { exceedsDepth, MAX_JSON_BODY_DEPTH } from "./json-diff.js";
+import { BODY_TOO_DEEP_MESSAGE, exceedsDepth, MAX_JSON_BODY_DEPTH } from "./json-diff.js";
 import type {
   AssertDef,
   BodyAssertion,
@@ -61,6 +61,8 @@ export interface AssertionContext {
   headers: Record<string, string>;
   body: unknown;
   bodyText: string;
+  /** body が、入れ子が深すぎてテキストのまま保持されたものか。true なら body の JSONPath・スキーマのアサーションは失敗にする */
+  bodyTooDeep?: boolean | undefined;
   durationMs: number;
   events?: SseEvent[];
   messages?: WsMessage[];
@@ -571,11 +573,13 @@ export function assertMessageCount(
   return assertItemCount(def, messages, "messageCount", "message");
 }
 
+const TOO_DEEP_ITEM_NOTE = `the JSON data is nested deeper than ${MAX_JSON_BODY_DEPTH} levels and is not parsed, so the path cannot match`;
+
 /** item.data を path があれば JSON parse して jsonpath 適用、なければ生文字列を返す */
 function resolveItemValue(
   item: DataItem,
   path: string | undefined,
-): { exists: boolean; value: unknown } {
+): { exists: boolean; value: unknown; tooDeep?: true } {
   if (!path) {
     return { exists: true, value: item.data };
   }
@@ -586,7 +590,9 @@ function resolveItemValue(
     return { exists: false, value: undefined };
   }
   // 深すぎる JSON は本文と同様に構造化しない(JSONPath は一致しない扱い)
-  if (exceedsDepth(parsed, MAX_JSON_BODY_DEPTH)) return { exists: false, value: undefined };
+  if (exceedsDepth(parsed, MAX_JSON_BODY_DEPTH)) {
+    return { exists: false, value: undefined, tooDeep: true };
+  }
   return safeJsonPath(path, parsed);
 }
 
@@ -612,8 +618,15 @@ function assertItems(
         pushMatchResults(results, kindPrefix, subject, def, false, undefined);
         continue;
       }
-      const { exists, value } = resolveItemValue(target, def.path);
-      pushMatchResults(results, kindPrefix, subject, def, exists, value);
+      const { exists, value, tooDeep } = resolveItemValue(target, def.path);
+      pushMatchResults(
+        results,
+        kindPrefix,
+        tooDeep ? `${subject} (${TOO_DEEP_ITEM_NOTE})` : subject,
+        def,
+        exists,
+        value,
+      );
       continue;
     }
 
@@ -626,8 +639,10 @@ function assertItems(
       // ループの外で1回だけコンパイルして使い回す
       const precompiledRegex = key === "regex" ? compileUserRegex(expected as string) : undefined;
       let anyOk = false;
+      let anyTooDeep = false;
       for (const item of items) {
-        const { exists, value } = resolveItemValue(item, def.path);
+        const { exists, value, tooDeep } = resolveItemValue(item, def.path);
+        if (tooDeep) anyTooDeep = true;
         const tmp: AssertionResult[] = [];
         pushMatchResults(
           tmp,
@@ -651,7 +666,7 @@ function assertItems(
         actual: anyOk ? "matched" : `no match among ${items.length} ${subjectNoun}s`,
         message: anyOk
           ? `${subject}: at least one ${subjectNoun} matches ${key}`
-          : `${subject}: no ${subjectNoun} matched ${key}=${JSON.stringify(expected)} (checked ${items.length} ${subjectNoun}s)`,
+          : `${subject}: no ${subjectNoun} matched ${key}=${JSON.stringify(expected)} (checked ${items.length} ${subjectNoun}s${anyTooDeep ? `; ${TOO_DEEP_ITEM_NOTE}` : ""})`,
       });
     }
   }
@@ -678,6 +693,26 @@ export function assertMessages(
   return assertItems(defs, messages, "message", "message");
 }
 
+/** body / bodySchema のアサーションを、深すぎてテキストのまま保持した本文のために 1 件ずつ失敗として返す */
+function assertBodyUnavailable(def: AssertDef): AssertionResult[] {
+  const results: AssertionResult[] = [];
+  for (const bodyDef of def.body ?? []) {
+    results.push({
+      ok: false,
+      kind: "body",
+      message: `body path "${bodyDef.path}": ${BODY_TOO_DEEP_MESSAGE}`,
+    });
+  }
+  if (def.bodySchema) {
+    results.push({
+      ok: false,
+      kind: "bodySchema",
+      message: `bodySchema: ${BODY_TOO_DEEP_MESSAGE}`,
+    });
+  }
+  return results;
+}
+
 /** ステップの assert 定義全体を評価する。例外は投げない */
 export function evaluateAssertions(
   def: AssertDef | undefined,
@@ -687,8 +722,11 @@ export function evaluateAssertions(
   return [
     ...assertStatus(def.status, context.status),
     ...assertHeaders(def.headers, context.headers),
-    ...assertBody(def.body, context.body),
-    ...assertBodySchema(def.bodySchema, context.body),
+    // テキストのまま保持した深い JSON に JSONPath・スキーマを当てると、文字列への添字アクセスなどで誤った結果になるため、
+    // 評価せずに明示的なメッセージで失敗させる(本文テキストへのアサーションは通常どおり評価する)
+    ...(context.bodyTooDeep === true
+      ? assertBodyUnavailable(def)
+      : [...assertBody(def.body, context.body), ...assertBodySchema(def.bodySchema, context.body)]),
     ...assertBodyText(def.bodyText, context.bodyText),
     ...assertDuration(def.duration, context.durationMs),
     ...assertEventCount(def.eventCount, context.events ?? []),

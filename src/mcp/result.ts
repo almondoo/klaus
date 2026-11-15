@@ -44,11 +44,11 @@ export function toFailure(error: ToolError): ToolFailure {
 
 /**
  * 切り詰めた値の代わりに入れる印。元のサイズと、全文の読み方を示す。
- * klaus_history_show は step と path(履歴エントリへの JSONPath。例 $.response.body)で値を選び、
+ * klaus_history_show は step と path(履歴エントリへのパス。例 $.response.body)で値を選び、
  * 文字列の値は offset / length で区切って読める(これも切り詰めの対象外にならない大きさに収まる)。
  */
 function truncationMarker(bytes: number): string {
-  return `[truncated: ${bytes} bytes; read it with klaus_history_show: pass step and path (a JSONPath into the history entry, for example $.response.body) and, for a string value, offset and length to read it in windows; the stored record is also in .klaus/history]`;
+  return `[truncated: ${bytes} bytes; read it with klaus_history_show: pass step and path (a path into the history entry, for example $.response.body) and, for a string value, offset and length to read it in windows; the stored record is also in .klaus/history]`;
 }
 
 /** 文字列の切り詰めを段階的に厳しくする閾値(バイト)。上から順に、収まるまで試す */

@@ -1812,19 +1812,26 @@ steps:
     expect(slowHits).toEqual(["/slow-first"]);
   }, 30000);
 
-  it("(ag) klaus run --json: 履歴に記録されなかったステップ(キャプチャ失敗)には historyRef を付けず、記録されたステップには付ける", async () => {
+  it("(ag) klaus run --json: 応答を受け取った後の capture 失敗は historyRef つきの error として履歴に残り(klaus history --status error には出て --failed には出ない)、接続エラーは残らず historyRef も付かない", async () => {
     const refDir = join(workDir, "history-ref");
     await mkdir(refDir, { recursive: true });
+    const closedPort = await reserveClosedPort();
     await writeFile(
       join(refDir, "capture.yaml"),
       `name: capture flow
 steps:
   - name: login
+    continueOnError: true
     request:
       method: GET
       url: "${fixture.baseUrl}/ok"
     capture:
       token: "$.does.not.exist"
+  - name: unreachable
+    continueOnError: true
+    request:
+      method: GET
+      url: "http://127.0.0.1:${closedPort}/x"
   - name: after
     request:
       method: GET
@@ -1837,11 +1844,24 @@ steps:
 
     expect(run.status).not.toBe(0);
     const report = JSON.parse(run.stdout);
-    const [login, after] = report.flows[0].steps;
+    const [login, unreachable, after] = report.flows[0].steps;
     expect(login).toMatchObject({ name: "login", status: "error" });
-    expect(Object.hasOwn(login, "historyRef")).toBe(false);
-    expect(after).toMatchObject({ name: "after", status: "skipped" });
+    expect(login.historyRef).toMatchObject({ runId: report.runId, step: "login" });
+    expect(unreachable).toMatchObject({ name: "unreachable", status: "error" });
+    expect(Object.hasOwn(unreachable, "historyRef")).toBe(false);
     expect(after.historyRef).toMatchObject({ runId: report.runId, step: "after" });
+
+    const errors = JSON.parse((await runCli(["history", "--status", "error"], refDir)).stdout);
+    const failed = JSON.parse((await runCli(["history", "--failed"], refDir)).stdout);
+    const errorSteps = errors.map((entry: { step: string }) => entry.step);
+    expect(errorSteps).toEqual(["login"]);
+    expect(failed.map((entry: { step: string }) => entry.step)).toEqual([]);
+    // 記録された error のエントリには応答が付く
+    const shown = JSON.parse(
+      (await runCli(["history", "show", report.runId, "--step", "login"], refDir)).stdout,
+    );
+    const entry = Array.isArray(shown) ? shown[0] : (shown.entries?.[0] ?? shown);
+    expect(entry).toMatchObject({ status: "error", response: { status: 200 } });
   }, 30000);
 
   it("(ad) klaus mcp --read-only: 書き込みツール(klaus_promote / klaus_snapshot_accept)は登録されず、呼んでもエラーになる", async () => {

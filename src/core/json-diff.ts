@@ -218,6 +218,13 @@ export interface DiffJsonOptions {
  */
 export const MAX_JSON_BODY_DEPTH = 200;
 
+/**
+ * 入れ子が MAX_JSON_BODY_DEPTH を超えるためテキストのまま保持した応答本文に対して、JSONPath・スキーマの検査を
+ * 使おうとしたときのメッセージ(文字列に JSONPath を当てると `[0]` が文字の添字になり、誤った値を返してしまうため、
+ * 一致させず明示的に失敗させる)。
+ */
+export const BODY_TOO_DEEP_MESSAGE = `response body is nested deeper than ${MAX_JSON_BODY_DEPTH} levels and is kept as text; JSONPath and schema checks cannot be applied`;
+
 /** 値の入れ子が max を超えるか(反復で数えるためスタックを消費しない) */
 export function exceedsDepth(value: unknown, max: number): boolean {
   const stack: Array<[unknown, number]> = [[value, 0]];

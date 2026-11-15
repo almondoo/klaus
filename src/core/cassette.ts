@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { RuntimeError } from "./errors.js";
 import { expandSecretVariants, maskDeep, maskString } from "./history.js";
 import type { HttpResponse } from "./http.js";
-import { parseJsonBody } from "./http.js";
+import { parseJsonBodyChecked } from "./http.js";
 import { appendPrivateLine } from "./private-file.js";
 
 /**
@@ -207,11 +207,13 @@ export function findCassetteEntry(
  * durationMs はネットワークに出ないため常に 0 にする。
  */
 export function cassetteEntryToHttpResponse(entry: CassetteEntry): HttpResponse {
+  const { body, tooDeep } = parseJsonBodyChecked(entry.headers["content-type"], entry.bodyText);
   return {
     status: entry.status,
     headers: entry.headers,
-    body: parseJsonBody(entry.headers["content-type"], entry.bodyText),
+    body,
     bodyText: entry.bodyText,
+    ...(tooDeep ? { bodyTooDeep: true as const } : {}),
     durationMs: 0,
   };
 }

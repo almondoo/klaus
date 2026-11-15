@@ -325,8 +325,9 @@ describe("executeFlow", () => {
     expect(first.status).toBe("passed");
   });
 
-  it("履歴に書き込めたステップだけ historyRecorded: true になる(キャプチャ失敗の error・history: false は付かない)", async () => {
+  it("応答を受け取った後に失敗したステップ(キャプチャ失敗)は、応答つきの error として履歴に残る。応答を受け取れなかった接続エラーは残らない", async () => {
     cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+    const closedPort = await reserveClosedPort();
     const flow = flowSchema.parse({
       name: "recorded flag flow",
       steps: [
@@ -339,6 +340,12 @@ describe("executeFlow", () => {
             body: { email: "user@example.com", password: "secret" },
           },
           capture: { missing: "$.does.not.exist" },
+          continueOnError: true,
+        },
+        {
+          name: "unreachable",
+          request: { method: "GET", url: `http://127.0.0.1:${closedPort}/x` },
+          continueOnError: true,
         },
         { name: "get-me", request: { method: "GET", url: `${ctx.baseUrl}/me` } },
       ],
@@ -346,19 +353,55 @@ describe("executeFlow", () => {
 
     const result = await executeFlow(flow, "recorded-flag-flow.yaml", { cwd });
 
-    // 1 つ目はキャプチャ失敗で error(履歴エントリを作らない)、2 つ目は skipped(記録される)
     expect(result.steps.map((step) => [step.status, step.historyRecorded])).toEqual([
+      ["error", true],
       ["error", undefined],
-      ["skipped", true],
+      ["passed", true],
     ]);
+    // 応答はステップ結果にも載る
+    expect(result.steps[0]?.response?.status).toBe(200);
     const entries = await readAllHistoryEntries(cwd);
-    expect(entries.map((entry) => entry.step)).toEqual(["get-me"]);
+    expect(entries.map((entry) => entry.step).sort()).toEqual(["get-me", "login"]);
+    const login = entries.find((entry) => entry.step === "login");
+    expect(login).toMatchObject({
+      status: "error",
+      error: expect.stringContaining("missing"),
+      request: { method: "POST" },
+      response: { status: 200, body: { token: "tok-user@example.com" } },
+    });
 
     const withoutHistory = await executeFlow(buildAuthFlow(), "auth-flow.yaml", {
       cwd,
       history: false,
     });
     expect(withoutHistory.steps.every((step) => step.historyRecorded === undefined)).toBe(true);
+  });
+
+  it("リトライしたステップは、最後の試行だけが 1 件の履歴(応答つきの error)になる", async () => {
+    cwd = await mkdtemp(join(tmpRoot, "klaus-runner-"));
+    const flow = flowSchema.parse({
+      name: "retry capture flow",
+      steps: [
+        {
+          name: "login",
+          request: {
+            method: "POST",
+            url: `${ctx.baseUrl}/login`,
+            headers: { "Content-Type": "application/json" },
+            body: { email: "user@example.com", password: "secret" },
+          },
+          capture: { missing: "$.does.not.exist" },
+          retry: { count: 2, intervalMs: 1 },
+        },
+      ],
+    });
+
+    const result = await executeFlow(flow, "retry-capture-flow.yaml", { cwd });
+
+    expect(result.steps[0]).toMatchObject({ status: "error", attempts: 3, historyRecorded: true });
+    const entries = await readAllHistoryEntries(cwd);
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ status: "error", attempts: 3, response: { status: 200 } });
   });
 
   it("入れ子が深すぎる JSON 応答(深さ 5000)は、シークレットの登録の有無によらず実行が完了し、本文はテキストとして履歴に残る", async () => {

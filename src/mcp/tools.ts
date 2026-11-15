@@ -10,7 +10,6 @@
  *   承認待ちの組のみ・保護環境は拒否)。実体は Hono 非依存の共有関数に置いてあり、ここでは再実装しない
  * - フローのパスは cwd 配下(シンボリックリンク解決後も)の .yaml / .yml に限る
  */
-import { JSONPath } from "jsonpath-plus";
 import { z } from "zod";
 import { detectActor, MAX_ACTOR_NAME_LENGTH, resolveGitState } from "../cli/audit.js";
 import { loadCliConfig, loadHttpOptions, resolveGuardOptions } from "../cli/config.js";
@@ -65,6 +64,12 @@ import {
   RUN_ID_PATTERN,
   resolveWithinCwd,
 } from "../server/validation.js";
+import {
+  InvalidPathError,
+  type PathSegment,
+  parseHistoryPath,
+  selectHistoryPath,
+} from "./history-path.js";
 import { ToolError, type ToolOutcome, toFailure } from "./result.js";
 
 /** ハンドラが受け取る呼び出しごとの文脈 */
@@ -550,7 +555,7 @@ const runFlowSchema = z.object({
 const runFlowTool: ToolDefinition<typeof runFlowSchema> = {
   name: "klaus_run_flow",
   description:
-    "Run a flow definition: sends the real HTTP/SSE/WebSocket requests it defines and evaluates assertions, snapshots and OpenAPI validation (run.openapi). Steps that end passed, failed (assertions, snapshot or OpenAPI), or skipped, and steps refused by a guard, are recorded in history; a step that ends with any other error (a failed capture, timeout, connection or mid-body network error, response too large) is not recorded. Returns a summary per step (status, HTTP status, error, errorCode, failed assertions, snapshot and OpenAPI results); response bodies are not included. Each recorded step carries historyRef {runId, step} for klaus_history_show; a step without historyRef has no history entry. guard.allowedHosts from klaus.config.yaml applies to every step, and a step is refused when the run selects a protected environment ($protected); klaus mcp has no option to override a refusal, so a refused step is reported with its errorCode: tell the user instead of working around it. A missing snapshot baseline is written; a mismatch is reported, never updated. Steps may change data on the target API.",
+    "Run a flow definition: sends the real HTTP/SSE/WebSocket requests it defines and evaluates assertions, snapshots and OpenAPI validation (run.openapi). Steps that end passed, failed (assertions, snapshot or OpenAPI), or skipped, steps refused by a guard, and steps that received a response and then ended in error (for example a failed capture) are recorded in history; a step that ends with an error before or without a usable response (timeout, connection or mid-body network error, response too large, a template that cannot be expanded) is not recorded. Returns a summary per step (status, HTTP status, error, errorCode, failed assertions, snapshot and OpenAPI results); response bodies are not included. Each recorded step carries historyRef {runId, step} for klaus_history_show; a step without historyRef has no history entry. guard.allowedHosts from klaus.config.yaml applies to every step, and a step is refused when the run selects a protected environment ($protected); klaus mcp has no option to override a refusal, so a refused step is reported with its errorCode: tell the user instead of working around it. A missing snapshot baseline is written; a mismatch is reported, never updated. Steps may change data on the target API.",
   inputSchema: runFlowSchema,
   annotations: {
     readOnlyHint: false,
@@ -792,7 +797,7 @@ const historyShowSchema = z.object({
     .string()
     .optional()
     .describe(
-      "JSONPath evaluated against each selected step entry as stored, returning only the matched values instead of the whole entry: for example $.response.body, $.response.body.items[0], $.response.headers, $.request.url. Requires step.",
+      "Path into each selected step entry as stored, returning only that value instead of the whole entry: for example $.response.body, $.response.body.items[0], $.response.headers['content-type'], $.request.url. Only $, .name, ['name'] and [n] are supported (no wildcards, recursive descent, slices, unions or filters). Requires step.",
     ),
   offset: z
     .number()
@@ -829,22 +834,26 @@ function sliceWindow(text: string, offset: number, length: number) {
   };
 }
 
-/** 履歴エントリに JSONPath を当て、一致した値の配列を返す。不正な path は期待される失敗にする */
-function selectByPath(entry: HistoryEntry, path: string): unknown[] {
+/** path を厳格な最小の構文として分解する(JSONPath のライブラリは使わない)。構文に合わなければ期待される失敗にする */
+function parsePathOrFail(path: string): PathSegment[] {
   try {
-    const matches = JSONPath({ path, json: entry as never, wrap: true });
-    return Array.isArray(matches) ? matches : [];
-  } catch {
-    throw new ToolError(
-      `invalid path "${path.slice(0, 80)}" (expected a JSONPath such as $.response.body)`,
-    );
+    return parseHistoryPath(path);
+  } catch (error) {
+    if (error instanceof InvalidPathError) throw new ToolError(error.message);
+    throw error;
   }
+}
+
+/** 履歴エントリから path の指す値を取り出す。結果は 0 個か 1 個の値の配列 */
+function selectByPath(entry: HistoryEntry, segments: PathSegment[]): unknown[] {
+  const selected = selectHistoryPath(entry, segments);
+  return selected.found ? [selected.value] : [];
 }
 
 const historyShowTool: ToolDefinition<typeof historyShowSchema> = {
   name: "klaus_history_show",
   description:
-    "Return the recorded entries of one run in execution order: request, response (status, headers, body), assertions, error, actor. Secrets are masked as stored. Pass step to narrow to one step; only then are snapshot candidates included. When the result exceeds 256 KiB, large values are cut with a marker; to read such a value, pass step and path (a JSONPath into the entry, for example $.response.body or $.response.body.items[0]) to get only that value, and for a long string add offset and length to read it in windows (each window result carries totalLength and nextOffset). A body nested deeper than 200 levels is stored as text. Read-only.",
+    "Return the recorded entries of one run in execution order: request, response (status, headers, body), assertions, error, actor. Secrets are masked as stored. Pass step to narrow to one step; only then are snapshot candidates included. When the result exceeds 256 KiB, large values are cut with a marker; to read such a value, pass step and path (a path into the entry such as $.response.body or $.response.body.items[0]; only $, .name, ['name'] and [n] are supported) to get only that value, and for a long string add offset and length to read it in windows (each window result carries totalLength and nextOffset). A body nested deeper than 200 levels is stored as text. Read-only.",
   inputSchema: historyShowSchema,
   annotations: READ_ONLY_LOCAL,
   write: false,
@@ -867,6 +876,8 @@ const historyShowTool: ToolDefinition<typeof historyShowSchema> = {
       ) {
         throw new ToolError("path is invalid");
       }
+      // 構文は履歴を読む前に確かめる(不正な path で履歴の読み込みをしない)
+      parsePathOrFail(args.path);
     }
     const all = selectRunEntries(await readAllHistoryEntries(ctx.cwd), runId);
     const entries = all.filter((entry) => args.step === undefined || entry.step === args.step);
@@ -876,7 +887,8 @@ const historyShowTool: ToolDefinition<typeof historyShowSchema> = {
     }
 
     const path = args.path;
-    if (path === undefined) {
+    const segments = path === undefined ? undefined : parsePathOrFail(path);
+    if (path === undefined || segments === undefined) {
       return ok({
         runId,
         entries: args.step !== undefined ? entries : entries.map(stripSnapshotCandidates),
@@ -885,7 +897,7 @@ const historyShowTool: ToolDefinition<typeof historyShowSchema> = {
 
     // path 指定: 一致した値だけを返す。offset / length を指定したときは、単一の文字列の値の一部だけを返す
     const selected = entries.map((entry) => {
-      const matches = selectByPath(entry, path);
+      const matches = selectByPath(entry, segments);
       const label = {
         ...(entry.iteration !== undefined ? { iteration: entry.iteration } : {}),
         matchCount: matches.length,
@@ -896,7 +908,7 @@ const historyShowTool: ToolDefinition<typeof historyShowSchema> = {
         throw new ToolError(
           `offset and length need path to select exactly one string value, but it matched ${matches.length} value(s)${matches.length === 1 ? ` of type ${value === null ? "null" : typeof value}` : ""}`,
           {
-            hint: "Narrow path to a single string, for example $.response.body when the body is text.",
+            hint: "Point path at a single string, for example $.response.body when the body is text.",
           },
         );
       }

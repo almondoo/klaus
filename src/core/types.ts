@@ -152,6 +152,11 @@ export interface ResponseSnapshot {
    * 受信イベント自体は StepResult.events に格納される。
    */
   body: unknown;
+  /**
+   * JSON だが入れ子が上限(MAX_JSON_BODY_DEPTH)を超えたためテキストのまま body に入れたときだけ true。
+   * 履歴にもそのまま記録される(読み手が、文字列の body を「JSON ではない」と取り違えないようにするため)
+   */
+  bodyTooDeep?: true;
 }
 
 /** 1ステップの実行結果 */
