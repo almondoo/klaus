@@ -7,6 +7,19 @@ API の現在の仕様は各リファレンス([CLI](../ja/guide/cli.md) / [フ�
 
 0.15.0 以降は、各リリースのコミット範囲を `git log` で確認して書いている(更新コミットから次の更新コミットまでが後のバージョン)。ただし 0.23.0〜0.25.0 は、更新コミットが機能コミット(`99d8002` mock、`0a35c3e` レポート、`fac3194` diff / promote)より前に入っているため、機能の内容で 0.23.0 = `klaus mock`、0.24.0 = HTML / GitHub レポート、0.25.0 = `klaus diff` / `klaus promote` とした。
 
+## 0.31.0
+
+`klaus mcp`: klaus を MCP(Model Context Protocol)クライアント、つまり AI エージェントへツールとして提供する stdio サーバー。エージェントが `curl` の代わりに、klaus 自身の安全柵のもとで API を調べ、検証できるようにする。
+
+- **追加: `klaus mcp [--read-only]`**。stdio だけで話し(ネットワークのリスナーは持たない)、作業ディレクトリ(`process.cwd()`)をプロジェクトとして使う。ツールは 12 個(`klaus_list_flows` / `klaus_validate_flow` / `klaus_list_environments` / `klaus_dry_run` / `klaus_run_flow` / `klaus_request` / `klaus_history_list` / `klaus_history_show` / `klaus_diff_runs` / `klaus_snapshot_list` / `klaus_promote` / `klaus_snapshot_accept`)。`klaus.config.yaml`(`guard` / `http` / `run.openapi`)は呼び出しごとに読み直し、不正な設定のときは guard なしで送らずにエラーにする。標準出力はプロトコル専用で、診断はすべて標準エラーへ出し、標準入力の終了・SIGINT・SIGTERM で exit 0 で終わる。`--read-only` は書き込みツール(`klaus_promote` / `klaus_snapshot_accept`)を登録しない(実行ツールは引き続き履歴と、無かったスナップショットの基準を書く)
+- **判断: MCP は CLI より厳しい、エージェントが操作する経路として扱う**。`--allow-protected` / `--no-mask` / guard を渡す手段を持たず(MCP からは安全柵を緩められない)、出力のマスクと履歴の記録は常にオン。スナップショットは `ci: false` / `update: false`(基準が無ければ書き、不一致は報告するだけで更新しない)。書き込みは CLI ではなく UI サーバーの規則に従う。そのため、`POST /api/history/promote` と `POST /api/snapshots/accept` の本体を Hono 非依存の関数(`promoteHistoryToFile` / `acceptPendingSnapshot`)として取り出し、UI のルートと MCP で共有した(ルートは結果を HTTP の応答に写すだけ。応答は変えていない)。フローのパスは cwd の中(リンク先も)の `.yaml` / `.yml` に限る
+- **判断: エラー経由でファイルの内容が漏れないようにした**。YAML の構文エラーはソース行の抜粋を含むため、cwd 内の任意のファイルをフローとして渡すと、その内容がエラーメッセージに出る。MCP では、フローのパスを YAML の拡張子に限り、エラーメッセージは最初の段落だけを返し、絶対パスは相対パスにする
+- **追加: core の `EntryPoint` に `"mcp"`**。保護環境の拒否の案内を「`klaus mcp` は上書きできず、利用者が端末から `klaus run --allow-protected` を実行する」にする(フロー実行・単発リクエスト・`--dry-run` のすべて)。`executeSingleRequest` も `entryPoint` を受け取る
+- **判断: 履歴の actor**。kind は常に `agent`。name は「`initialize` で名乗ったクライアント名 > 環境変数のマーカー(`CLAUDECODE` / `AI_AGENT`)> `mcp`」の順で決める。クライアント名は自己申告なので、制御文字を除き長さを制限し、実行の可否には使わない
+- **判断: 結果の形**。どのツールも整形した JSON のテキストを 1 つ返し、期待される失敗は `isError: true` と `{error, errorCode?, hint?}`。アサーションに失敗した、または拒否されたステップを含む run はツールの失敗にしない(`klaus_request` は 1 件だけなので、拒否・送信失敗を失敗にする)。結果は 256 KiB まで(巨大な文字列・`body` は印に置き換えて JSON を保つ)。リクエストを送るツールと書き込みツールは、プロセス内の直列キューで 1 つずつ実行する。ツールの注釈では、リクエストを送るツールを destructive / open-world、`klaus_promote` を non-destructive(上書きしない)、`klaus_snapshot_accept` を destructive とした
+- **追加: devDependency `@modelcontextprotocol/server`(2.4.0 に固定)**。他の実行時依存と同じく `noExternal` で `dist/cli.js` にバンドルする(`zod/v4` のサブパスも含めるため `zod` の指定を正規表現にした)ので、利用者に実行時のインストールは要らない。`dist/cli.js` は約 3.8 MB から約 4.6 MB になるが、SDK は `klaus mcp` のときだけ dynamic import で初期化され、他のコマンドの起動時間は変わらない。dynamic import がコード分割で別チャンクのファイルになると `files`(`dist/cli.js` のみ)から欠けるため、cli のビルドは `splitting: false`
+- ドキュメント: ガイド「AI エージェント向けの MCP サーバー」を追加し、CLI リファレンス・README・Agent Skill / `AGENTS.md` に `klaus mcp` を載せた
+
 ## 0.30.0
 
 `klaus history` の絞り込みの拡張、`error` ステップの安定したエラーコード、UI の説明表示、カセットの構造的ヘッダーの絞り込み。

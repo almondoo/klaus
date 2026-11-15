@@ -1,6 +1,6 @@
 # CLI リファレンス
 
-klaus のコマンドは `run`(フロー実行)・`req`(単発リクエストの送信)・`ui`(localhost Web UI 起動)・`validate`(スキーマ検証)・`schema`(JSON Schema 出力)・`generate`(OpenAPI 仕様からのフロー生成。[OpenAPI からのフロー生成](./generate.md)を参照)・`init`(雛形生成)・`history`(実行履歴の参照)・`diff`(2つの run の比較)・`promote`(履歴からのフロー生成)・`mock`(記録済みカセットのモックサーバー化)・`snapshot`(`assert.snapshot` の結果の確認と承認)の12個。
+klaus のコマンドは `run`(フロー実行)・`req`(単発リクエストの送信)・`ui`(localhost Web UI 起動)・`validate`(スキーマ検証)・`schema`(JSON Schema 出力)・`generate`(OpenAPI 仕様からのフロー生成。[OpenAPI からのフロー生成](./generate.md)を参照)・`init`(雛形生成)・`history`(実行履歴の参照)・`diff`(2つの run の比較)・`promote`(履歴からのフロー生成)・`mock`(記録済みカセットのモックサーバー化)・`snapshot`(`assert.snapshot` の結果の確認と承認)・`mcp`(klaus を MCP クライアントへツールとして提供する。[AI エージェント向けの MCP サーバー](./mcp.md)を参照)の13個。
 
 ## --help
 
@@ -717,3 +717,17 @@ klaus snapshot accept <runId> [options]
 | 0 | 成功(`list` は常に、`accept` はすべて書き込めたとき) |
 | 1 | 引数不正(`--json` と `--text` の併用を含む)、不明な run ID、snapshot アサーションを持つ run が無い(runId なしの `list`)、承認待ちが無い(`accept`)、または予期しないエラー |
 | 2 | `accept`: スナップショットファイルまたは記録された候補が壊れている、安全に書き込めないパス(カレントディレクトリの外、`__snapshots__` の下でない、シンボリックリンク、隠しディレクトリ)、またはそのステップの他のアサーションが失敗していた(JSON では `kind: "failed-step"`) |
+
+## klaus mcp
+
+stdio の [Model Context Protocol](https://modelcontextprotocol.io) サーバーを起動し、klaus の操作をツールとして AI エージェントに提供する。登録方法・ツールの一覧・安全柵は[AI エージェント向けの MCP サーバー](./mcp.md)を参照。
+
+```
+klaus mcp [options]
+```
+
+| オプション | 説明 |
+|---|---|
+| `--read-only` | ファイルを書き込むツール(`klaus_promote`・`klaus_snapshot_accept`)を登録しない |
+
+`--allow-protected` も `--no-mask` も、guard のオプションを渡す手段もない。guard は `klaus.config.yaml` からだけ取り、`$protected` の環境は上書きできない。サーバーはカレントディレクトリをプロジェクトとして使い、MCP を stdin/stdout だけで話し(ネットワークのリスナーは持たない)、診断はすべて stderr に出す。stdin が閉じたとき、または SIGINT / SIGTERM で exit 0 で終了する。起動前の予期しない失敗は exit 1。

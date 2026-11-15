@@ -24,6 +24,7 @@
 - **OpenAPI の検証**: `klaus run --openapi spec.yaml` は、すべてのレスポンスを OpenAPI 3.0/3.1 の文書(ステータス・content-type・必須ヘッダー・本文のスキーマ)に照らして検証し、実行がどのオペレーションをカバーしたかを報告する。`--openapi-coverage-min` でカバレッジ不足を失敗にできる
 - **HTTP クライアントとリクエストボディ**: リダイレクト、メモリ上の cookie jar、`basic` / `bearer` / `oauth2` の認証ヘルパー、`form` / `multipart` / `bodyFile` のボディ、設定ファイル専用の proxy / TLS(`klaus.config.yaml` の `http`。リダイレクトの各ホップも安全柵で再判定する)。`--jobs` で並列実行、`--data` でデータ駆動にできる
 - **UI でのレビュー**: 履歴ビューアで2つの run を比較し、記録済みの run を新しいフローとして保存し(新規ファイルのみ)、スナップショットと OpenAPI の判定を表示し、スナップショットの変更を承認できる
+- **MCP サーバー**: `klaus mcp` は klaus を stdio の MCP クライアントへツールとして提供する。送信はすべて CLI と同じ送信先の許可リスト・環境の保護・シークレットのマスク・履歴を通り、MCP 経由でそのどれも上書きできない
 - **レポート**: `--report` で `junit`・`tap`・`html`(自己完結の単一ファイル)・`github`(GitHub Actions 向けのジョブサマリーとアノテーション)を出力
 - **ローカルファースト**: 実行履歴は `.klaus/history/*.jsonl` に追記。クラウド同期・アカウント機構はない
 
@@ -103,6 +104,7 @@ klaus run api/auth-flow.yaml
 | `klaus promote <runId...>` | 記録済みの run からアサーションを推論した再実行可能なフロー YAML を生成 |
 | `klaus mock <dir>` | 記録済みカセットをローカルのモックサーバーとして提供 |
 | `klaus snapshot list\|accept` | 記録済みの run のスナップショットの不一致を一覧し、新しい基準として受け入れる |
+| `klaus mcp [--read-only]` | klaus を AI エージェント向けのツールとして公開する stdio の MCP サーバーを起動する(安全柵とマスクは上書きできない) |
 
 各サブコマンドの全オプションは [CLI リファレンス](https://almondoo.github.io/klaus/ja/guide/cli) を参照。
 
@@ -129,6 +131,7 @@ klaus run api/auth-flow.yaml
 - [record / replay モード](https://almondoo.github.io/klaus/ja/guide/record-replay) — ネットワーク隔離環境や破壊的 API 向けのカセットベース検証
 - [Web UI](https://almondoo.github.io/klaus/ja/guide/ui) — `klaus ui` のランナー + 履歴ビューアと、トークン / CSRF / Host 検証のセキュリティモデル
 - [実行履歴](https://almondoo.github.io/klaus/ja/guide/history) — `.klaus/history/*.jsonl` のスキーマとファイル規約
+- [AI エージェント向けの MCP サーバー](https://almondoo.github.io/klaus/ja/guide/mcp) — `klaus mcp`: MCP クライアントへの登録方法・ツール・安全柵
 - [他ツールとの比較](https://almondoo.github.io/klaus/ja/guide/comparison) — klaus と類似の API テストツールとの違い
 - [トラブルシューティング](https://almondoo.github.io/klaus/ja/guide/troubleshooting) — klaus が実際に出すエラーメッセージと原因・対処
 - [Agent Skill(Claude Code / Codex)](https://almondoo.github.io/klaus/ja/guide/agent-skill) — 配置場所と、同梱の SKILL.md がエージェントに教える内容

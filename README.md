@@ -24,6 +24,7 @@ Documentation site: https://almondoo.github.io/klaus/
 - **OpenAPI validation**: `klaus run --openapi spec.yaml` checks every response against an OpenAPI 3.0/3.1 document (status, content type, required headers, body schema) and reports which operations the run covered; `--openapi-coverage-min` makes low coverage fail the run
 - **HTTP client and request bodies**: redirects, an in-memory cookie jar, `basic` / `bearer` / `oauth2` auth helpers, `form` / `multipart` / `bodyFile` bodies, and config-only proxy / TLS settings (`http` in `klaus.config.yaml`; every redirect hop is re-checked against the guards). Runs can be parallelised with `--jobs` and data-driven with `--data`
 - **Review in the UI**: the history viewer compares two runs, saves a recorded run as a new flow (new files only), shows snapshot and OpenAPI verdicts, and accepts snapshot changes
+- **MCP server**: `klaus mcp` serves klaus as tools to an MCP client over stdio. Every send goes through the same host allowlist, environment protection, secret masking, and history as the CLI, and none of them can be overridden through MCP
 - **Reports**: `--report` writes `junit`, `tap`, `html` (a single self-contained file), and `github` (a job summary with annotations for GitHub Actions)
 - **Local-first**: Execution history is appended to `.klaus/history/*.jsonl`. No cloud sync or account mechanism
 
@@ -103,6 +104,7 @@ The full syntax for templates, assertions, and SSE / GraphQL / WebSocket flows i
 | `klaus promote <runId...>` | Turns recorded runs into a re-runnable flow YAML with inferred assertions |
 | `klaus mock <dir>` | Serves a recorded cassette as a local mock server |
 | `klaus snapshot list\|accept` | Lists the snapshot mismatches of a recorded run, or accepts them as the new baseline |
+| `klaus mcp [--read-only]` | Runs a stdio MCP server that exposes klaus as tools for AI agents (guards and masking cannot be overridden) |
 
 See the [CLI reference](https://almondoo.github.io/klaus/guide/cli) for the full option list of each subcommand.
 
@@ -129,6 +131,7 @@ See the [CLI reference](https://almondoo.github.io/klaus/guide/cli) for the full
 - [record / replay mode](https://almondoo.github.io/klaus/guide/record-replay) — Cassette-based testing for network-isolated or destructive-API scenarios
 - [Web UI](https://almondoo.github.io/klaus/guide/ui) — The `klaus ui` runner + history viewer, and its token / CSRF / Host-validation security model
 - [Execution History](https://almondoo.github.io/klaus/guide/history) — The `.klaus/history/*.jsonl` schema and file conventions
+- [MCP server for AI agents](https://almondoo.github.io/klaus/guide/mcp) — `klaus mcp`: registering it in an MCP client, the tools, and the guardrails
 - [Comparison with other tools](https://almondoo.github.io/klaus/guide/comparison) — How klaus differs from similar API testing tools
 - [Troubleshooting](https://almondoo.github.io/klaus/guide/troubleshooting) — Error messages klaus actually prints, with cause and fix
 - [Agent Skill (Claude Code / Codex)](https://almondoo.github.io/klaus/guide/agent-skill) — Install locations and what the bundled SKILL.md teaches agents

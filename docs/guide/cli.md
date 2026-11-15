@@ -1,6 +1,6 @@
 # CLI Reference
 
-klaus has twelve commands: `run` (executes flows), `req` (sends a single ad-hoc request), `ui` (launches the localhost web UI), `validate` (schema-validates flows), `schema` (prints a JSON Schema), `generate` (generates flows from an OpenAPI spec; see [Generating Flows from OpenAPI](./generate.md)), `init` (scaffolds a starting point), `history` (inspects execution history), `diff` (compares two recorded runs), `promote` (turns recorded runs into a flow), `mock` (serves a recorded cassette as a local mock server), and `snapshot` (reviews and accepts `assert.snapshot` results).
+klaus has thirteen commands: `run` (executes flows), `req` (sends a single ad-hoc request), `ui` (launches the localhost web UI), `validate` (schema-validates flows), `schema` (prints a JSON Schema), `generate` (generates flows from an OpenAPI spec; see [Generating Flows from OpenAPI](./generate.md)), `init` (scaffolds a starting point), `history` (inspects execution history), `diff` (compares two recorded runs), `promote` (turns recorded runs into a flow), `mock` (serves a recorded cassette as a local mock server), `snapshot` (reviews and accepts `assert.snapshot` results), and `mcp` (serves klaus as tools to an MCP client; see [MCP server for AI agents](./mcp.md)).
 
 ## --help
 
@@ -717,3 +717,17 @@ klaus snapshot accept <runId> [options]
 | 0 | Success (`list` always; `accept` when everything was written) |
 | 1 | Invalid arguments (including `--json` with `--text`), an unknown run ID, no run with snapshot assertions (`list` without a run ID), nothing pending to accept (`accept`), or an unexpected error |
 | 2 | `accept`: a snapshot file or the recorded candidate is corrupt, a path cannot be written safely (outside the current directory, not under `__snapshots__`, a symbolic link, a hidden directory), or the step's other assertions failed (`kind: "failed-step"` in the JSON) |
+
+## klaus mcp
+
+Run a stdio [Model Context Protocol](https://modelcontextprotocol.io) server that exposes klaus operations as tools to an AI agent. Registration, the tool list, and the guardrails are in [MCP server for AI agents](./mcp.md).
+
+```
+klaus mcp [options]
+```
+
+| Option | Description |
+|---|---|
+| `--read-only` | Do not register the tools that write files (`klaus_promote`, `klaus_snapshot_accept`) |
+
+There is no `--allow-protected`, no `--no-mask`, and no way to pass guard options: the guards come from `klaus.config.yaml` only, and `$protected` environments cannot be overridden. The server uses the current directory as the project, speaks MCP on stdin/stdout only (no network listener), and writes every diagnostic to stderr. It exits 0 when stdin closes or on SIGINT / SIGTERM; an unexpected failure before it starts exits 1.
