@@ -66,10 +66,10 @@ const stopRowToggle = {
 };
 
 /**
- * 狭い画面(lg 未満)では副次列(開始時刻・所要時間・ステップ数・実行者・環境)を隠し、
+ * 狭い画面(xl 未満)では副次列(開始時刻・所要時間・ステップ数・実行者・環境)を隠し、
  * フロー列の2行目に畳んで表示する。操作列が横スクロールで画面外に出ないようにするため。
  */
-const WIDE_ONLY = "hidden lg:table-cell";
+const WIDE_ONLY = "hidden xl:table-cell";
 
 /** 開いている比較(a: 古い方 / b: 新しい方) */
 interface DiffTarget {
@@ -234,7 +234,8 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
       )}
 
       {groups.length > 0 && (
-        <div className="overflow-hidden rounded-md border border-border">
+        // セルの左右余白を詰めて、サイドバー表示時の xl(1280px)でも横スクロール無しで収める
+        <div className="overflow-hidden rounded-md border border-border [&_td]:px-2 [&_th]:px-2">
           <Table>
             <TableHeader>
               <TableRow className="bg-popover hover:bg-popover">
@@ -256,7 +257,7 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                 <TableHead className={WIDE_ONLY}>ステップ数</TableHead>
                 <TableHead className={WIDE_ONLY}>実行者</TableHead>
                 <TableHead className={WIDE_ONLY}>環境</TableHead>
-                <TableHead>操作</TableHead>
+                <TableHead className={WIDE_ONLY}>操作</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -268,6 +269,45 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                 const runExpanded = expandedRun === groupKey;
                 const audit = pickAudit(group.steps);
                 const actorLabel = formatActor(audit.actor);
+                const actions = (
+                  <div className="flex flex-nowrap items-center gap-1.5">
+                    {comparingFrom === null ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        aria-label={`${group.flow}(${formatDateTime(group.startedAt)})を比較する`}
+                        onClick={() => setComparingFrom(group)}
+                      >
+                        比較
+                      </Button>
+                    ) : comparingFrom.runId === group.runId ? (
+                      <span className="text-xs text-muted-foreground">比較元</span>
+                    ) : (
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        className="h-7 px-2 text-xs"
+                        aria-label={`${group.flow}(${formatDateTime(group.startedAt)})とこれから選んだ run を比較する`}
+                        onClick={() => openDiff(comparingFrom, group)}
+                      >
+                        これと比較
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-7 px-2 text-xs"
+                      aria-label={`${group.flow}(${formatDateTime(group.startedAt)})をフローとして保存`}
+                      onClick={() => setPromoteGroups([group])}
+                    >
+                      フローとして保存
+                    </Button>
+                  </div>
+                );
                 return (
                   <Fragment key={groupKey}>
                     <TableRow
@@ -288,17 +328,27 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                       <TableCell>
                         <StatusBadge status={group.status} />
                       </TableCell>
-                      <TableCell className="font-medium max-lg:break-all max-lg:whitespace-normal">
+                      <TableCell className="font-medium max-xl:whitespace-normal max-xl:[overflow-wrap:anywhere]">
                         {group.flow}
-                        {/* lg 未満: 副次列をここに畳む */}
-                        <span className="block font-mono text-xs font-normal text-muted-foreground lg:hidden">
-                          {formatDateTime(group.startedAt)} / {formatDuration(group.durationMs)} /{" "}
-                          {group.steps.length} ステップ
-                          {actorLabel ? ` / ${actorLabel}` : ""}
-                          {audit.env ? ` / ${audit.env}` : ""}
+                        {/* xl 未満: 副次列と操作ボタンをここに畳む(メタ情報は区切りごとに折り返す) */}
+                        <span className="flex flex-wrap gap-x-1.5 font-mono text-xs font-normal text-muted-foreground xl:hidden">
+                          <span className="whitespace-nowrap">
+                            {formatDateTime(group.startedAt)}
+                          </span>
+                          <span className="whitespace-nowrap">
+                            {formatDuration(group.durationMs)}
+                          </span>
+                          <span className="whitespace-nowrap">{group.steps.length} ステップ</span>
+                          {actorLabel && <span className="whitespace-nowrap">{actorLabel}</span>}
+                          {audit.env && <span className="whitespace-nowrap">{audit.env}</span>}
                         </span>
+                        <div className="mt-1.5 xl:hidden" {...stopRowToggle}>
+                          {actions}
+                        </div>
                       </TableCell>
-                      <TableCell className={cn(WIDE_ONLY, "font-mono text-muted-foreground")}>
+                      <TableCell
+                        className={cn(WIDE_ONLY, "font-mono text-xs text-muted-foreground")}
+                      >
                         {formatDateTime(group.startedAt)}
                       </TableCell>
                       <TableCell className={cn(WIDE_ONLY, "font-mono text-muted-foreground")}>
@@ -320,44 +370,8 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                       <TableCell className={cn(WIDE_ONLY, "font-mono text-muted-foreground")}>
                         {audit.env ?? "-"}
                       </TableCell>
-                      <TableCell {...stopRowToggle}>
-                        <div className="flex flex-wrap gap-1.5 lg:flex-nowrap">
-                          {comparingFrom === null ? (
-                            <Button
-                              type="button"
-                              variant="outline"
-                              size="sm"
-                              className="h-7 px-2 text-xs"
-                              aria-label={`${group.flow}(${formatDateTime(group.startedAt)})を比較する`}
-                              onClick={() => setComparingFrom(group)}
-                            >
-                              比較
-                            </Button>
-                          ) : comparingFrom.runId === group.runId ? (
-                            <span className="text-xs text-muted-foreground">比較元</span>
-                          ) : (
-                            <Button
-                              type="button"
-                              variant="secondary"
-                              size="sm"
-                              className="h-7 px-2 text-xs"
-                              aria-label={`${group.flow}(${formatDateTime(group.startedAt)})とこれから選んだ run を比較する`}
-                              onClick={() => openDiff(comparingFrom, group)}
-                            >
-                              これと比較
-                            </Button>
-                          )}
-                          <Button
-                            type="button"
-                            variant="outline"
-                            size="sm"
-                            className="h-7 px-2 text-xs"
-                            aria-label={`${group.flow}(${formatDateTime(group.startedAt)})をフローとして保存`}
-                            onClick={() => setPromoteGroups([group])}
-                          >
-                            フローとして保存
-                          </Button>
-                        </div>
+                      <TableCell className={cn(WIDE_ONLY, "py-1")} {...stopRowToggle}>
+                        {actions}
                       </TableCell>
                     </TableRow>
 
@@ -403,9 +417,9 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                               <TableCell>
                                 <StatusBadge status={stepStatus} />
                               </TableCell>
-                              <TableCell className="pl-8 font-mono max-lg:break-all max-lg:whitespace-normal">
+                              <TableCell className="pl-8 font-mono max-xl:whitespace-normal max-xl:[overflow-wrap:anywhere]">
                                 {step.step}
-                                <span className="block text-xs text-muted-foreground lg:hidden">
+                                <span className="block text-xs text-muted-foreground xl:hidden">
                                   {formatDateTime(step.startedAt)} /{" "}
                                   {formatDuration(step.durationMs)}
                                 </span>
@@ -432,7 +446,7 @@ export function HistoryBrowser({ flows }: HistoryBrowserProps) {
                               </TableCell>
                               <TableCell className={WIDE_ONLY} />
                               <TableCell className={WIDE_ONLY} />
-                              <TableCell />
+                              <TableCell className={WIDE_ONLY} />
                             </TableRow>
                             {stepExpanded && (
                               <TableRow className="bg-popover hover:bg-popover">
