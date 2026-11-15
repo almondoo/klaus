@@ -344,7 +344,10 @@ describe("OpenAPI: 検証の正確さ", () => {
       return value;
     };
     expect((await run(validator, "http://x/t", res(nested(300))))[0]?.openapi?.state).toBe("valid");
-    const deep = await run(validator, "http://x/t", res(nested(5000)));
+    // 深い本文はテキストで渡す。JSON.stringify は再帰で動くため、Node 22.19 では
+    // 深さ 5000 で RangeError になる(Node 26 では通る)。製品側と同じく JSON.parse に任せる
+    const deepText = `${'{"next":'.repeat(5000)}{}${"}".repeat(5000)}`;
+    const deep = await run(validator, "http://x/t", res(deepText));
     expect(deep[0]).toMatchObject({ ok: true, openapi: { state: "skipped" } });
     expect(deep[0]?.message).toContain("nested deeper");
   });
