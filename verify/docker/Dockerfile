@@ -33,7 +33,7 @@ ADD --checksum=sha256:f5847699e5d528f8f8e9bcfb385e58cb9fba7482af1b1aa7b70737be42
 # COPY --from は変数展開を受け付けないため、グローバル ARG でステージを選ぶ中継ステージを挟む
 FROM pnpm-${TARGETARCH} AS pnpm
 
-FROM node:26.12-slim@sha256:94816674c62774da0d099a947bf4613b9e1972a2733abd0d0cd80e795f8411d0
+FROM node:26.13-slim@sha256:e6bedef217677b276c591795e169840edd9096dbf13f29df8ef8d1856b8820bc
 
 WORKDIR /work
 
